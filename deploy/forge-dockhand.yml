@@ -1,0 +1,82 @@
+# Forge — ready to paste into Dockhand.
+#
+# Server only. This container never converts anything: it watches your
+# library folders, decides what needs doing, keeps the queue, and files the
+# results. The converting happens on your Windows desktop, which connects to
+# this over the network.
+#
+# Before starting, on the NAS:
+#
+#   mkdir -p /volume1/docker/forge/data
+#   mkdir -p /volume1/docker/forge/originals
+#   chown -R 1026:100 /volume1/docker/forge
+#
+# Then open http://192.168.1.x:58420
+
+name: forge
+services:
+  forge:
+    image: ghcr.io/artech7/forge:latest
+    pull_policy: always
+    container_name: FORGE-SYNOLOGY
+    init: true
+    restart: on-failure:5
+    stop_grace_period: 15s
+    healthcheck:
+      test: curl -f http://localhost:8420/api/health || exit 1
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      TZ: America/Denver
+      MEDIA_ROOTS: /media
+    volumes:
+      # Forge's own database: libraries, settings, history.
+      - /volume1/docker/forge/data:/data:rw
+      # The whole media folder, so Movies, TV Shows and Anime are all
+      # reachable through one mount. One mount keeps every move an instant
+      # rename instead of a copy.
+      - /volume1/homes/Dylan/Media:/media:rw
+      # Originals wait here before the cleanup removes them. Deliberately
+      # outside the media folder so Jellyfin and the *arrs never index them.
+      - /volume1/docker/forge/originals:/originals:rw
+    # Same as Radarr, Sonarr and SAB, so files keep the right owner.
+    user: "1026:100"
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    ports:
+      - 58420:8420
+    networks:
+      custom:
+        ipv4_address: 172.40.0.13
+
+networks:
+  custom:
+    external: true
+
+# ---------------------------------------------------------------------
+# Once it's up, add three libraries. Leave "Folder to move finished files
+# to" BLANK on all three — that converts each file where it sits, so Radarr
+# and Sonarr never lose track of it.
+#
+#   Name     Folder to watch    Move to   Keep originals in
+#   Movies   /media/Movies      (blank)   /originals
+#   TV       /media/TV Shows    (blank)   /originals
+#   Anime    /media/Anime       (blank)   /originals
+#
+# On each library, in the wizard:
+#   Naming        OFF   (Radarr and Sonarr already named everything)
+#   File type     MKV   (changing it renames the file and breaks their records)
+#
+# Then Settings > "Automatically empty the Originals folder" to clear the
+# second copy on a schedule.
+#
+# Nothing converts until you connect your desktop. On Windows:
+#
+#   .\run-node.ps1 -Server http://192.168.1.x:58420 `
+#                  -Mounts '{"server":"/media","local":"Z:/Media"}'
+#
+# where Z: is wherever Windows has the NAS share mapped.
+# ---------------------------------------------------------------------

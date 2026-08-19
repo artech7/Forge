@@ -29,4 +29,8 @@ EXPOSE 8420
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
     CMD curl -fsS http://127.0.0.1:8420/api/health || exit 1
 
-CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8420"]
+# --proxy-headers makes Forge trust X-Forwarded-For and X-Forwarded-Proto,
+# so logs show the real client rather than the proxy. Only sensible because
+# the container is not meant to be reachable except through the proxy.
+CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8420", \
+     "--proxy-headers", "--forwarded-allow-ips", "*"]

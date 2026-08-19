@@ -100,7 +100,7 @@ sys.exit(1 if problems else 0)" >/dev/null 2>&1); then
 fi
 
 MEDIA_ROOTS="$MEDIA" python -m uvicorn app:app \
-  --app-dir server --host 127.0.0.1 --port 8420 &
+  --app-dir server --host 127.0.0.1 --port 8420 --proxy-headers &
 
 sleep 3
 

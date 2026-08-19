@@ -61,6 +61,17 @@ curl -X POST http://nas:8420/api/queue -H 'Content-Type: application/json' \
        "spec":{"codec":"hevc","quality":22,"audio":"copy","container":"mkv"}}'
 ```
 
+## Behind a reverse proxy
+
+`PROXY.md`. The short version: pass websockets through or the live view never
+updates, use a subdomain rather than a subfolder, and remember Forge has no
+login of its own.
+
+## Sending changes to GitHub
+
+`UPDATING.md` — the short version is `./prep-repo.sh && git add -A && git
+commit -m "..." && git push`.
+
 ## Running it from a container registry
 
 `PUBLISHING.md` walks through putting this on GitHub so the images build
