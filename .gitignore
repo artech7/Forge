@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.venv-node/
+venv/
+
+# Forge's own data — your libraries, settings and history live here.
+# This must never be uploaded: it's yours, and it would overwrite other
+# people's settings if they ever pulled it.
+server/data/
+data/
+
+# Test material and anything Forge produced while running
+testmedia/
+testlib/
+moved/
+Movies/
+TV/
+Originals/
+*.mkv
+*.mp4
+*.m4v
+*.avi
+*.ts
+*.m2ts
+
+# Release archives
+forge.zip
+*.zip
+
+# Editors and operating systems
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp

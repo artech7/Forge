@@ -1,0 +1,44 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img"
+     aria-label="Forge">
+  <title>Forge</title>
+  <!--
+    The Fehu rune. It is the Norse F, which makes it the letter and the
+    origin at once, and it survives being 16 pixels wide, which most marks
+    do not. The strokes are drawn as tapered slabs rather than even lines
+    so they read as struck metal, and the colour cools from the tip of each
+    arm down to the base, the way a bar loses heat away from the hammer.
+  -->
+  <defs>
+    <linearGradient id="tile" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#141d2b"/>
+      <stop offset="1" stop-color="#080b11"/>
+    </linearGradient>
+
+    <linearGradient id="metal" x1="0.8" y1="0" x2="0.15" y2="1">
+      <stop offset="0" stop-color="#ffdca0"/>
+      <stop offset="0.3" stop-color="#8df5c0"/>
+      <stop offset="1" stop-color="#4ade9b"/>
+    </linearGradient>
+
+    <radialGradient id="ember" cx="0.62" cy="0.2" r="0.62">
+      <stop offset="0" stop-color="#4ade9b" stop-opacity="0.32"/>
+      <stop offset="1" stop-color="#4ade9b" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <rect width="64" height="64" rx="15" fill="url(#tile)"/>
+  <rect width="64" height="64" rx="15" fill="url(#ember)"/>
+  <rect x="0.6" y="0.6" width="62.8" height="62.8" rx="14.4" fill="none"
+        stroke="#ffffff" stroke-opacity="0.10"/>
+
+  <!-- Sized to clear the rounded corners: the arms reached into them at
+       small sizes and looked clipped. -->
+  <g fill="url(#metal)" transform="translate(2.4 6) scale(0.852)">
+    <!-- The stave, thicker at the head where it takes the blow. -->
+    <path d="M15.5 6.5 L24.5 6.5 L23.2 57.5 L17.4 57.5 Z"/>
+    <!-- Upper arm, cut at an angle as a chisel would leave it. -->
+    <path d="M21.0 17.5 L50.5 3.5 L54.0 11.0 L22.6 25.8 Z"/>
+    <!-- Lower arm, the same cut repeated further down the stave. -->
+    <path d="M20.0 34.5 L47.5 21.5 L51.0 29.0 L21.6 42.8 Z"/>
+  </g>
+</svg>

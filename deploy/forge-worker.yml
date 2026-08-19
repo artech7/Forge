@@ -1,0 +1,60 @@
+# A Forge worker: a machine that does the converting.
+#
+# Run this on a computer with a decent processor or graphics card — not on
+# the NAS. It connects out to the server, so nothing needs opening or
+# forwarding, and the server needs no configuration to accept it.
+#
+# On a Mac, don't use this. Docker on macOS can't reach VideoToolbox, so a
+# containerised worker falls back to software encoding and runs many times
+# slower. Use ./run-node.sh instead.
+
+name: forge-worker
+services:
+  worker:
+    image: ghcr.io/YOURNAME/forge-worker:latest
+    pull_policy: always
+    container_name: forge-worker
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 30s     # let a running encode wind down
+    environment:
+      TZ: America/Denver
+      # Where the Forge server is. Not localhost, unless it's this machine.
+      SERVER: http://nas.lan:58420
+      NODE_NAME: desktop
+      # How this machine's paths line up with the server's, so it can read
+      # the share directly instead of copying files over the network.
+      #   server = the path the SERVER sees
+      #   local  = the path THIS machine sees
+      MOUNTS: '[{"server":"/media","local":"/mnt/nas/media"}]'
+      # Starting point only. Change it from the node card in the interface.
+      MAX_JOBS: "1"
+    volumes:
+      - /mnt/nas/media:/mnt/nas/media
+    user: "1000:1000"
+    read_only: true
+    tmpfs:
+      # Partial encodes are written here. Needs room for the largest file
+      # you convert, so use a volume instead if memory is tight.
+      - /scratch:size=8g
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+    # --- Uncomment the block matching this machine's graphics hardware ---
+
+    # NVIDIA
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
+
+    # Intel QuickSync or AMD on Linux. Needs the render group, so also set
+    # user to something like "1000:993" where 993 is your render group id.
+    # devices:
+    #   - /dev/dri:/dev/dri

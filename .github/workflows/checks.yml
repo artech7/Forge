@@ -1,0 +1,38 @@
+# Runs the same checks used during development, so a broken commit is
+# caught before an image is built from it.
+
+name: Checks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install FFmpeg
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+
+      - name: Install dependencies
+        run: pip install -r server/requirements.txt -r worker/requirements.txt
+
+      - name: Every server function works
+        run: python check-server.py
+
+      - name: Interface renders
+        run: node check-ui.js
+
+      - name: Shell scripts parse
+        run: for f in *.sh; do bash -n "$f"; done

@@ -1,0 +1,46 @@
+# The Forge server. Run this on the NAS.
+#
+# It does NOT transcode. All it does is watch folders, decide what needs
+# doing, keep the queue, and move finished files into place. The heavy work
+# happens on separate machines running the worker — see worker/README.md.
+#
+#   docker compose up -d
+#
+# Then open http://<nas-address>:8420
+
+services:
+  forge:
+    build: ./server
+    container_name: forge
+    ports:
+      - "8420:8420"
+    environment:
+      MEDIA_ROOTS: /media
+    volumes:
+      - ./data:/app/data
+      # Your media. The paths you type into Forge are the paths inside the
+      # container, so a watch folder here would be /media/inbox.
+      - /volume1/media:/media
+    restart: unless-stopped
+
+  # ------------------------------------------------------------------
+  # Optional: let the NAS convert files as well as coordinate them.
+  #
+  # Most NAS hardware is slow at this and it will tie the box up for hours,
+  # so it is off by default. Uncomment only if you want it, and set the
+  # number of files it handles at once from the node card in the interface.
+  # ------------------------------------------------------------------
+  # worker-nas:
+  #   build: ./worker
+  #   container_name: forge-worker-nas
+  #   environment:
+  #     SERVER: http://forge:8420
+  #     NODE_NAME: nas
+  #     MAX_JOBS: "1"
+  #     MOUNTS: '[{"server":"/media","local":"/media"}]'
+  #   devices:
+  #     - /dev/dri:/dev/dri          # Intel QuickSync, if the NAS has it
+  #   volumes:
+  #     - /volume1/media:/media
+  #   depends_on: [forge]
+  #   restart: unless-stopped

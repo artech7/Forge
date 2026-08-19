@@ -1,0 +1,45 @@
+# Forge server, for Dockhand or plain docker compose.
+#
+# Replace YOURNAME with your GitHub username, and the media path with your
+# share. This runs the server only — it watches folders and keeps the queue,
+# and never converts anything. Converting happens on separate machines
+# running the worker.
+
+name: forge
+services:
+  forge:
+    image: ghcr.io/YOURNAME/forge:latest
+    pull_policy: always
+    container_name: forge
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 15s
+    ports:
+      - "58420:8420"
+    environment:
+      TZ: America/Denver
+      # Folders Forge is allowed to look at, inside the container.
+      MEDIA_ROOTS: /media
+    volumes:
+      - forge-data:/data
+      # Your media. Left side is the path on the NAS, right side is the path
+      # you type into Forge. Must be writable — Forge moves finished files.
+      - /volume1/media:/media
+    # Match the account that owns your media, or finished files end up owned
+    # by the wrong user. On Synology, find it with `id yourusername`.
+    user: "1026:100"
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8420/api/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+
+volumes:
+  forge-data:

@@ -1,0 +1,1977 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Forge</title>
+<link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+<link rel="alternate icon" href="/static/favicon.ico" sizes="16x16 32x32 48x48">
+<link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
+<meta name="theme-color" content="#0a0e14">
+<meta name="description" content="Distributed video transcoding for a mixed-hardware homelab.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;800&family=Chivo+Mono:wght@300;400;600&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --ink:#0a0e14;
+    --ink-2:#111722;
+    --glass:rgba(255,255,255,.055);
+    --edge:rgba(255,255,255,.11);
+    --text:#e8edf5;
+    --muted:#7f8ea6;
+    --signal:#4ade9b;   /* encoding, healthy */
+    --amber:#f2b03d;    /* queued, waiting */
+    --fault:#ff6b6b;    /* failed */
+    --idle:#5b6b85;
+    --r:18px;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%}
+  body{
+    background:
+      radial-gradient(120% 80% at 12% -10%, #1a2740 0%, transparent 55%),
+      radial-gradient(100% 70% at 100% 0%, #16283a 0%, transparent 50%),
+      var(--ink);
+    color:var(--text);
+    font-family:Archivo,system-ui,sans-serif;
+    -webkit-font-smoothing:antialiased;
+    padding:22px 18px 60px;
+  }
+  .wrap{max-width:1180px;margin:0 auto}
+
+  header{display:flex;align-items:baseline;gap:14px;flex-wrap:wrap;margin-bottom:26px}
+  h1{font-size:22px;font-weight:800;letter-spacing:-.02em;margin:0}
+  .tag{font-family:'Chivo Mono',monospace;font-size:11px;letter-spacing:.14em;
+       text-transform:uppercase;color:var(--muted)}
+  .pill{margin-left:auto;display:flex;align-items:center;gap:7px;
+        font-family:'Chivo Mono',monospace;font-size:11px;color:var(--muted)}
+  .dot{width:7px;height:7px;border-radius:50%;background:var(--fault);
+       transition:background .3s}
+  .dot.live{background:var(--signal);box-shadow:0 0 10px var(--signal)}
+
+  .glass{
+    background:var(--glass);
+    border:1px solid var(--edge);
+    border-radius:var(--r);
+    backdrop-filter:blur(22px) saturate(150%);
+    -webkit-backdrop-filter:blur(22px) saturate(150%);
+  }
+
+  .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));
+         gap:12px;margin-bottom:24px}
+  .stat{padding:16px 18px}
+  .stat .k{font-family:'Chivo Mono',monospace;font-size:10px;letter-spacing:.13em;
+           text-transform:uppercase;color:var(--muted);margin-bottom:7px}
+  .stat .v{font-size:26px;font-weight:800;letter-spacing:-.03em;
+           font-variant-numeric:tabular-nums}
+  .stat .v small{font-size:13px;font-weight:500;color:var(--muted);margin-left:3px}
+
+  h2{font-size:12px;font-family:'Chivo Mono',monospace;font-weight:600;
+     letter-spacing:.16em;text-transform:uppercase;color:var(--muted);
+     margin:30px 0 12px}
+
+  .nodes{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:14px}
+  .node{padding:16px 18px;position:relative;overflow:hidden}
+  .node .name{font-weight:600;font-size:15px;display:flex;align-items:center;gap:8px}
+  .node .state{font-family:'Chivo Mono',monospace;font-size:10px;
+               letter-spacing:.1em;text-transform:uppercase;color:var(--idle)}
+  .node.busy .state{color:var(--signal)}
+  .caps{display:flex;flex-wrap:wrap;gap:5px;margin-top:11px}
+  .cap{font-family:'Chivo Mono',monospace;font-size:10px;padding:3px 7px;
+       border-radius:6px;background:rgba(255,255,255,.06);color:var(--muted);
+       border:1px solid var(--edge)}
+  .cap.hw{color:var(--signal);border-color:rgba(74,222,155,.28);
+          background:rgba(74,222,155,.09)}
+  .cap.sw{color:var(--amber);border-color:rgba(242,176,61,.35);
+          background:rgba(242,176,61,.1)}
+  .node .note{margin-top:10px;font-size:11.5px;line-height:1.5;color:var(--amber)}
+  .node .fps{font-family:'Chivo Mono',monospace;font-size:10px;opacity:.7;
+             margin-left:4px}
+  .slots{display:flex;align-items:center;gap:10px;margin-top:13px;
+         padding-top:13px;border-top:1px solid var(--edge)}
+  .slots .lbl{font-size:12.5px;color:var(--muted);flex:1;line-height:1.4}
+  .slots .lbl b{color:var(--text);font-weight:600}
+  .stepper{display:flex;align-items:center;gap:0;border:1px solid var(--edge);
+           border-radius:10px;overflow:hidden;flex:none}
+  .stepper button{border:0;border-radius:0;padding:6px 12px;font-size:16px;
+                  line-height:1;background:rgba(255,255,255,.05)}
+  .stepper button:disabled{opacity:.3;cursor:default}
+  .stepper .n{padding:0 13px;font-family:'Chivo Mono',monospace;font-size:14px;
+              font-variant-numeric:tabular-nums;min-width:34px;text-align:center}
+  .slots .tip{font-size:11.5px;color:var(--amber);margin-top:7px;line-height:1.45}
+
+  /* Signature: a live scope trace of encode throughput per node. */
+  .scope{height:34px;width:100%;margin-top:13px;display:block;opacity:.9}
+
+  .queue{display:flex;flex-direction:column;gap:9px}
+  .job{padding:13px 16px;display:grid;grid-template-columns:1fr auto;
+       gap:4px 14px;align-items:center}
+  .job .file{font-size:13.5px;overflow:hidden;text-overflow:ellipsis;
+             white-space:nowrap}
+  .job .meta{font-family:'Chivo Mono',monospace;font-size:10.5px;color:var(--muted);
+             grid-column:1;display:flex;gap:10px;flex-wrap:wrap}
+  .job .pct{font-family:'Chivo Mono',monospace;font-size:15px;font-weight:600;
+            font-variant-numeric:tabular-nums;grid-row:1/3}
+  .bar{grid-column:1/-1;height:3px;border-radius:2px;
+       background:rgba(255,255,255,.08);overflow:hidden;margin-top:8px}
+  .bar i{display:block;height:100%;background:var(--signal);
+         border-radius:2px;transition:width .5s ease}
+  .job .acts{grid-column:1/-1;display:flex;gap:7px;margin-top:10px}
+  .job .acts button{padding:5px 11px;font-size:11.5px;border-radius:9px}
+  .st-queued .pct{color:var(--amber)}
+  .st-running .pct{color:var(--signal)}
+  .st-failed .pct{color:var(--fault)}
+  .st-done .pct{color:var(--idle)}
+
+  .tabs{display:flex;gap:6px;margin-bottom:14px;flex-wrap:wrap}
+  .tabs button{padding:7px 14px;font-size:13px;border-radius:10px;
+    display:flex;align-items:center;gap:7px}
+  .tabs button.on{border-color:var(--signal);background:rgba(74,222,155,.12);
+    color:var(--text)}
+  .tabs .badge{font-family:'Chivo Mono',monospace;font-size:10.5px;
+    padding:1px 6px;border-radius:5px;background:rgba(255,255,255,.1);
+    font-variant-numeric:tabular-nums}
+  .tabs button.on .badge{background:rgba(74,222,155,.22);color:var(--signal)}
+  .tabs .badge.bad{background:rgba(255,107,107,.18);color:var(--fault)}
+
+  .pager{display:flex;align-items:center;gap:9px;margin-top:14px;flex-wrap:wrap}
+  .pager .grow{flex:1}
+  .pager .where{font-family:'Chivo Mono',monospace;font-size:11.5px;
+                color:var(--muted)}
+  .pager select{width:auto;padding:6px 9px;font-size:12.5px}
+  .pager button{padding:6px 12px;font-size:12.5px}
+  .pager button:disabled{opacity:.35;cursor:default}
+  .job .err{grid-column:1/-1;font-size:12px;color:var(--fault);line-height:1.5;
+            margin-top:7px;word-break:break-word}
+  .job .saved{font-family:'Chivo Mono',monospace;font-size:11px;
+              color:var(--signal)}
+  .job .grew{font-family:'Chivo Mono',monospace;font-size:11px;color:var(--amber)}
+  .job .live{font-family:'Chivo Mono',monospace;font-size:11px;color:var(--muted)}
+  .job .note{grid-column:1/-1;font-size:12px;color:var(--amber);line-height:1.5;
+             margin-top:7px}
+  .job .retry{grid-column:1/-1;display:flex;gap:7px;align-items:center;
+              margin-top:10px;flex-wrap:wrap}
+  .job .retry select{width:auto;padding:6px 10px;font-size:12.5px}
+  .st-bloated .pct{color:var(--amber)}
+  .tabs .badge.warn-badge{background:rgba(242,176,61,.2);color:var(--amber)}
+
+  .empty{padding:34px 20px;text-align:center;color:var(--muted);font-size:14px}
+  .empty b{display:block;color:var(--text);font-weight:600;margin-bottom:5px}
+
+  .actions{display:flex;gap:9px;flex-wrap:wrap;margin-top:14px}
+  button{font-family:Archivo,sans-serif;font-size:13px;font-weight:600;
+         color:var(--text);background:rgba(255,255,255,.08);
+         border:1px solid var(--edge);border-radius:11px;padding:9px 16px;
+         cursor:pointer;transition:background .18s,transform .18s}
+  button:hover{background:rgba(255,255,255,.14)}
+  button:active{transform:scale(.97)}
+  button:focus-visible{outline:2px solid var(--signal);outline-offset:2px}
+
+
+  /* libraries */
+  .libs{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:14px}
+  .lib{padding:17px 19px}
+  .lib h3{margin:0 0 3px;font-size:16px;font-weight:600}
+  .lib .flow{font-size:12.5px;color:var(--muted);line-height:1.65;margin:9px 0 0}
+  .lib .flow b{color:var(--text);font-weight:500}
+  .lib .recipe{margin-top:11px;font-family:'Chivo Mono',monospace;font-size:10.5px;
+               color:var(--muted);letter-spacing:.04em}
+  .lib .row{display:flex;gap:8px;margin-top:13px}
+  .lib button{padding:6px 12px;font-size:12px}
+  .sec{font-size:11px;color:var(--muted)}
+
+
+  .banner{padding:14px 16px;border-radius:13px;margin-bottom:18px;
+    background:rgba(255,107,107,.12);border:1px solid rgba(255,107,107,.4);
+    color:#ffc9c9;font-size:13.5px;line-height:1.6}
+  .banner b{color:#fff}
+  .banner code{font-family:'Chivo Mono',monospace;font-size:12.5px;
+    background:rgba(0,0,0,.3);padding:2px 6px;border-radius:5px}
+  .banner ul{margin:8px 0 0;padding-left:20px}
+
+  .sched{display:flex;align-items:center;gap:8px;font-family:'Chivo Mono',monospace;
+         font-size:10.5px;letter-spacing:.1em;text-transform:uppercase;
+         color:var(--muted);margin-bottom:18px}
+  .sched .lamp{width:7px;height:7px;border-radius:50%;background:var(--amber)}
+  .sched .lamp.on{background:var(--signal);box-shadow:0 0 9px var(--signal)}
+  .days{display:flex;gap:5px;flex-wrap:wrap;margin-top:7px}
+  .days label{flex:1;min-width:40px;text-align:center;padding:8px 0;font-size:12px;
+    border:1px solid var(--edge);border-radius:9px;cursor:pointer;
+    background:rgba(255,255,255,.03)}
+  .days label.on{border-color:var(--signal);background:rgba(74,222,155,.12)}
+  .days input{display:none}
+  .pair{display:flex;gap:10px}
+  .pair label{flex:1}
+  .toggle{display:flex;align-items:center;gap:11px;padding:13px 15px;
+    border:1px solid var(--edge);border-radius:13px;margin-bottom:14px;cursor:pointer;
+    background:rgba(255,255,255,.03)}
+  .toggle.on{border-color:var(--signal);background:rgba(74,222,155,.08)}
+  .toggle .sw{width:38px;height:22px;border-radius:11px;flex:none;
+    background:rgba(255,255,255,.14);position:relative;transition:background .2s}
+  .toggle.on .sw{background:var(--signal)}
+  .toggle .sw::after{content:'';position:absolute;top:3px;left:3px;width:16px;
+    height:16px;border-radius:50%;background:#fff;transition:transform .2s}
+  .toggle.on .sw::after{transform:translateX(16px)}
+  .toggle .tt{font-size:14px;font-weight:600}
+  .toggle .td{font-size:12.5px;color:var(--muted);line-height:1.5;margin-top:2px}
+
+  /* wizard */
+  .veil{position:fixed;inset:0;background:rgba(4,7,12,.72);backdrop-filter:blur(7px);
+        display:none;align-items:center;justify-content:center;padding:18px;z-index:50}
+  .veil.open{display:flex}
+  .wiz{width:min(620px,100%);max-height:88vh;overflow-y:auto;padding:26px}
+  .wiz h3{margin:0 0 5px;font-size:20px;font-weight:800;letter-spacing:-.02em}
+  .wiz .lead{color:var(--muted);font-size:13.5px;line-height:1.6;margin:0 0 20px}
+  .steps{display:flex;gap:5px;margin-bottom:22px}
+  .steps i{flex:1;height:3px;border-radius:2px;background:rgba(255,255,255,.1);
+           cursor:pointer;transition:background .15s;position:relative}
+  .steps i::after{content:'';position:absolute;inset:-8px 0;}
+  .steps i:hover{background:rgba(255,255,255,.3)}
+  .steps i.on{background:var(--signal)}
+  .steps i.on:hover{background:#7af0b8}
+
+  /* Review rows jump straight to the step that owns them. */
+  .review-row{display:flex;gap:12px;align-items:baseline;padding:8px 11px;
+    margin:0 -11px;border-radius:9px;cursor:pointer;transition:background .15s}
+  .review-row:hover{background:rgba(255,255,255,.06)}
+  .review-row:hover .edit{opacity:1}
+  .review-row b{color:var(--muted);font-weight:400;min-width:108px;flex:none;
+                font-size:13px}
+  .review-row .val{flex:1;font-size:13.5px;line-height:1.5}
+  .review-row .edit{opacity:0;font-size:11.5px;color:var(--signal);flex:none;
+                    transition:opacity .15s}
+  @media (max-width:560px){ .review-row .edit{opacity:.6} }
+  label.fld{display:block;margin-bottom:16px}
+  label.fld span{display:block;font-size:13px;font-weight:600;margin-bottom:3px}
+  label.fld em{display:block;font-style:normal;font-size:12px;color:var(--muted);
+               margin-bottom:7px;line-height:1.5}
+  input[type=text],select{width:100%;padding:11px 13px;font-size:14px;
+    font-family:Archivo,sans-serif;color:var(--text);
+    background:rgba(255,255,255,.06);border:1px solid var(--edge);border-radius:11px}
+  input[type=text]:focus,select:focus{outline:2px solid var(--signal);outline-offset:1px}
+  select option{background:#141b26}
+
+  .choice{display:block;padding:13px 15px;border:1px solid var(--edge);
+          border-radius:13px;margin-bottom:9px;cursor:pointer;
+          background:rgba(255,255,255,.03);transition:border-color .15s,background .15s}
+  .choice:hover{background:rgba(255,255,255,.07)}
+  .choice.sel{border-color:var(--signal);background:rgba(74,222,155,.09)}
+  .choice input{position:absolute;opacity:0;pointer-events:none}
+  .choice .t{font-weight:600;font-size:14.5px;display:flex;align-items:center;
+             gap:8px;flex-wrap:wrap}
+  .choice .badge{font-family:'Chivo Mono',monospace;font-size:9.5px;
+                 letter-spacing:.1em;text-transform:uppercase;color:var(--signal);
+                 border:1px solid rgba(74,222,155,.35);border-radius:5px;padding:2px 6px}
+  .choice .alt{font-weight:400;color:var(--muted);font-size:12.5px}
+  .choice .d{font-size:12.5px;color:var(--muted);line-height:1.55;margin-top:5px}
+  .choice .w{font-size:12.5px;color:var(--text);line-height:1.55;margin-top:5px;
+             opacity:.82}
+
+  .warn{padding:12px 14px;border-radius:11px;margin-bottom:10px;font-size:13px;
+        line-height:1.55;background:rgba(242,176,61,.11);
+        border:1px solid rgba(242,176,61,.32);color:#f6d79a}
+  .review{font-size:13.5px;line-height:1.9}
+  .review b{color:var(--muted);font-weight:400;display:inline-block;min-width:112px}
+  .wiz-nav{display:flex;gap:9px;margin-top:22px}
+  .wiz-nav .grow{flex:1}
+  .primary{background:var(--signal);color:#06120c;border-color:transparent}
+  .primary:hover{background:#63e8ac}
+
+  @media (prefers-reduced-motion:reduce){*{transition:none!important}}
+  @media (max-width:560px){ body{padding:16px 12px 50px} h1{font-size:19px} }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Forge</h1>
+    <span class="tag">distributed transcoding</span>
+    <span class="pill"><span class="dot" id="dot"></span><span id="conn">connecting</span></span>
+  </header>
+
+  <div id="banner"></div>
+  <div class="sched"><span class="lamp" id="lamp"></span><span id="schedtext">—</span></div>
+
+  <div class="stats">
+    <div class="glass stat"><div class="k">Space reclaimed</div><div class="v" id="s-saved">—</div></div>
+    <div class="glass stat"><div class="k">Completed</div><div class="v" id="s-done">—</div></div>
+    <div class="glass stat"><div class="k">In queue</div><div class="v" id="s-queued">—</div></div>
+    <div class="glass stat"><div class="k">Failed</div><div class="v" id="s-failed">—</div></div>
+  </div>
+
+  <h2>Libraries</h2>
+  <div class="libs" id="libs"></div>
+
+  <h2>Nodes</h2>
+  <div class="nodes" id="nodes"></div>
+
+  <h2>Queue</h2>
+  <div class="tabs" id="jobtabs"></div>
+  <div class="queue" id="queue"></div>
+  <div class="pager" id="pager"></div>
+
+  <div class="actions">
+    <button class="primary" onclick="openWizard()">Add a library</button>
+    <button onclick="scanAll()">Check folders now</button>
+    <button onclick="openSettings()">Settings</button>
+    <button onclick="sweepNow()">Clean up Originals</button>
+  </div>
+</div>
+
+<div class="veil" id="veil">
+  <div class="glass wiz" id="wiz"></div>
+</div>
+
+<script>
+const HW = ['nvenc','qsv','amf','vaapi','videotoolbox'];
+const traces = {};   // node id -> recent fps samples
+
+const fmtBytes = b => {
+  if (!b) return '0<small>GB</small>';
+  const gb = b / 1e9;
+  return gb >= 1 ? gb.toFixed(1) + '<small>GB</small>'
+                 : (b / 1e6).toFixed(0) + '<small>MB</small>';
+};
+
+function drawScope(canvas, samples) {
+  const ctx = canvas.getContext('2d');
+  const w = canvas.width = canvas.offsetWidth * 2;
+  const h = canvas.height = 68;
+  ctx.clearRect(0, 0, w, h);
+  if (!samples.length) return;
+  const peak = Math.max(...samples, 10);
+  ctx.beginPath();
+  samples.forEach((v, i) => {
+    const x = (i / Math.max(samples.length - 1, 1)) * w;
+    const y = h - (v / peak) * (h - 8) - 4;
+    i ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
+  });
+  ctx.strokeStyle = '#4ade9b';
+  ctx.lineWidth = 3;
+  ctx.lineJoin = 'round';
+  ctx.stroke();
+  ctx.lineTo(w, h); ctx.lineTo(0, h); ctx.closePath();
+  const grad = ctx.createLinearGradient(0, 0, 0, h);
+  grad.addColorStop(0, 'rgba(74,222,155,.28)');
+  grad.addColorStop(1, 'rgba(74,222,155,0)');
+  ctx.fillStyle = grad;
+  ctx.fill();
+}
+
+function render(state) {
+  const st = state.stats || {};
+  document.getElementById('s-saved').innerHTML =
+    fmtBytes(Math.max(0, (st.before || 0) - (st.after || 0)));
+  document.getElementById('s-done').textContent = st.done ?? 0;
+  document.getElementById('s-queued').textContent = st.queued ?? 0;
+  document.getElementById('s-failed').textContent = st.failed ?? 0;
+
+  const running = {};
+  (state.jobs || []).forEach(j => {
+    if (j.state === 'running' && j.node_id) running[j.node_id] = j;
+  });
+  window.__state = state;
+
+  const nodesEl = document.getElementById('nodes');
+  if (!state.nodes.length) {
+    // Nothing converts until a worker connects, so this is the one empty
+    // state that has to explain itself properly.
+    nodesEl.innerHTML = `<div class="glass empty" style="text-align:left">
+      <b style="text-align:center;display:block">No machines are connected</b>
+      <div style="max-width:520px;margin:0 auto;line-height:1.65">
+        Forge doesn't convert anything itself \u2014 it watches folders, works
+        out what needs doing, and files the results. The converting happens on
+        whichever computers you connect to it.
+        <div style="margin-top:12px">On a Mac or Linux machine, copy the Forge
+        folder across and run:</div>
+        <div style="font-family:'Chivo Mono',monospace;font-size:12px;
+             background:rgba(0,0,0,.3);padding:9px 12px;border-radius:8px;
+             margin:8px 0;word-break:break-all">./run-node.sh ${location.origin}</div>
+        <div>It appears here within a few seconds. Add as many as you like.</div>
+      </div></div>`;
+  } else {
+    nodesEl.innerHTML = state.nodes.map(n => {
+      const job = running[n.id];
+      const recipes = n.recipes || {}, marks = n.benchmarks || {};
+      const marks10 = n.benchmarks_10bit || {};
+      // A hardware encoder that quietly drops to software for 10-bit is the
+      // most confusing cliff there is: the badge says 170 fps, one file runs
+      // at 5. Worth stating outright.
+      const slow10 = Object.entries(marks10)
+        .filter(([e, ten]) => marks[e] && ten < marks[e] * 0.4)
+        .map(([e, ten]) => ({enc: e, ten, eight: marks[e]}));
+      const softwareFallback = Object.entries(recipes)
+        .filter(([, r]) => (r || '').includes('SOFTWARE')).map(([e]) => e);
+      const caps = (n.encoders || []).map(e => {
+        const isHw = HW.some(h => e.endsWith(h));
+        const isSw = softwareFallback.includes(e);
+        const ten = marks10[e];
+        const tenSlow = ten && marks[e] && ten < marks[e] * 0.4;
+        const fps = marks[e]
+          ? `<span class="fps">${marks[e]}fps${ten
+              ? ` / ${ten}<span style="opacity:.7">×10bit</span>` : ''}</span>`
+          : '';
+        return `<span class="cap ${isSw || tenSlow ? (isSw ? 'sw' : 'hw') : isHw ? 'hw' : ''}"
+                >${e}${fps}</span>`;
+      }).join('');
+      // Name the encoder that will actually be used, so a slow fallback
+      // sitting in the list doesn't imply jobs are going to it.
+      const fastest = Object.entries(marks).sort((a,b) => b[1]-a[1])[0];
+      const notes = [];
+      if (softwareFallback.length)
+        notes.push(`${softwareFallback.join(', ')} is running in software, not
+          on the graphics hardware. Jobs go to the fastest encoder available,
+          so this one won't be used unless nothing else fits.`);
+      for (const s of slow10)
+        notes.push(`${s.enc} manages ${s.eight}fps at 8-bit but only
+          ${s.ten}fps at 10-bit \u2014 the hardware is giving up and using
+          software for 10-bit video. Set a library's colour depth to 8-bit
+          if 10-bit files crawl.`);
+      const note = notes.map(t => `<div class="note">${t}</div>`).join('');
+      const mine = (state.jobs || []).filter(
+        j => j.node_id === n.id && j.state === 'running');
+      const totalFps = mine.reduce((sum, j) => sum + (j.fps || 0), 0);
+      const label = !n.online ? 'offline'
+                  : mine.length > 1
+                    ? `encoding ${mine.length} · ${totalFps.toFixed(0)} fps`
+                    : mine.length ? `encoding · ${totalFps.toFixed(0)} fps`
+                    : 'idle';
+      return `<div class="glass node ${job ? 'busy' : ''}">
+        <div class="name">${n.name}<span class="state">${label}</span></div>
+        <div class="caps">${caps || '<span class="cap">no encoders</span>'}</div>
+        ${note}
+        <canvas class="scope" data-node="${n.id}"></canvas>
+        ${slotControl(n)}
+      </div>`;
+    }).join('');
+
+    state.nodes.forEach(n => {
+      const total = (state.jobs || [])
+        .filter(j => j.node_id === n.id && j.state === 'running')
+        .reduce((sum, j) => sum + (j.fps || 0), 0);
+      traces[n.id] = (traces[n.id] || []).concat(total).slice(-48);
+      const c = nodesEl.querySelector(`canvas[data-node="${n.id}"]`);
+      if (c) drawScope(c, traces[n.id]);
+    });
+  }
+
+  // An out-of-date server file breaks features in ways that look like bugs,
+  // so it's said plainly rather than left in the terminal log.
+  const problems = state.module_problems || [];
+  document.getElementById('banner').innerHTML = problems.length
+    ? `<div class="banner"><b>Some server files are out of date.</b>
+        Parts of Forge will not work until they're replaced.
+        <ul>${problems.map(p => `<li>${p}</li>`).join('')}</ul>
+        <div style="margin-top:10px">Unzip the release over this folder,
+        making sure it replaces existing files, then restart:<br>
+        <code>cd ~/Downloads &amp;&amp; unzip -o forge.zip</code></div></div>`
+    : '';
+
+  const lamp = document.getElementById('lamp');
+  lamp.classList.toggle('on', state.schedule_open !== false);
+  document.getElementById('schedtext').textContent =
+    (state.schedule_open === false ? 'Paused — ' : '') +
+    (state.schedule_text || 'Running any time') +
+    (state.originals && state.originals.n
+      ? `  \u00b7  ${state.originals.n} originals held (${(state.originals.bytes/1e9).toFixed(1)} GB)`
+      : '') +
+    (state.cleanup_text && state.originals && state.originals.n
+      ? `  \u00b7  ${state.cleanup_text.toLowerCase()}` : '');
+
+  renderLibs(state.libraries);
+
+  renderTabs(state.counts || {});
+  if (view.name === 'active') renderJobs(state.jobs || [], null);
+  else if (!view.loaded) loadView();
+}
+
+
+/* ------------------------------------------------------- libraries */
+const ORIGINAL_LABEL = {
+  archive: 'kept in an Originals folder',
+  delete: 'deleted',
+  keep: 'left in place',
+};
+
+function renderLibs(libs) {
+  const el = document.getElementById('libs');
+  if (!libs || !libs.length) {
+    el.innerHTML = `<div class="glass empty"><b>No libraries yet</b>
+      Add one and Forge will watch a folder for new files, convert them,
+      and file them where you want.</div>`;
+    return;
+  }
+  el.innerHTML = libs.map(l => {
+    const p = l.profile || {};
+    const n = l.naming || {};
+    const dest = l.output_path
+      ? `moves them to <b>${l.output_path}</b>`
+      : 'converts them <b>where they sit</b>';
+    const recipe = [
+      (p.video_codec || 'hevc').toUpperCase(),
+      (p.container || 'mkv').toUpperCase(),
+      (p.audio_codec || 'aac').toUpperCase(),
+      p.subtitle_mode === 'strip' ? 'no subs'
+        : p.subtitle_mode === 'forced' ? 'forced subs'
+        : p.subtitle_mode === 'languages' ? (p.subtitle_languages || []).join('/')
+        : 'all subs',
+      n.enabled ? `renamed for ${n.scheme || 'jellyfin'}` : null,
+    ].filter(Boolean).join(' · ');
+    const safeName = String(l.name).replace(/'/g, "\\'");
+    return `<div class="glass lib">
+      <h3>${l.name}</h3>
+      <div class="sec">${l.enabled ? 'Watching' : 'Paused'}</div>
+      <p class="flow">Watches <b>${l.watch_path}</b>, then ${dest}.<br>
+        Originals: <b>${ORIGINAL_LABEL[l.original_action] || l.original_action}</b></p>
+      <div class="recipe">${recipe}</div>
+      <div class="row">
+        <button onclick="openWizard(${l.id})">Edit</button>
+        <button onclick="scanOne(${l.id})">Check now</button>
+        <button onclick="toggleLib(${l.id},${l.enabled ? 0 : 1})">${l.enabled ? 'Pause' : 'Resume'}</button>
+        <button onclick="removeLib(${l.id},'${safeName}')">Remove</button>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+/* ------------------------------------------------ concurrency per node */
+// Held between renders so the number responds to a click immediately,
+// rather than waiting for the server to echo it back over the websocket.
+const pendingSlots = {};
+
+function slotControl(n) {
+  const server = n.slots == null ? (n.max_jobs || 1) : n.slots;
+  const slots = pendingSlots[n.id] != null ? pendingSlots[n.id] : server;
+  if (pendingSlots[n.id] != null && server === pendingSlots[n.id])
+    delete pendingSlots[n.id];
+
+  const cpus = n.cpus || 0;
+  const usingHardware = Object.keys(n.benchmarks || {}).some(
+    e => HW.some(h => e.endsWith(h)));
+
+  // More is not always faster. Hardware encoders have a fixed number of
+  // engines, so past two the jobs just queue inside the driver; software
+  // encoders already use every core for a single job.
+  let tip = '';
+  if (slots === 0)
+    tip = 'Set this above zero to let it start converting again.';
+  else if (slots > 2 && usingHardware)
+    tip = 'Hardware encoders rarely get faster past 2 at once — the chip '
+        + 'has a fixed number of engines.';
+  else if (cpus && slots > Math.max(1, Math.floor(cpus / 4)) && !usingHardware)
+    tip = `Software encoding already uses all ${cpus} cores for one file. `
+        + 'Running several at once mostly just slows each of them down.';
+
+  const label = slots === 0 ? '<b>Not converting</b> \u2014 this machine is '
+      + 'connected but won\'t be given any work'
+    : slots === 1 ? '<b>1</b> file at a time'
+    : `<b>${slots}</b> files at once`;
+
+  return `<div class="slots">
+    <div class="lbl">${label}${tip ? `<div class="tip">${tip}</div>` : ''}</div>
+    <div class="stepper" data-node="${n.id}">
+      <button onclick="setSlots('${n.id}',${slots - 1})"
+        ${slots <= 0 ? 'disabled' : ''} aria-label="Fewer at once">&minus;</button>
+      <span class="n">${slots}</span>
+      <button onclick="setSlots('${n.id}',${slots + 1})"
+        ${slots >= 16 ? 'disabled' : ''} aria-label="More at once">+</button>
+    </div>
+  </div>`;
+}
+
+async function setSlots(id, value) {
+  const wanted = Math.max(0, Math.min(16, value));
+  pendingSlots[id] = wanted;
+  const box = document.querySelector(`.stepper[data-node="${id}"] .n`);
+  if (box) box.textContent = wanted;
+
+  try {
+    const r = await fetch(`/api/nodes/${id}/slots`, {method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({slots: wanted})});
+    if (!r.ok) {
+      delete pendingSlots[id];
+      alert(r.status === 404
+        ? 'This version of the server does not support changing the number '
+        + 'of files yet. Update the server files and restart Forge.'
+        : `Could not change it (error ${r.status}).`);
+      return;
+    }
+    pendingSlots[id] = (await r.json()).slots;
+  } catch (e) {
+    delete pendingSlots[id];
+    alert('Could not reach the server to change that.');
+  }
+}
+
+/* ------------------------------------------------------- job actions */
+async function retryJob(id) {
+  await fetch(`/api/jobs/${id}/retry`, {method:'POST'});
+  if (view.name !== 'active') loadView();
+}
+
+async function requeueJob(id, state) {
+  const warning = state === 'running'
+    ? 'This job is part-way through. Restarting throws away that progress and '
+    + 'starts over — worth it only if it would now use a faster encoder.\n\nRestart?'
+    : 'Put this job back in the queue?';
+  if (!confirm(warning)) return;
+  await fetch(`/api/jobs/${id}/retry`, {method:'POST'});
+  if (view.name !== 'active') loadView();
+}
+
+async function cancelJob(id) {
+  if (!confirm('Cancel this job? The original file is left untouched.')) return;
+  await fetch(`/api/jobs/${id}/cancel`, {method:'POST'});
+  if (view.name !== 'active') loadView();
+}
+
+/* --------------------------------------------------------- job views */
+const view = {name:'active', page:1, perPage:20, loaded:false, counts:{}};
+
+function renderTabs(counts) {
+  view.counts = counts;
+  const defs = [
+    ['active', 'In progress', counts.active || 0, ''],
+    ['failed', 'Failed', counts.failed || 0, 'bad'],
+    ['bloated', 'Got bigger', counts.bloated || 0, 'warn-badge'],
+    ['done', 'Completed', counts.done || 0, ''],
+  ];
+  document.getElementById('jobtabs').innerHTML = defs.map(([id, label, n, cls]) =>
+    `<button class="${view.name === id ? 'on' : ''}" onclick="switchView('${id}')">
+      ${label}<span class="badge ${n ? cls : ''}">${n}</span></button>`
+  ).join('');
+}
+
+function switchView(name) {
+  view.name = name;
+  view.page = 1;
+  view.loaded = false;
+  renderTabs(view.counts);
+  if (name === 'active') {
+    renderJobs((window.__state || {}).jobs || [], null);
+    document.getElementById('pager').innerHTML = '';
+  } else {
+    loadView();
+  }
+}
+
+async function loadView() {
+  const el = document.getElementById('queue');
+  el.innerHTML = '<div class="glass empty">Loading…</div>';
+  try {
+    const r = await (await fetch(
+      `/api/jobs?view=${view.name}&page=${view.page}&per_page=${view.perPage}`)).json();
+    view.loaded = true;
+    view.page = r.page;
+    renderTabs(r.counts || view.counts);
+    renderJobs(r.jobs, r);
+  } catch (e) {
+    el.innerHTML = '<div class="glass empty">Could not load that list.</div>';
+  }
+}
+
+const ACTION_LABEL = {audio_only:'audio only', video_only:'video only',
+                     remux:'repackage', full:'full convert', skip:'—'};
+
+function renderJobs(jobs, meta) {
+  const el = document.getElementById('queue');
+  if (!jobs.length) {
+    el.innerHTML = `<div class="glass empty">${
+      view.name === 'failed' ? '<b>Nothing has failed</b>All good.'
+      : view.name === 'bloated' ? '<b>Nothing came out bigger</b>Files that grow instead of shrinking are listed here.'
+      : view.name === 'done' ? '<b>Nothing finished yet</b>Completed conversions collect here.'
+      : '<b>Nothing queued</b>Drop a file into a watch folder and it will appear.'}</div>`;
+    renderPager(meta);
+    return;
+  }
+
+  el.innerHTML = jobs.map(j => {
+    const name = j.path.split('/').pop();
+    const bits = [ACTION_LABEL[j.spec.action] || (j.spec.codec || '').toUpperCase()];
+    if (!['audio_only','remux'].includes(j.spec.action)) bits.push('q' + j.spec.quality);
+    if (j.transport) bits.push(j.transport === 'stream' ? 'streamed' : 'mounted');
+    if (j.encoder_used) bits.push(j.encoder_used);
+    if (j.speed) bits.push(j.speed.toFixed(1) + '×');
+
+    const pct = j.state === 'failed' ? '!'
+              : j.state === 'bloated' ? '↑'
+              : j.state === 'done' ? '✓'
+              : j.state === 'queued' ? '·'
+              : Math.round(j.progress) + '%';
+
+    // Measured once finished; projected from bytes-so-far while running.
+    let saved = '';
+    if (j.size_before && j.size_after) {
+      const pct = ((j.size_before - j.size_after) / j.size_before) * 100;
+      saved = pct >= 0
+        ? `<span class="saved">saved ${pct.toFixed(0)}% &middot; ${fmtSize(j.size_after)}</span>`
+        : `<span class="grew">${Math.abs(pct).toFixed(0)}% larger &middot; ${fmtSize(j.size_after)}</span>`;
+    } else if (j.state === 'running' && j.size_before && j.size_now && j.progress > 3) {
+      const projected = j.size_now / (j.progress / 100);
+      const pct = ((j.size_before - projected) / j.size_before) * 100;
+      saved = pct >= 0
+        ? `<span class="live">on track to save ${pct.toFixed(0)}%</span>`
+        : `<span class="grew">on track to be ${Math.abs(pct).toFixed(0)}% larger</span>`;
+    }
+
+    const actions = j.state === 'failed'
+      ? `<button onclick="retryJob(${j.id})">Try again</button>
+         <button onclick="removeJob(${j.id})">Remove</button>`
+      : j.state === 'bloated'
+      ? `<button onclick="acceptJob(${j.id})">Keep it anyway</button>
+         <button onclick="removeJob(${j.id})">Remove</button>`
+      : j.state === 'done'
+      ? `<button onclick="removeJob(${j.id})">Remove</button>`
+      : `<button onclick="requeueJob(${j.id},'${j.state}')">Restart</button>
+         <button onclick="cancelJob(${j.id})">Cancel</button>`;
+
+    return `<div class="glass job st-${j.state}">
+      <div class="file">${name}</div>
+      <div class="pct">${pct}</div>
+      <div class="meta">${bits.filter(Boolean).join(' · ')} ${saved}</div>
+      ${j.state === 'failed' && j.error
+        ? `<div class="err">${j.error}</div>` : ''}
+      ${j.outcome && j.state !== 'failed'
+        ? `<div class="note" ${j.state === 'bloated'
+             ? '' : 'style="color:var(--muted)"'}>${j.outcome}</div>` : ''}
+      ${j.state === 'bloated'
+        ? `<div class="retry" id="retry-${j.id}"></div>` : ''}
+      ${['queued','leased','running'].includes(j.state)
+        ? `<div class="bar"><i style="width:${j.progress || 0}%"></i></div>` : ''}
+      <div class="acts">${actions}</div>
+    </div>`;
+  }).join('');
+
+  renderPager(meta);
+  jobs.filter(j => j.state === 'bloated').forEach(j => loadRetryOptions(j.id));
+}
+
+const fmtSize = b => !b ? '0 MB'
+  : b >= 1e9 ? (b / 1e9).toFixed(2) + ' GB' : (b / 1e6).toFixed(0) + ' MB';
+
+// Options depend on whether a source still exists to convert from, so they
+// are fetched per job rather than assumed.
+async function loadRetryOptions(jobId) {
+  const box = document.getElementById('retry-' + jobId);
+  if (!box) return;
+  if (!CAT_SCALE) {
+    try { CAT_SCALE = (await (await fetch('/api/catalog')).json()).quality_scale; }
+    catch (e) { CAT_SCALE = []; }
+  }
+  let o;
+  try {
+    o = await (await fetch('/api/jobs/' + jobId + '/retry-options')).json();
+  } catch (e) { box.innerHTML = ''; return; }
+
+  if (!o.can_retry) {
+    box.innerHTML = '<div class="note" style="margin:0">' + o.reason + '</div>';
+    return;
+  }
+  const scale = (CAT_SCALE || []).map(q =>
+    `<option value="${q.value}">${q.name} \u2014 ${q.detail}</option>`).join('');
+  const steps = o.steps.filter(st => st.quality).map(st =>
+    `<option value="${st.quality}">${st.name}</option>`).join('');
+  box.innerHTML = `
+    <select id="q-${jobId}">
+      <optgroup label="Steps down from this library's usual quality">${steps}</optgroup>
+      <optgroup label="Or pick a quality directly">${scale}</optgroup>
+    </select>
+    <button onclick="doRetranscode(${jobId})">Convert again, smaller</button>
+    <span class="live">lower quality = smaller file</span>`;
+}
+
+// Filled from the catalog so the same wording is used everywhere.
+let CAT_SCALE = null;
+
+async function doRetranscode(jobId) {
+  const sel = document.getElementById('q-' + jobId);
+  const quality = +sel.value;
+  if (!quality) return alert('Pick a quality first.');
+  const r = await fetch('/api/jobs/' + jobId + '/retranscode', {method:'POST',
+    headers:{'Content-Type':'application/json'}, body: JSON.stringify({quality})});
+  if (!r.ok) return alert((await r.json()).detail || 'Could not queue that.');
+  loadView();
+}
+
+async function acceptJob(jobId) {
+  if (!confirm('Keep the converted file even though it got bigger?')) return;
+  await fetch('/api/jobs/' + jobId + '/accept', {method:'POST'});
+  loadView();
+}
+
+function renderPager(meta) {
+  const el = document.getElementById('pager');
+  if (!meta) { el.innerHTML = ''; return; }
+  const first = (meta.page - 1) * meta.per_page + 1;
+  const last = Math.min(meta.page * meta.per_page, meta.total);
+  const bulk = view.name === 'failed'
+    ? `<button onclick="bulkJobs('retry')">Retry all ${meta.total}</button>
+       <button onclick="bulkJobs('clear')">Remove all</button>`
+    : view.name === 'done'
+    ? `<button onclick="bulkJobs('clear')">Clear history</button>` : '';
+
+  el.innerHTML = `
+    <span class="where">${meta.total ? `${first}–${last} of ${meta.total}` : '0'}</span>
+    <select onchange="view.perPage=parseInt(this.value);view.page=1;loadView()">
+      ${[10,20,50,100].map(n =>
+        `<option value="${n}" ${view.perPage === n ? 'selected' : ''}>${n} per page</option>`
+      ).join('')}
+    </select>
+    <button onclick="view.page--;loadView()" ${meta.page <= 1 ? 'disabled' : ''}>Back</button>
+    <button onclick="view.page++;loadView()" ${meta.page >= meta.pages ? 'disabled' : ''}>Next</button>
+    <span class="grow"></span>${bulk}`;
+}
+
+async function removeJob(id) {
+  if (!confirm('Remove this from the list? The video file itself is not touched.')) return;
+  await fetch(`/api/jobs/${id}`, {method:'DELETE'});
+  loadView();
+}
+
+async function bulkJobs(action) {
+  const total = view.counts[view.name] || 0;
+  const message = action === 'retry'
+    ? `Put all ${total} failed job(s) back in the queue?`
+    : `Remove all ${total} entries from this list? Video files are not touched.`;
+  if (!confirm(message)) return;
+  const r = await (await fetch('/api/jobs/bulk', {method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({action, view: view.name})})).json();
+  if (r.skipped) alert(`${r.requeued} requeued. ${r.skipped} skipped — already queued.`);
+  view.page = 1;
+  loadView();
+}
+
+async function scanOne(id) {
+  const r = await (await fetch(`/api/libraries/${id}/scan`, {method:'POST'})).json();
+  alert(`Queued ${r.queued}. Still copying: ${r.waiting}. Already correct: ${r.already_ok}.`);
+}
+async function scanAll() {
+  const libs = (await (await fetch('/api/libraries')).json());
+  if (!libs.length) return alert('Add a library first.');
+  for (const l of libs) await fetch(`/api/libraries/${l.id}/scan`, {method:'POST'});
+  alert('Checked every watch folder.');
+}
+async function toggleLib(id, enabled) {
+  await fetch(`/api/libraries/${id}`, {method:'PATCH',
+    headers:{'Content-Type':'application/json'}, body:JSON.stringify({enabled})});
+}
+async function removeLib(id, name) {
+  if (!confirm(`Stop watching "${name}"? Files already converted stay where they are.`)) return;
+  await fetch(`/api/libraries/${id}`, {method:'DELETE'});
+}
+
+
+/* ------------------------------------------------------------ settings */
+const DAYS = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
+let SET = null;
+
+async function openSettings() {
+  SET = await (await fetch('/api/settings')).json();
+  document.getElementById('veil').classList.add('open');
+  drawSettings();
+}
+
+function drawSettings() {
+  const sc = SET.schedule || {}, og = SET.originals || {};
+  const w = (sc.windows && sc.windows[0]) || {days:[0,1,2,3,4,5,6],start:'22:00',end:'06:00'};
+  document.getElementById('wiz').innerHTML = `
+    <h3>Settings</h3>
+    <p class="lead">Forge checks your watch folders on its own. These control
+      when it's allowed to do the heavy work, and when it tidies up.</p>
+
+    <div class="toggle ${sc.enabled ? 'on' : ''}" onclick="toggleSched()">
+      <div class="sw"></div>
+      <div><div class="tt">Only transcode at certain times</div>
+        <div class="td">Files still get found and queued around the clock — they
+          just wait their turn until the window opens.</div></div>
+    </div>
+
+    ${sc.enabled ? `
+      <label class="fld"><span>Days</span>
+        <em>Which days the window applies to.</em>
+        <div class="days">${DAYS.map((d,i) => `
+          <label class="${(w.days||[]).includes(i) ? 'on' : ''}"
+                 onclick="toggleDay(${i})">${d}</label>`).join('')}</div></label>
+      <div class="pair">
+        <label class="fld"><span>Start</span>
+          <em>When work may begin.</em>
+          <input type="text" value="${w.start}" placeholder="22:00"
+                 oninput="setWin('start',this.value)"></label>
+        <label class="fld"><span>End</span>
+          <em>When it stops. An end earlier than the start means overnight.</em>
+          <input type="text" value="${w.end}" placeholder="06:00"
+                 oninput="setWin('end',this.value)"></label>
+      </div>` : ''}
+
+    <label class="fld"><span>How often to check folders</span>
+      <em>Seconds between automatic checks. 30 is a good default.</em>
+      <input type="text" value="${SET.scan_seconds ?? 30}"
+             oninput="SET.scan_seconds=parseInt(this.value)||30"></label>
+
+    <div class="toggle ${(SET.auto_fail||{}).enabled ? 'on' : ''}"
+         onclick="toggleAutoFail()" style="margin-top:22px">
+      <div class="sw"></div>
+      <div><div class="tt">Give up on jobs that take too long</div>
+        <div class="td">Occasionally a file simply won't convert and sits
+          there holding a slot open. This stops it, moves it to the Failed
+          list with the reason, and frees the machine. Only ever applies to
+          work already in progress \u2014 files waiting their turn are never
+          touched.</div></div>
+    </div>
+
+    ${(SET.auto_fail||{}).enabled ? `
+      <div class="pair">
+        <label class="fld"><span>Give up after</span>
+          <em>Counted from when the job started converting, not from when it
+              joined the queue.</em>
+          <input type="text" value="${SET.auto_fail.amount ?? 6}"
+                 oninput="SET.auto_fail.amount=parseFloat(this.value)||0"></label>
+        <label class="fld"><span>&nbsp;</span>
+          <em>&nbsp;</em>
+          <select onchange="SET.auto_fail.unit=this.value;drawSettings()">
+            ${['minutes','hours','days'].map(u =>
+              `<option value="${u}" ${(SET.auto_fail.unit||'hours') === u
+                ? 'selected' : ''}>${u}</option>`).join('')}
+          </select></label>
+      </div>
+
+      <div class="toggle ${SET.auto_fail.stall_enabled !== false ? 'on' : ''}"
+           onclick="SET.auto_fail.stall_enabled = SET.auto_fail.stall_enabled === false;drawSettings()">
+        <div class="sw"></div>
+        <div><div class="tt">Also give up if it stops making progress</div>
+          <div class="td">Catches a stuck job in minutes rather than waiting
+            out the full limit above. A job counts as stuck when the
+            percentage hasn't moved at all.</div></div>
+      </div>
+
+      ${SET.auto_fail.stall_enabled !== false ? `
+        <label class="fld"><span>No progress for</span>
+          <em>Minutes. Keep this comfortably above the slowest real progress
+              you see \u2014 a 4K film on a slow machine can take a while to
+              move a single percent.</em>
+          <input type="text" value="${SET.auto_fail.stall_minutes ?? 30}"
+            oninput="SET.auto_fail.stall_minutes=parseFloat(this.value)||0"></label>` : ''}
+
+      <div class="review" style="font-size:12.5px;color:var(--muted);
+           line-height:1.6;margin-bottom:14px">${SET.auto_fail_text || ''}</div>
+    ` : ''}
+
+    <div class="toggle ${(SET.tmdb||{}).enabled ? 'on' : ''}"
+         onclick="toggleTmdb()" style="margin-top:22px">
+      <div class="sw"></div>
+      <div><div class="tt">Look up film and show names online</div>
+        <div class="td">Uses The Movie Database to confirm titles, so
+          "moviename1_H264_1080p" can become the film's real name and year.
+          Free key, and Forge only reads — nothing about your library is
+          sent beyond the title it's trying to identify.</div></div>
+    </div>
+
+    ${(SET.tmdb||{}).enabled ? `
+      <label class="fld"><span>TMDB key</span>
+        <em>Sign up at themoviedb.org, then Settings &rarr; API and request a
+            Developer key. Either the API Key or the Read Access Token works.
+            Use a desktop browser — the signup isn't mobile friendly.</em>
+        <input type="text" value="${(SET.tmdb||{}).key || ''}"
+          placeholder="paste your key here"
+          oninput="SET.tmdb.key=this.value"></label>
+      <div class="actions" style="margin:-6px 0 16px">
+        <button onclick="testTmdb()">Test connection</button>
+        <span id="tmdbresult" style="align-self:center;font-size:12.5px;
+              color:var(--muted)"></span>
+      </div>` : ''}
+
+    <div class="toggle ${og.enabled ? 'on' : ''}" onclick="toggleOrig()"
+         style="margin-top:22px">
+      <div class="sw"></div>
+      <div><div class="tt">Automatically empty the Originals folder</div>
+        <div class="td">Only deletes an original once the converted file is
+          confirmed to exist and isn't empty. Anything it can't verify is
+          left alone. The manual button on the main page still works either
+          way.</div></div>
+    </div>
+
+    ${og.enabled ? `
+      <label class="fld"><span>When</span>
+        <em>Pick whichever way of thinking about it suits you.</em>
+        <select onchange="SET.originals.mode=this.value;drawSettings()">
+          <option value="daily" ${(og.mode||'daily')==='daily'?'selected':''}>Every day, at a set time</option>
+          <option value="days" ${og.mode==='days'?'selected':''}>Only on certain days, at a set time</option>
+          <option value="interval" ${og.mode==='interval'?'selected':''}>Every so many hours</option>
+        </select></label>
+
+      ${og.mode === 'interval' ? `
+        <label class="fld"><span>How often</span>
+          <em>Hours between sweeps. 24 means once a day, whenever that
+              happens to fall.</em>
+          <select onchange="SET.originals.interval_hours=parseInt(this.value)">
+            ${[6,12,24,48,72,168].map(h => `<option value="${h}"
+              ${Number(og.interval_hours||24)===h?'selected':''}>${
+                h===24?'Every 24 hours':h===168?'Once a week':'Every '+h+' hours'
+              }</option>`).join('')}
+          </select></label>` : `
+        ${og.mode === 'days' ? `
+          <label class="fld"><span>Days</span>
+            <em>Tap the days it should run.</em>
+            <div class="days">${DAYS.map((d,i) => `
+              <label class="${(og.days||[]).includes(i) ? 'on' : ''}"
+                     onclick="toggleCleanupDay(${i})">${d}</label>`).join('')}</div>
+            </label>` : ''}
+        <label class="fld"><span>Time of day</span>
+          <em>24-hour clock. Something quiet, like 03:00.</em>
+          <input type="text" value="${og.run_at || '03:00'}" placeholder="03:00"
+                 oninput="SET.originals.run_at=this.value"></label>`}
+
+      <label class="fld"><span>Keep originals for</span>
+        <em>How long to hold an original after its file was converted, so you
+            have time to check the result. 0 clears them at the next sweep.</em>
+        <select onchange="SET.originals.after_days=parseFloat(this.value)">
+          ${[0,1,3,7,14,30,60].map(d => `<option value="${d}"
+            ${Number(og.after_days ?? 14)===d?'selected':''}>${
+              d===0?'No wait \u2014 clear them straight away':
+              d===1?'1 day':d+' days'}</option>`).join('')}
+        </select></label>
+
+      <div class="review" style="font-size:12.5px;color:var(--muted);
+           line-height:1.6;margin-bottom:4px">
+        ${SET.originals_text || ''}${SET.originals_next
+          ? ` \u00b7 ${SET.originals_next}` : ''}
+      </div>` : ''}
+
+    <div class="wiz-nav">
+      <button onclick="closeWizard()">Cancel</button>
+      <span class="grow"></span>
+      <button class="primary" onclick="saveSettings()">Save</button>
+    </div>`;
+}
+
+function toggleSched() {
+  SET.schedule = SET.schedule || {};
+  SET.schedule.enabled = !SET.schedule.enabled;
+  if (!SET.schedule.windows || !SET.schedule.windows.length)
+    SET.schedule.windows = [{days:[0,1,2,3,4,5,6],start:'22:00',end:'06:00'}];
+  drawSettings();
+}
+function toggleAutoFail() {
+  SET.auto_fail = SET.auto_fail || {amount:6, unit:'hours',
+                                    stall_enabled:true, stall_minutes:30};
+  SET.auto_fail.enabled = !SET.auto_fail.enabled;
+  drawSettings();
+}
+
+function toggleTmdb() {
+  SET.tmdb = SET.tmdb || {key:'', enabled:false};
+  SET.tmdb.enabled = !SET.tmdb.enabled;
+  drawSettings();
+}
+
+async function testTmdb() {
+  const el = document.getElementById('tmdbresult');
+  el.textContent = 'Checking…';
+  el.style.color = 'var(--muted)';
+  try {
+    const r = await (await fetch('/api/lookup/test', {method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({key: (SET.tmdb||{}).key})})).json();
+    el.textContent = r.message;
+    el.style.color = r.ok ? 'var(--signal)' : 'var(--fault)';
+  } catch (e) {
+    el.textContent = 'Could not check right now.';
+    el.style.color = 'var(--fault)';
+  }
+}
+
+function toggleOrig() {
+  SET.originals = SET.originals || {};
+  SET.originals.enabled = !SET.originals.enabled;
+  if (!SET.originals.mode) SET.originals.mode = 'daily';
+  if (!Array.isArray(SET.originals.days))
+    SET.originals.days = [0, 1, 2, 3, 4, 5, 6];
+  if (SET.originals.interval_hours == null) SET.originals.interval_hours = 24;
+  if (SET.originals.run_at == null) SET.originals.run_at = '03:00';
+  if (SET.originals.after_days == null) SET.originals.after_days = 14;
+  drawSettings();
+}
+function toggleCleanupDay(i) {
+  SET.originals = SET.originals || {};
+  const days = SET.originals.days = SET.originals.days || [];
+  const at = days.indexOf(i);
+  if (at >= 0) days.splice(at, 1); else days.push(i);
+  days.sort((a, b) => a - b);
+  drawSettings();
+}
+
+function toggleDay(i) {
+  const w = SET.schedule.windows[0];
+  w.days = w.days || [];
+  w.days = w.days.includes(i) ? w.days.filter(d => d !== i) : [...w.days, i].sort();
+  drawSettings();
+}
+function setWin(key, val) { SET.schedule.windows[0][key] = val; }
+
+async function saveSettings() {
+  const r = await fetch('/api/settings', {method:'PUT',
+    headers:{'Content-Type':'application/json'}, body:JSON.stringify(SET)});
+  // Keep the description in step with what was saved.
+  try { SET = await r.json(); } catch (e) {}
+  closeWizard();
+}
+
+async function sweepNow() {
+  const rows = await (await fetch('/api/originals')).json();
+  if (!rows.length) return alert('The Originals folder is already empty.');
+  const unverified = rows.filter(r => !r.replacement_ok).length;
+  const msg = `Delete ${rows.length - unverified} original file(s)?\n\n` +
+    (unverified ? `${unverified} will be kept — their converted version is missing.\n\n` : '') +
+    `This cannot be undone.`;
+  if (!confirm(msg)) return;
+  const r = await (await fetch('/api/originals/sweep?force=true', {method:'POST'})).json();
+  alert(`Deleted ${r.deleted}, freed ${(r.freed/1e9).toFixed(2)} GB. Kept ${r.kept}.`);
+}
+
+/* ------------------------------------------------------------- wizard */
+let CAT = null, step = 0, draft = {};
+const STEPS = ['Name and folders', 'Video', 'Colour and HDR', 'Audio', 'Subtitles', 'Tracks', 'Naming', 'Extras', 'Skip rules', 'Originals', 'Size check', 'Review'];
+
+function blankDraft() {
+  return { name:'', watch_path:'', output_path:'',
+    video_codec:'hevc', container:'mkv', quality_level:'balanced',
+    audio_codec:'aac', audio_bitrate:'160k',
+    hdr_mode:'preserve', bit_depth:'match', tag_colours:true,
+    audio_language_mode:'keep_all', audio_languages_list:['eng'],
+    remove_images:true, keep_forced_subs:true, default_first_subtitle:false,
+    subtitle_mode:'keep', subtitle_languages:['eng'],
+    naming:{ enabled:true, scheme:'jellyfin', folders:true, skip_uncertain:true },
+    keep_chapters:true, clean_metadata:false, tidy_track_names:true,
+    downmix:'', normalise_loudness:false,
+    original_action:'archive',
+    min_saving_percent:'', auto_retry:true, salvage_when_stuck:true,
+    auto_retry_steps:['small','smaller'], auto_retry_custom:'',
+    filters:{ skip_extensions:[], skip_name_contains:[],
+              min_size_mb:'', max_size_mb:'',
+              min_minutes:'', max_minutes:'', skip_video_codecs:[],
+              min_bitrate_kbps:'',
+              bitrate_ceiling:{ enabled:true, sd:1500, hd:3000,
+                                fullhd:6000, uhd:18000 } } };
+}
+
+// Which library is being edited, or null when creating a new one.
+let editingId = null;
+
+function draftFromLibrary(lib) {
+  const d = blankDraft();
+  const p = lib.profile || {};
+  Object.assign(d, {
+    name: lib.name || '',
+    watch_path: lib.watch_path || '',
+    output_path: lib.output_path || '',
+    original_action: lib.original_action || 'archive',
+  });
+  // Only copy keys the wizard knows about, and never overwrite a default
+  // with an empty value — older libraries are missing newer settings.
+  for (const key of Object.keys(d)) {
+    if (key in p && p[key] !== null && p[key] !== undefined && p[key] !== '')
+      d[key] = p[key];
+  }
+  if (!Array.isArray(d.auto_retry_steps)) d.auto_retry_steps = ['small','smaller'];
+  if (!Array.isArray(d.audio_languages_list)) d.audio_languages_list = ['eng'];
+  if (!Array.isArray(d.subtitle_languages)) d.subtitle_languages = ['eng'];
+  d.filters = {...d.filters, ...(lib.filters || {})};
+  d.filters.bitrate_ceiling = {
+    ...blankDraft().filters.bitrate_ceiling,
+    ...((lib.filters || {}).bitrate_ceiling || {})};
+  d.naming = {...d.naming, ...(lib.naming || {})};
+  return d;
+}
+
+async function openWizard(libId) {
+  CAT = CAT || await (await fetch('/api/catalog')).json();
+  step = 0;
+  returnTo = null;
+  editingId = libId != null ? libId : null;
+
+  if (editingId != null) {
+    const lib = ((window.__state || {}).libraries || [])
+      .find(l => l.id === editingId);
+    if (!lib) return alert('Could not find that library.');
+    draft = draftFromLibrary(lib);
+  } else {
+    draft = blankDraft();
+  }
+  document.getElementById('veil').classList.add('open');
+  drawStep();
+}
+
+function closeWizard() { document.getElementById('veil').classList.remove('open'); }
+
+function opt(list, key, extra = '') {
+  const current = key === 'naming_scheme_proxy' ? draft.naming.scheme : draft[key];
+  return list.map(o => `
+    <label class="choice ${current === o.id ? 'sel' : ''}"
+           onclick="pick('${key}','${o.id}')">
+      <div class="t">${o.name}
+        ${o.also ? `<span class="alt">(${o.also})</span>` : ''}
+        ${o.recommended ? '<span class="badge">recommended</span>' : ''}</div>
+      ${o.summary ? `<div class="d">${o.summary}</div>` : ''}
+      ${o.detail ? `<div class="w">${o.detail}</div>` : ''}
+      ${o.when ? `<div class="d">${o.when}</div>` : ''}
+    </label>`).join('') + extra;
+}
+
+function pick(key, val) {
+  if (key === 'naming_scheme_proxy') {
+    draft.naming.scheme = val;
+    drawStep();
+    return;
+  }
+  draft[key] = val;
+  if (key === 'audio_codec') {
+    const a = CAT.audio.find(x => x.id === val);
+    draft.audio_bitrate = a?.default_bitrate || '';
+  }
+  drawStep();
+}
+function setField(key, val) { draft[key] = val; }
+
+function bar() {
+  return `<div class="steps">${STEPS.map((label, i) =>
+    `<i class="${i <= step ? 'on' : ''}" title="${label}"
+        onclick="jumpTo(${i})"></i>`).join('')}</div>`;
+}
+
+// Where the wizard should return to after a detour. Set when you jump from
+// the review step, so one edit doesn't mean paging forward through the rest.
+let returnTo = null;
+
+function jumpTo(target) {
+  if (target === step) return;
+  wizardError('');
+  // Leaving the first step still has to pass its checks, since everything
+  // after it depends on the folders being valid.
+  if (step === 0 && target > 0 && !validateFirstStep()) return;
+  if (step === STEPS.length - 1) returnTo = step;
+  step = target;
+  drawStep();
+}
+
+function backToReview() {
+  if (step === 0 && !validateFirstStep()) return;
+  step = returnTo;
+  returnTo = null;
+  drawStep();
+}
+
+async function drawStep() {
+  const w = document.getElementById('wiz');
+  let body = '', lead = '';
+
+  if (step === 0) {
+    lead = 'Give this library a name, then tell Forge which folder to watch.';
+    body = `
+      <label class="fld"><span>Library name</span>
+        <em>Just for you — "Movies", "TV", "Anime". ${
+          (() => {
+            const others = (window.__state && window.__state.libraries || [])
+              .filter(l => l.id !== editingId).map(l => l.name);
+            return others.length ? 'Already used: ' + others.join(', ') + '.' : '';
+          })()}</em>
+        <input type="text" value="${draft.name}" placeholder="Movies"
+               oninput="setField('name',this.value)"></label>
+      <label class="fld"><span>Folder to watch</span>
+        <em>Drop new files here. Forge checks it every 30 seconds and picks up
+            anything that finished copying.</em>
+        <input type="text" value="${draft.watch_path}"
+               placeholder="/media/inbox/movies"
+               oninput="setField('watch_path',this.value)"></label>
+      <label class="fld"><span>Folder to move finished files to</span>
+        <em>Where the converted file ends up. Leave this empty to convert files
+            right where they are, without moving them.</em>
+        <input type="text" value="${draft.output_path}"
+               placeholder="/media/Movies  (optional)"
+               oninput="setField('output_path',this.value)"></label>`;
+  }
+
+  if (step === 1) {
+    lead = 'How should the picture be compressed?';
+    const q = `<div style="margin-top:22px"><div style="font-size:13px;font-weight:600;
+        margin-bottom:3px">Quality</div>
+      <em style="display:block;font-style:normal;font-size:12px;color:var(--muted);
+        margin-bottom:9px;line-height:1.5">Higher quality means bigger files. Balanced
+        is what most people want.</em>
+      ${CAT.quality.map(o => `<label class="choice ${draft.quality_level===o.id?'sel':''}"
+        onclick="pick('quality_level','${o.id}')">
+        <div class="t">${o.name}${o.recommended?'<span class="badge">recommended</span>':''}</div>
+        <div class="w">${o.detail}</div></label>`).join('')}
+      <div style="font-size:13px;font-weight:600;margin:22px 0 3px">File type</div>
+      <em style="display:block;font-style:normal;font-size:12px;color:var(--muted);
+        margin-bottom:9px;line-height:1.5">The wrapper around the video — this is the
+        file extension you'll see.</em>
+      ${opt(CAT.containers,'container')}</div>`;
+    body = opt(CAT.video, 'video_codec') + q;
+  }
+
+  if (step === 2) {
+    lead = 'HDR films carry brighter highlights and richer colour. Whether to '
+         + 'keep that depends on what you watch on.';
+    body = opt(CAT.hdr, 'hdr_mode') + `
+      <div style="font-size:13px;font-weight:600;margin:22px 0 3px">Colour depth</div>
+      <em style="display:block;font-style:normal;font-size:12px;color:var(--muted);
+        margin-bottom:9px;line-height:1.5">10-bit shows smoother gradients in
+        skies and dark scenes. 8-bit plays on older hardware. With
+        <b>Match the original</b>, each file is decided as it is converted:
+        if producing 10-bit would drop that machine off its hardware encoder
+        and take many times longer, Forge uses 8-bit for that file and says
+        so in the queue. Choosing 8-bit or 10-bit outright is always
+        obeyed.</em>
+      ${opt(CAT.depth, 'bit_depth')}
+      <div class="toggle ${draft.tag_colours ? 'on' : ''}"
+           onclick="draft.tag_colours=!draft.tag_colours;drawStep()">
+        <div class="sw"></div>
+        <div><div class="tt">Label colours correctly in the output</div>
+          <div class="td">Stops films looking washed out or overly dark on
+            players that guess wrongly. Costs nothing — leave this on unless
+            you have a reason not to.</div></div>
+      </div>`;
+  }
+
+  if (step === 3) {
+    lead = 'How should the sound be handled?';
+    const a = CAT.audio.find(x => x.id === draft.audio_codec);
+    const rates = (a?.bitrates || []).length ? `
+      <label class="fld" style="margin-top:20px"><span>Audio quality</span>
+        <em>Higher numbers sound better and take more space. 160k is plenty for
+            most stereo, 640k for surround.</em>
+        <select onchange="setField('audio_bitrate',this.value)">
+          ${a.bitrates.map(b => `<option ${draft.audio_bitrate===b?'selected':''}>${b}</option>`).join('')}
+        </select></label>` : '';
+    body = opt(CAT.audio, 'audio_codec') + rates;
+  }
+
+  if (step === 4) {
+    lead = 'What should happen to subtitle tracks?';
+    const langs = draft.subtitle_mode === 'languages' ? `
+      <label class="fld" style="margin-top:18px"><span>Languages to keep</span>
+        <em>Three-letter codes, separated by commas. eng = English,
+            jpn = Japanese, spa = Spanish.</em>
+        <input type="text" value="${(draft.subtitle_languages||[]).join(', ')}"
+          placeholder="eng, jpn"
+          oninput="draft.subtitle_languages=this.value.split(',').map(s=>s.trim()).filter(Boolean)">
+      </label>` : '';
+    body = opt(CAT.subtitles, 'subtitle_mode') + langs;
+  }
+
+  if (step === 5) {
+    lead = 'Which tracks survive, and in what order.';
+    body = `
+      <label class="fld"><span>Preferred audio languages</span>
+        <em>Three-letter codes in order of preference, separated by commas.
+            These get moved to the front so they play by default.
+            eng = English, jpn = Japanese, spa = Spanish.</em>
+        <input type="text" value="${(draft.audio_languages_list||[]).join(', ')}"
+          placeholder="eng, jpn"
+          oninput="draft.audio_languages_list=splitList(this.value)"></label>
+
+      ${opt(CAT.audio_languages, 'audio_language_mode')}
+
+      <div class="toggle ${draft.remove_images ? 'on' : ''}" style="margin-top:20px"
+           onclick="draft.remove_images=!draft.remove_images;drawStep()">
+        <div class="sw"></div>
+        <div><div class="tt">Remove embedded cover art and thumbnails</div>
+          <div class="td">Posters tucked inside a video file confuse encoders
+            and are the usual reason one file in a batch fails. Leave this on.</div></div>
+      </div>
+
+      <div class="toggle ${draft.keep_forced_subs ? 'on' : ''}"
+           onclick="draft.keep_forced_subs=!draft.keep_forced_subs;drawStep()">
+        <div class="sw"></div>
+        <div><div class="tt">Always keep forced subtitles</div>
+          <div class="td">Forced subtitles translate the parts of a film spoken
+            in another language — Klingon, Elvish, a scene in Spanish. This keeps
+            them even when you're removing subtitles otherwise.</div></div>
+      </div>
+
+      <div class="toggle ${draft.tidy_track_names ? 'on' : ''}"
+           onclick="draft.tidy_track_names=!draft.tidy_track_names;drawStep()">
+        <div class="sw"></div>
+        <div><div class="tt">Name the tracks properly</div>
+          <div class="td">Labels each track with its language and layout \u2014
+            "English 5.1", "Spanish Stereo", "German 7.1" \u2014 instead of
+            leaving your player to show "Track 1". Commentary, forced and
+            hearing-impaired tracks are marked as such, and a missing language
+            tag is filled in when the old title makes it obvious.</div></div>
+      </div>
+
+      <div class="toggle ${draft.default_first_subtitle ? 'on' : ''}"
+           onclick="draft.default_first_subtitle=!draft.default_first_subtitle;drawStep()">
+        <div class="sw"></div>
+        <div><div class="tt">Turn the first subtitle track on by default</div>
+          <div class="td">Subtitles appear without you switching them on. Most
+            people want this off, since forced subtitles show up regardless.</div></div>
+      </div>`;
+  }
+
+  if (step === 6) {
+    lead = 'Downloads arrive with names full of codec and quality tags. '
+         + 'Forge can rewrite them into the layout your media server expects.';
+    const n = draft.naming;
+    body = `
+      <div class="toggle ${n.enabled ? 'on' : ''}"
+           onclick="draft.naming.enabled=!draft.naming.enabled;drawStep()">
+        <div class="sw"></div>
+        <div><div class="tt">Rename files automatically</div>
+          <div class="td">Turn moviename1_H264_mkv_DUALAUDIO_subrip_1080p.mkv
+            into Moviename1 (2024)/Moviename1 (2024).mkv.</div></div>
+      </div>
+      ${n.enabled ? `
+        ${opt(CAT.naming, 'naming_scheme_proxy')}
+        <div class="toggle ${n.folders ? 'on' : ''}"
+             onclick="draft.naming.folders=!draft.naming.folders;drawStep()">
+          <div class="sw"></div>
+          <div><div class="tt">Put each film in its own folder</div>
+            <div class="td">All three servers expect this, and it keeps
+              posters and subtitles beside the film they belong to.</div></div>
+        </div>
+        <div class="toggle ${n.skip_uncertain ? 'on' : ''}"
+             onclick="draft.naming.skip_uncertain=!draft.naming.skip_uncertain;drawStep()">
+          <div class="sw"></div>
+          <div><div class="tt">Leave the name alone if unsure</div>
+            <div class="td">If there's no year or episode number to go on,
+              Forge is guessing. With this on it keeps the original name
+              rather than inventing a wrong one.</div></div>
+        </div>
+        <div style="font-size:13px;font-weight:600;margin:22px 0 3px">Preview</div>
+        <em style="display:block;font-style:normal;font-size:12px;
+          color:var(--muted);margin-bottom:9px;line-height:1.5">Using real files
+          from your watch folder where possible. Check these look right before
+          continuing.</em>
+        <div id="namepreview" class="review"
+             style="font-family:'Chivo Mono',monospace;font-size:11.5px;
+                    line-height:1.7">Loading…</div>` : ''}`;
+    if (n.enabled) setTimeout(refreshPreview, 0);
+  }
+
+  if (step === 7) {
+    lead = 'A few finishing touches.';
+    body = `
+      <div class="toggle ${draft.keep_chapters ? 'on' : ''}"
+           onclick="draft.keep_chapters=!draft.keep_chapters;drawStep()">
+        <div class="sw"></div>
+        <div><div class="tt">Keep chapter markers</div>
+          <div class="td">Chapters drive skip-intro and scene selection in most
+            players. They cost nothing to keep.</div></div>
+      </div>
+
+      <div class="toggle ${draft.clean_metadata ? 'on' : ''}"
+           onclick="draft.clean_metadata=!draft.clean_metadata;drawStep()">
+        <div class="sw"></div>
+        <div><div class="tt">Clear out embedded titles and tags</div>
+          <div class="td">Release groups write their own name into the file's
+            title field, which some players show instead of the film's name.
+            This wipes it.</div></div>
+      </div>
+
+      <label class="fld" style="margin-top:20px"><span>Surround sound</span>
+        <em>What to do with 5.1 and 7.1 audio.</em>
+        <select onchange="draft.downmix=this.value">
+          <option value="" ${!draft.downmix ? 'selected' : ''}>Keep surround as it is</option>
+          <option value="stereo" ${draft.downmix === 'stereo' ? 'selected' : ''}>Fold down to stereo</option>
+        </select></label>
+
+      <div class="toggle ${draft.normalise_loudness ? 'on' : ''}"
+           onclick="draft.normalise_loudness=!draft.normalise_loudness;drawStep()">
+        <div class="sw"></div>
+        <div><div class="tt">Even out the volume</div>
+          <div class="td">Stops you reaching for the remote between quiet
+            dialogue and loud action. Requires re-encoding the audio, so it
+            can't be combined with leaving audio alone.</div></div>
+      </div>`;
+  }
+
+  if (step === 8) {
+    const f = draft.filters;
+    const csv = v => (v || []).join(', ');
+    lead = "Anything matching these is left alone entirely — it won't be queued, " +
+           "and Forge won't ask again. Leave any of them blank to ignore that rule.";
+    body = `
+      <label class="fld"><span>Skip these file types</span>
+        <em>File extensions to ignore, separated by commas. Handy if you only
+            want to convert old AVI files and leave your MP4s alone.</em>
+        <input type="text" value="${csv(f.skip_extensions)}" placeholder="mp4, m4v"
+          oninput="draft.filters.skip_extensions=splitList(this.value)"></label>
+
+      <label class="fld"><span>Ignore files already in these formats</span>
+        <em>Video formats to skip entirely, separated by commas. Note this skips
+            the file completely, including its audio — if you download H.265 files
+            that still need their audio converted, leave this blank and use the
+            setting further down instead.</em>
+        <input type="text" value="${csv(f.skip_video_codecs)}" placeholder="hevc, av1"
+          oninput="draft.filters.skip_video_codecs=splitList(this.value)"></label>
+
+      <label class="fld"><span>Skip files with these words in the name</span>
+        <em>Comma separated, not case sensitive. Common ones: sample, trailer, extras.</em>
+        <input type="text" value="${csv(f.skip_name_contains)}"
+          placeholder="sample, trailer"
+          oninput="draft.filters.skip_name_contains=splitList(this.value)"></label>
+
+      <div class="pair">
+        <label class="fld"><span>Skip if smaller than</span>
+          <em>Megabytes. Filters out clips and extras.</em>
+          <input type="text" value="${f.min_size_mb}" placeholder="200"
+            oninput="draft.filters.min_size_mb=this.value"></label>
+        <label class="fld"><span>Skip if larger than</span>
+          <em>Megabytes. Leave huge remuxes alone.</em>
+          <input type="text" value="${f.max_size_mb}" placeholder="40000"
+            oninput="draft.filters.max_size_mb=this.value"></label>
+      </div>
+
+      <div class="toggle ${f.bitrate_ceiling.enabled ? 'on' : ''}"
+           onclick="toggleCeiling()" style="margin:22px 0 14px">
+        <div class="sw"></div>
+        <div><div class="tt">Leave the picture alone if it's already small enough</div>
+          <div class="td">When a file is already in your chosen video format
+            <em style="font-style:normal;color:var(--text)">and</em> under these
+            sizes, Forge keeps the original picture untouched and only fixes the
+            audio. Much faster, and no quality is lost. A file over the limit gets
+            properly re-converted even if it's already the right format.</div></div>
+      </div>
+
+      ${f.bitrate_ceiling.enabled ? `
+      <label class="fld"><span>Size limits by resolution</span>
+        <em>In kbps. A number that's generous for 720p is stingy for 4K, so each
+            resolution gets its own limit. The defaults suit most libraries.</em>
+        <div class="pair">
+          <label class="fld" style="margin:0"><span style="font-size:12px">SD</span>
+            <input type="text" value="${f.bitrate_ceiling.sd ?? 1500}"
+              oninput="draft.filters.bitrate_ceiling.sd=this.value"></label>
+          <label class="fld" style="margin:0"><span style="font-size:12px">720p</span>
+            <input type="text" value="${f.bitrate_ceiling.hd ?? 3000}"
+              oninput="draft.filters.bitrate_ceiling.hd=this.value"></label>
+        </div>
+        <div class="pair" style="margin-top:9px">
+          <label class="fld" style="margin:0"><span style="font-size:12px">1080p</span>
+            <input type="text" value="${f.bitrate_ceiling.fullhd ?? 6000}"
+              oninput="draft.filters.bitrate_ceiling.fullhd=this.value"></label>
+          <label class="fld" style="margin:0"><span style="font-size:12px">4K</span>
+            <input type="text" value="${f.bitrate_ceiling.uhd ?? 18000}"
+              oninput="draft.filters.bitrate_ceiling.uhd=this.value"></label>
+        </div>
+      </label>` : ''}
+
+      <label class="fld"><span>Ignore files under this bitrate completely</span>
+        <em>In kbps. Unlike the setting above, these are skipped outright — the
+            audio won't be touched either. Leave blank unless you want that.</em>
+        <input type="text" value="${f.min_bitrate_kbps || ''}" placeholder="800"
+          oninput="draft.filters.min_bitrate_kbps=this.value"></label>
+
+      <div class="pair">
+        <label class="fld"><span>Skip if shorter than</span>
+          <em>Minutes.</em>
+          <input type="text" value="${f.min_minutes}" placeholder="5"
+            oninput="draft.filters.min_minutes=this.value"></label>
+        <label class="fld"><span>Skip if longer than</span>
+          <em>Minutes.</em>
+          <input type="text" value="${f.max_minutes}" placeholder="240"
+            oninput="draft.filters.max_minutes=this.value"></label>
+      </div>`;
+  }
+
+  if (step === 9) {
+    lead = 'Once a file has been converted, what should happen to the original?';
+    const keeping = draft.original_action === 'archive';
+    body = opt(CAT.originals, 'original_action') + `
+      <div class="${keeping ? 'review' : 'warn'}"
+           style="${keeping ? 'font-size:12.5px;color:var(--muted);margin-top:6px' : ''}">
+        ${keeping
+          ? 'Keeping originals also lets Forge undo a conversion that came out '
+            + 'bigger than the file it started from, and try again at a smaller '
+            + 'setting. That is the next step.'
+          : 'Heads up: with this setting there is no original to fall back on, '
+            + 'so the size checks on the next step are unavailable. If a file '
+            + 'comes out bigger, Forge can only tell you about it \u2014 it '
+            + 'cannot put the original back or convert it again.'}
+      </div>`;
+  }
+
+  if (step === 10) {
+    lead = 'Sometimes a converted file comes out bigger than the original \u2014 '
+         + 'usually with animation or anything already well compressed.';
+    const keepsOriginals = draft.original_action === 'archive';
+    const steps = (CAT.retry_steps || []).filter(x => x.id !== 'custom');
+    const chosen = draft.auto_retry_steps || [];
+    body = `
+      <label class="fld" style="${keepsOriginals ? '' : 'opacity:.45'}">
+        <span>How much smaller is worth it? (a percentage)</span>
+        <em>This is checked <b>after</b> a file is converted, against the
+            result. A file that comes out bigger is always rejected \u2014 that
+            part is never optional. This adds a stricter bar on top: leave it
+            blank to accept any saving at all, or enter 10 to also reject a file
+            that only shrank 3%, on the grounds that it isn't worth
+            re-encoding for.</em>
+        <input type="text" value="${draft.min_saving_percent}" placeholder="any saving"
+          ${keepsOriginals ? '' : 'disabled'}
+          oninput="draft.min_saving_percent=this.value"></label>
+
+      ${keepsOriginals ? '' : `<div class="warn">
+        <b>These options need originals kept.</b><br>
+        This library is set to
+        "${(CAT.originals.find(o => o.id === draft.original_action) || {}).name}",
+        so once a file is converted the source is gone. Forge can still tell you
+        a file came out bigger, but it cannot put the original back, convert it
+        again, or keep the original picture \u2014 all of which need the source.
+        <br><br>
+        <span onclick="jumpTo(9)" style="color:var(--signal);cursor:pointer;
+              text-decoration:underline">Change that on the previous step</span>
+        to switch to "Move it to an Originals folder".</div>`}
+
+      <div class="toggle ${draft.auto_retry && keepsOriginals ? 'on' : ''}"
+           onclick="${keepsOriginals
+             ? 'draft.auto_retry=!draft.auto_retry;drawStep()' : ''}"
+           style="${keepsOriginals ? '' : 'opacity:.5;cursor:default'}">
+        <div class="sw"></div>
+        <div><div class="tt">Try again automatically at a smaller setting</div>
+          <div class="td">Forge puts the original back and works down the
+            settings below until one actually saves space. No button pressing.</div></div>
+      </div>
+
+      ${draft.auto_retry && keepsOriginals ? `
+        <label class="fld"><span>Settings to work through, in order</span>
+          <em>These are picture quality settings \u2014 how hard to compress on
+              each retry. Forge stops at the first one that actually saves
+              space, then checks the result against the percentage above.</em>
+          ${steps.map(st => `
+            <div class="toggle ${chosen.includes(st.id) ? 'on' : ''}"
+                 onclick="toggleRetryStep('${st.id}')">
+              <div class="sw"></div>
+              <div><div class="tt">${st.name}</div>
+                <div class="td">${st.detail}</div></div>
+            </div>`).join('')}
+          <div class="toggle ${chosen.includes('custom') ? 'on' : ''}"
+               onclick="toggleRetryStep('custom')">
+            <div class="sw"></div>
+            <div><div class="tt">And a setting of my own</div>
+              <div class="td">A last resort if none of the above work.</div></div>
+          </div>
+          ${chosen.includes('custom') ? `
+            <div style="margin-top:11px">
+              <div style="font-size:12.5px;color:var(--muted);line-height:1.55;
+                          margin-bottom:8px">
+                This is a picture quality setting, not a percentage. Lower
+                keeps more detail and makes bigger files; higher compresses
+                harder. Forge only reaches this after the steps above have
+                already failed, so pick something well below them.
+              </div>
+              <select onchange="draft.auto_retry_custom=this.value">
+                <option value="">Choose a quality\u2026</option>
+                ${(CAT.quality_scale || []).map(q =>
+                  `<option value="${q.value}" ${String(draft.auto_retry_custom)
+                    === String(q.value) ? 'selected' : ''}>${q.name} \u2014 ${q.detail}</option>`
+                ).join('')}
+              </select>
+            </div>` : ''}
+        </label>
+        <div class="review" style="font-size:12.5px;color:var(--muted);
+             line-height:1.6;margin:4px 0 16px">
+          The two settings on this step do different jobs: the ones above
+          decide <b>how</b> to convert on each retry, the percentage decides
+          <b>whether the result was worth keeping</b>.
+        </div>
+
+        <div class="toggle ${draft.salvage_when_stuck ? 'on' : ''}"
+             onclick="draft.salvage_when_stuck=!draft.salvage_when_stuck;drawStep()">
+          <div class="sw"></div>
+          <div><div class="tt">If nothing helps, keep the original picture
+            and finish the rest</div>
+            <div class="td">Some files are already as small as they sensibly
+              get. Rather than leaving them in the inbox, Forge keeps the
+              picture exactly as it is and still fixes the audio, tidies the
+              tracks, renames the file and files it away. Nothing is
+              re-encoded, so no quality is lost.</div></div>
+        </div>
+        ${draft.salvage_when_stuck ? '' : `<div class="review"
+          style="font-size:12.5px;color:var(--muted)">With this off, a file
+          that can't be shrunk stays in the watch folder and is listed under
+          "Got bigger" for you to deal with.</div>`}` : ''}`;
+  }
+
+  if (step === 11) {
+    const warns = (await (await fetch('/api/profile/check', {method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify(draft)})).json()).warnings || [];
+    const n = (list, key) =>
+      (CAT[list].find(x => x.id === draft[key]) || {}).name || draft[key];
+
+    lead = editingId != null
+      ? 'Tap any line to change it, then save.'
+      : 'Check this over, then start watching. Tap any line to change it.';
+
+    const rows = [
+      [0, 'Name', draft.name || '—'],
+      [0, 'Watches', draft.watch_path || '—'],
+      [0, 'Moves to', draft.output_path || 'stays in the watch folder'],
+      [1, 'Video', `${n('video','video_codec')}, ${n('quality','quality_level')}`],
+      [1, 'File type', n('containers','container')],
+      [2, 'Colour', `${n('hdr','hdr_mode')}, ${n('depth','bit_depth')}`],
+      [3, 'Audio', n('audio','audio_codec')
+          + (draft.audio_bitrate ? ' at ' + draft.audio_bitrate : '')],
+      [4, 'Subtitles', n('subtitles','subtitle_mode')
+          + (draft.subtitle_mode === 'languages'
+             ? ' (' + (draft.subtitle_languages || []).join(', ') + ')' : '')],
+      [5, 'Track order', ((draft.audio_languages_list || []).join(', ') || 'as-is')
+          + (draft.audio_language_mode === 'preferred_only'
+             ? ' (others removed)' : '')
+          + (draft.tidy_track_names ? ', tracks named by language' : '')],
+      [6, 'Naming', draft.naming.enabled
+          ? ((CAT.naming.find(x => x.id === draft.naming.scheme) || {}).name
+             || draft.naming.scheme) + ' layout'
+          : 'keep original names'],
+      [7, 'Extras', [
+            draft.keep_chapters ? 'chapters kept' : 'chapters dropped',
+            draft.clean_metadata ? 'tags cleared' : null,
+            draft.downmix === 'stereo' ? 'stereo downmix' : null,
+            draft.normalise_loudness ? 'volume levelled' : null,
+          ].filter(Boolean).join(', ')],
+      [8, 'Skipping', describeFilters()],
+      [9, 'Originals', n('originals','original_action')],
+      [10, 'Size check', (draft.min_saving_percent
+            ? `must save ${draft.min_saving_percent}%` : 'must come out smaller')
+          + (draft.auto_retry && draft.original_action === 'archive'
+             ? ', retries automatically' : '')
+          + (draft.salvage_when_stuck && draft.original_action === 'archive'
+             ? ', keeps the picture if nothing helps' : '')],
+    ];
+
+    body = warns.map(x => `<div class="warn">${x}</div>`).join('')
+      + rows.map(([target, label, value]) => `
+        <div class="review-row" onclick="jumpTo(${target})">
+          <b>${label}</b>
+          <span class="val">${value}</span>
+          <span class="edit">change</span>
+        </div>`).join('');
+  }
+
+  const heading = editingId != null && step === 0
+    ? `Editing ${draft.name || 'library'}` : STEPS[step];
+  w.innerHTML = `<h3>${heading}</h3><p class="lead">${lead}</p>${bar()}${body}
+    <div class="wiz-nav">
+      <button onclick="closeWizard()">Cancel</button>
+      <span class="grow"></span>
+      ${step > 0 ? '<button onclick="step--;drawStep()">Back</button>' : ''}
+      ${returnTo != null && step !== returnTo
+        ? '<button class="primary" onclick="backToReview()">Back to review</button>'
+        : step < STEPS.length - 1
+          ? '<button class="primary" onclick="nextStep()">Continue</button>'
+          : `<button class="primary" onclick="saveLibrary()">${
+              editingId != null ? 'Save changes' : 'Start watching'}</button>`}
+    </div>`;
+  w.scrollTop = 0;
+}
+
+function toggleRetryStep(id) {
+  if (!Array.isArray(draft.auto_retry_steps)) draft.auto_retry_steps = [];
+  const list = draft.auto_retry_steps;
+  const at = list.indexOf(id);
+  if (at >= 0) list.splice(at, 1); else list.push(id);
+  drawStep();
+}
+
+function toggleCeiling() {
+  draft.filters.bitrate_ceiling.enabled = !draft.filters.bitrate_ceiling.enabled;
+  drawStep();
+}
+
+const SAMPLE_NAMES = [
+  'moviename1_H264_mkv_DUALAUDIO_subrip_1080p.mkv',
+  'Wrath.of.Man.2021.1080p.BluRay.x265.10bit.DTS-HD.MA.7.1-GROUP.mkv',
+  'Breaking.Bad.S01E01.Pilot.1080p.BluRay.x264-DEMAND.mkv',
+];
+
+async function refreshPreview() {
+  const el = document.getElementById('namepreview');
+  if (!el) return;
+  let names = [];
+  try {
+    const r = await (await fetch('/api/naming/samples?limit=5')).json();
+    names = r.names || [];
+  } catch (e) { /* fall back to examples */ }
+  if (names.length < 3) names = names.concat(SAMPLE_NAMES).slice(0, 5);
+
+  const res = await (await fetch('/api/naming/preview', {method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({names, scheme: draft.naming.scheme,
+      container: draft.container, folders: draft.naming.folders})})).json();
+
+  const rows = (res.results || []).map(r => {
+    const unsure = !r.confident && draft.naming.skip_uncertain;
+    const badge = r.looked_up
+      ? '<span style="color:var(--signal);opacity:.7"> · matched online</span>'
+      : '';
+    return `<div style="margin-bottom:11px">
+      <div style="color:var(--muted)">${r.original}</div>
+      <div style="color:${unsure ? 'var(--amber)' : 'var(--signal)'}">
+        ${unsure ? 'left as-is — not enough to go on' : r.path}${badge}</div>
+    </div>`;
+  }).join('');
+  const hint = res.used_lookup ? '' :
+    `<div style="color:var(--amber);margin-bottom:12px">Names are being worked
+     out from the filename alone. Turn on online lookup in Settings to confirm
+     them against a database.</div>`;
+  el.innerHTML = hint + (rows || 'No files to preview.');
+}
+
+function splitList(v) {
+  return v.split(',').map(x => x.trim()).filter(Boolean);
+}
+
+function describeFilters() {
+  const f = draft.filters, out = [];
+  if (f.skip_extensions.length) out.push(f.skip_extensions.join('/') + ' files');
+  if (f.skip_video_codecs.length) out.push('anything already ' + f.skip_video_codecs.join('/'));
+  if (f.min_bitrate_kbps) out.push('under ' + f.min_bitrate_kbps + ' kbps');
+  if (f.bitrate_ceiling && f.bitrate_ceiling.enabled)
+    out.push('re-encodes only above ' + f.bitrate_ceiling.fullhd + ' kbps at 1080p');
+  if (f.skip_name_contains.length) out.push('names with ' + f.skip_name_contains.join('/'));
+  if (f.min_size_mb) out.push('under ' + f.min_size_mb + ' MB');
+  if (f.max_size_mb) out.push('over ' + f.max_size_mb + ' MB');
+  if (f.min_minutes) out.push('under ' + f.min_minutes + ' min');
+  if (f.max_minutes) out.push('over ' + f.max_minutes + ' min');
+  return out.length ? out.join(', ') : 'nothing — every video is converted';
+}
+
+function validateFirstStep() {
+  wizardError('');
+  const name = draft.name.trim();
+  if (!name) { wizardError('Give the library a name.'); return false; }
+  if (!draft.watch_path.trim()) {
+    wizardError('Pick a folder to watch.'); return false;
+  }
+  const taken = (window.__state && window.__state.libraries || [])
+    .some(l => l.id !== editingId && l.name.toLowerCase() === name.toLowerCase());
+  if (taken) {
+    wizardError(`A library called "${name}" already exists.`); return false;
+  }
+  const out = draft.output_path.trim();
+  if (out && out === draft.watch_path.trim()) {
+    wizardError('The watch folder and destination are the same. '
+      + 'Leave the destination empty to convert files where they are.');
+    return false;
+  }
+  if (out && out.startsWith(draft.watch_path.trim().replace(/\/$/, '') + '/')) {
+    wizardError('The destination is inside the watch folder, so converted '
+      + 'files would be picked up and converted again.');
+    return false;
+  }
+  return true;
+}
+
+function nextStep() {
+  if (step === 0 && !validateFirstStep()) return;
+  step++;
+  drawStep();
+}
+
+function wizardError(message) {
+  const nav = document.querySelector('.wiz-nav');
+  const existing = document.getElementById('wizerr');
+  if (existing) existing.remove();
+  if (!nav || !message) return;
+  const box = document.createElement('div');
+  box.id = 'wizerr';
+  box.className = 'warn';
+  box.style.borderColor = 'rgba(255,107,107,.4)';
+  box.style.background = 'rgba(255,107,107,.12)';
+  box.style.color = '#ffb4b4';
+  box.textContent = message;
+  nav.parentNode.insertBefore(box, nav);
+  box.scrollIntoView({block:'nearest'});
+}
+
+async function saveLibrary() {
+  const body = {
+    name: draft.name.trim(),
+    watch_path: draft.watch_path.trim(),
+    output_path: draft.output_path.trim() || null,
+    original_action: draft.original_action,
+    profile: {
+      video_codec: draft.video_codec, container: draft.container,
+      quality_level: draft.quality_level, audio_codec: draft.audio_codec,
+      audio_bitrate: draft.audio_bitrate, subtitle_mode: draft.subtitle_mode,
+      subtitle_languages: draft.subtitle_languages,
+      hdr_mode: draft.hdr_mode, bit_depth: draft.bit_depth,
+      tag_colours: draft.tag_colours,
+      audio_language_mode: draft.audio_language_mode,
+      audio_languages_list: draft.audio_languages_list,
+      remove_images: draft.remove_images,
+      keep_forced_subs: draft.keep_forced_subs,
+      default_first_subtitle: draft.default_first_subtitle,
+      keep_chapters: draft.keep_chapters, clean_metadata: draft.clean_metadata,
+      tidy_track_names: draft.tidy_track_names,
+      downmix: draft.downmix, normalise_loudness: draft.normalise_loudness,
+      min_saving_percent: draft.min_saving_percent,
+      salvage_when_stuck: draft.salvage_when_stuck,
+      auto_retry: draft.auto_retry,
+      auto_retry_steps: draft.auto_retry_steps,
+      auto_retry_custom: draft.auto_retry_custom,
+    },
+    naming: draft.naming,
+    filters: draft.filters,
+  };
+  wizardError('');
+  const editing = editingId != null;
+  let r;
+  try {
+    r = await fetch(editing ? `/api/libraries/${editingId}` : '/api/libraries',
+      {method: editing ? 'PATCH' : 'POST',
+       headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});
+  } catch (e) {
+    return wizardError('Could not reach the server.');
+  }
+  if (!r.ok) {
+    let detail = 'Could not save that.';
+    try { detail = (await r.json()).detail || detail; } catch (e) {}
+    // Naming and folder problems come from the first step, so go back to it.
+    if (/name|folder|destination|watch/i.test(detail)) {
+      step = 0;
+      drawStep();
+      setTimeout(() => wizardError(detail), 0);
+    } else {
+      wizardError(detail);
+    }
+    return;
+  }
+  const wasEditing = editingId;
+  closeWizard();
+  // New settings only apply to files found from now on, so nudge a scan
+  // rather than waiting up to the full interval.
+  if (wasEditing != null) fetch(`/api/libraries/${wasEditing}/scan`, {method:'POST'});
+}
+
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') closeWizard();
+});
+
+async function scanRoots() {
+  const r = await fetch('/api/scan', { method: 'POST' });
+  const d = await r.json();
+  alert(`Scanned ${d.scanned} files.`);
+}
+
+function connect() {
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  const ws = new WebSocket(`${proto}://${location.host}/ws`);
+  ws.onopen = () => {
+    document.getElementById('dot').classList.add('live');
+    document.getElementById('conn').textContent = 'live';
+  };
+  ws.onmessage = e => render(JSON.parse(e.data));
+  ws.onclose = () => {
+    document.getElementById('dot').classList.remove('live');
+    document.getElementById('conn').textContent = 'reconnecting';
+    setTimeout(connect, 3000);
+  };
+}
+connect();
+</script>
+</body>
+</html>

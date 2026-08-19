@@ -1,0 +1,50 @@
+# A Forge worker. Run this on a machine that should do the converting.
+#
+# Copy the worker folder to that machine, edit SERVER below, then:
+#   docker compose up -d
+#
+# It finds the server by itself and appears in the interface within a few
+# seconds. Nothing needs configuring on the server side.
+
+services:
+  worker:
+    build: .
+    container_name: forge-worker
+    environment:
+      # Where the Forge server is. Use the NAS address, not localhost.
+      SERVER: http://nas.lan:8420
+      # Whatever name you want to see in the interface.
+      NODE_NAME: desktop
+
+      # If this machine can reach the same files over a network share, tell
+      # Forge how its paths line up with the server's. That avoids copying
+      # files back and forth, which is much faster.
+      #   server = the path the SERVER sees
+      #   local  = the path THIS machine sees
+      # Leave it as [] and files are streamed over the network instead.
+      MOUNTS: '[]'
+      # MOUNTS: '[{"server":"/media","local":"/mnt/nas/media"}]'
+
+      # Starting point only — change it from the node card in the interface.
+      MAX_JOBS: "1"
+
+    # Uncomment the block matching this machine's graphics hardware.
+
+    # --- NVIDIA ---
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
+
+    # --- Intel QuickSync or AMD on Linux ---
+    # devices:
+    #   - /dev/dri:/dev/dri
+
+    # If you set MOUNTS above, the share has to be visible in here too:
+    # volumes:
+    #   - /mnt/nas/media:/mnt/nas/media
+
+    restart: unless-stopped
