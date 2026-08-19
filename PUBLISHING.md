@@ -212,14 +212,20 @@ Forge's.
 Run the worker natively so NVENC works directly:
 
 ```powershell
-.\run-node.ps1 -Server http://your-nas:58420 -Mounts '{"server":"/media","local":"Z:/Media"}'
+.\run-node.ps1 -Server http://your-nas:58420 -Mounts Z:\Media
 ```
 
-`-Mounts` says the server's `/media` is this machine's `Z:`. With it, the
-worker opens files straight off the share; without it, every file is copied
-across and back.
+`-Mounts` is just where this machine sees the share:
 
-A UNC path works too: `"local":"//nas/media"`.
+```powershell
+.\run-node.ps1 -Server http://192.168.1.163:58420 -Mounts Z:\Media
+```
+
+With it, the worker opens files straight off the share. Without it, every
+file is copied across and back.
+
+A UNC path works too (`-Mounts \\nas\media`). If the Forge server calls the
+share something other than `/media`, add `-ServerPath /whatever`.
 
 Needs Python and a full FFmpeg build on PATH:
 

@@ -53,6 +53,28 @@ if ! command -v ffmpeg >/dev/null; then
   exit 1
 fi
 
+# A bare address is meant as http, and a Forge server on the network speaks
+# plain http — only the reverse proxy adds TLS.
+case "$SERVER" in
+  http://*|https://*) ;;
+  *) SERVER="http://$SERVER" ;;
+esac
+SERVER="${SERVER%/}"
+
+# TLS on a private address is nearly always a slip: the certificate lives on
+# the public name, not on 192.168.x.x.
+case "$SERVER" in
+  https://10.*|https://192.168.*|https://172.1[6-9].*|https://172.2[0-9].*|\
+  https://172.3[01].*|https://localhost*|https://127.*)
+    PLAIN="http://${SERVER#https://}"
+    echo "That address is on your own network but written as https."
+    echo "Forge itself speaks plain http; only the proxy adds TLS."
+    echo "Trying $PLAIN instead."
+    echo
+    SERVER="$PLAIN"
+    ;;
+esac
+
 # Going through a reverse proxy works for the interface but not well for a
 # worker: without a share mapping it uploads whole video files, and proxies
 # routinely cap request bodies and time out long uploads.
@@ -81,16 +103,72 @@ case "$SERVER" in
 esac
 
 if ! curl -s -o /dev/null --max-time 5 "$SERVER/api/state"; then
-  echo "Can't reach Forge at $SERVER"
-  echo
-  echo "Check that the server is running and that this machine can see it."
-  echo "From here, try:  curl $SERVER/api/state"
-  exit 1
+  # Usually the wrong scheme, so try the other one before giving up.
+  case "$SERVER" in
+    https://*) OTHER="http://${SERVER#https://}" ;;
+    *)         OTHER="https://${SERVER#http://}" ;;
+  esac
+  if curl -s -o /dev/null --max-time 5 "$OTHER/api/state"; then
+    echo "$SERVER didn't answer, but $OTHER does. Using that."
+    echo
+    SERVER="$OTHER"
+  else
+    echo "Can't reach Forge at $SERVER"
+    echo
+    echo "Neither http nor https answered on that address."
+    echo
+    echo "Things to check:"
+    echo "  - Is the Forge container running on the NAS?"
+    echo "  - Is the port published? The stack maps 58420 to the"
+    echo "    container's 8420."
+    echo "  - Ping working but the port not usually means a firewall on the"
+    echo "    NAS, or the container bound to a different address."
+    echo
+    echo "From here, try:  curl $SERVER/api/state"
+    exit 1
+  fi
 fi
 
-python3 -m venv .venv-node 2>/dev/null || true
-source .venv-node/bin/activate
-pip install -q -r worker/requirements.txt
+# MOUNTS may be given as a plain path, which is what people actually type.
+# Full JSON still works for unusual setups.
+SERVER_PATH="${SERVER_PATH:-/media}"
+case "${MOUNTS:-}" in
+  ""|"[]") MOUNTS="[]" ;;
+  \[*) : ;;                                   # already an array
+  \{*) MOUNTS="[$MOUNTS]" ;;                   # a single object
+  *=*) MOUNTS="[{\"server\":\"${MOUNTS%%=*}\",\"local\":\"${MOUNTS#*=}\"}]" ;;
+  *)   MOUNTS="[{\"server\":\"$SERVER_PATH\",\"local\":\"${MOUNTS%/}\"}]" ;;
+esac
+
+if [ "$MOUNTS" != "[]" ]; then
+  LOCAL_PATH=$(printf '%s' "$MOUNTS" | sed -n 's/.*"local":"\([^"]*\)".*/\1/p')
+  if [ -n "$LOCAL_PATH" ] && [ ! -d "$LOCAL_PATH" ]; then
+    echo "Warning: $LOCAL_PATH doesn't exist on this machine."
+    echo "Check the share is mounted, or Forge won't be able to open the"
+    echo "files it is sent."
+    echo
+  fi
+fi
+
+# Checked rather than assumed: a failed venv used to sail past and then
+# error on a missing activate script, which says nothing useful.
+if [ ! -x .venv-node/bin/python ]; then
+  echo "Setting up (once)…"
+  if ! python3 -m venv .venv-node 2>/tmp/forge-venv.log; then
+    echo
+    echo "Couldn't create the Python environment."
+    sed 's/^/  /' /tmp/forge-venv.log
+    echo
+    echo "On Debian or Ubuntu this is usually a missing package:"
+    echo "  sudo apt install python3-venv"
+    exit 1
+  fi
+fi
+
+if ! .venv-node/bin/pip install -q -r worker/requirements.txt; then
+  echo "Couldn't install what the worker needs. See the messages above."
+  exit 1
+fi
 
 # One worker per machine. A second would register as the same node and both
 # would encode while the interface showed one.
@@ -110,4 +188,4 @@ SERVER="$SERVER" \
 NODE_NAME="${NODE_NAME:-$(hostname -s)}" \
 MOUNTS="${MOUNTS:-[]}" \
 MAX_JOBS="${MAX_JOBS:-1}" \
-exec python worker/agent.py
+exec .venv-node/bin/python worker/agent.py
