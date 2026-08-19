@@ -47,10 +47,27 @@ services:
     cap_drop:
       - ALL
     ports:
+      # Keep this published even though the interface goes through the
+      # proxy: your desktop's worker connects here directly, and shouldn't
+      # go through the proxy for file transfers.
       - 58420:8420
+      # Optionally bind it to the LAN address only, so it isn't listening on
+      # every interface of the NAS:
+      # - 192.168.1.x:58420:8420
     networks:
       custom:
         ipv4_address: 172.40.0.13
+
+    # If your proxy is on this same custom network, point it at
+    # 172.40.0.13:8420 rather than the host address — one less hop, and it
+    # keeps interface traffic off the published port entirely.
+    #
+    # Using Traefik instead? Uncomment these and drop the ports block above,
+    # but keep a published port for the worker.
+    # labels:
+    #   - traefik.enable=true
+    #   - traefik.http.routers.forge.rule=Host(`forge.example.com`)
+    #   - traefik.http.services.forge.loadbalancer.server.port=8420
 
 networks:
   custom:

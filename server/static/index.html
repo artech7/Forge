@@ -388,7 +388,14 @@ function render(state) {
         <div style="font-family:'Chivo Mono',monospace;font-size:12px;
              background:rgba(0,0,0,.3);padding:9px 12px;border-radius:8px;
              margin:8px 0;word-break:break-all">./run-node.sh ${location.origin}</div>
-        <div>It appears here within a few seconds. Add as many as you like.</div>
+        ${location.protocol === 'https:' || !/^(\d+\.|localhost|127\.)/.test(location.hostname)
+          ? `<div style="color:var(--amber);font-size:12.5px;line-height:1.55">
+              You're viewing this through a proxy or public address. That's
+              right for the interface, but point workers at the server's
+              address on your own network instead \u2014 they move whole video
+              files, which proxies tend to cut off.</div>` : ''}
+        <div style="margin-top:8px">It appears here within a few seconds. Add
+        as many as you like.</div>
       </div></div>`;
   } else {
     nodesEl.innerHTML = state.nodes.map(n => {

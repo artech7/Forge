@@ -28,6 +28,17 @@ param(
 $ErrorActionPreference = "Stop"
 Set-Location $PSScriptRoot
 
+if (-not (Test-Path "worker\agent.py")) {
+    Write-Host ""
+    Write-Host "This needs to run from inside the Forge folder." -ForegroundColor Red
+    Write-Host ""
+    Write-Host "It's looking in:  $PSScriptRoot"
+    Write-Host "and can't find:   worker\agent.py"
+    Write-Host ""
+    Write-Host "Unzip the release somewhere, then run it from that folder."
+    exit 1
+}
+
 function Fail($message) {
     Write-Host ""
     Write-Host $message -ForegroundColor Red
@@ -54,6 +65,23 @@ FFmpeg isn't installed, or isn't on your PATH.
 Then open a new terminal so the PATH change takes effect. A full build is
 needed — the one bundled with some programs leaves out NVENC.
 "@
+}
+
+# A worker pointed at a proxy works for control traffic but not for file
+# transfers: proxies cap request bodies and time out long uploads.
+if ($Server -match "^https://" -or $Server -match "synology\.me|duckdns\.org|ddns\.net") {
+    Write-Host ""
+    Write-Host "Note: that looks like a public or proxied address." -ForegroundColor Yellow
+    Write-Host "Workers are better pointed straight at the NAS, for example:"
+    Write-Host "  .\run-node.ps1 -Server http://192.168.1.50:58420"
+    if ($Mounts -eq "[]") {
+        Write-Host ""
+        Write-Host "You also haven't set -Mounts, so every file would be copied"
+        Write-Host "across the network rather than read from the share directly."
+    }
+    Write-Host ""
+    $answer = Read-Host "Carry on anyway? [y/N]"
+    if ($answer -notmatch "^[yY]") { exit 1 }
 }
 
 try {
