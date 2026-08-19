@@ -1146,7 +1146,7 @@ function blankDraft() {
     naming:{ enabled:true, scheme:'jellyfin', folders:true, skip_uncertain:true },
     keep_chapters:true, clean_metadata:false, tidy_track_names:true,
     downmix:'', normalise_loudness:false,
-    original_action:'archive',
+    original_action:'archive', originals_path:'',
     min_saving_percent:'', auto_retry:true, salvage_when_stuck:true,
     auto_retry_steps:['small','smaller'], auto_retry_custom:'',
     filters:{ skip_extensions:[], skip_name_contains:[],
@@ -1581,6 +1581,16 @@ async function drawStep() {
     lead = 'Once a file has been converted, what should happen to the original?';
     const keeping = draft.original_action === 'archive';
     body = opt(CAT.originals, 'original_action') + `
+      ${keeping ? `
+        <label class="fld" style="margin-top:18px">
+          <span>Where to keep them</span>
+          <em>Leave blank and they go into an Originals folder beside the
+              destination \u2014 or inside the watched folder when converting
+              in place, which is wrong if that folder is a library your media
+              server scans. Give a separate path to keep them out of the way.</em>
+          <input type="text" value="${draft.originals_path || ''}"
+            placeholder="${draft.output_path ? 'optional' : '/originals'}"
+            oninput="draft.originals_path=this.value"></label>` : ''}
       <div class="${keeping ? 'review' : 'warn'}"
            style="${keeping ? 'font-size:12.5px;color:var(--muted);margin-top:6px' : ''}">
         ${keeping
@@ -1733,7 +1743,8 @@ async function drawStep() {
             draft.normalise_loudness ? 'volume levelled' : null,
           ].filter(Boolean).join(', ')],
       [8, 'Skipping', describeFilters()],
-      [9, 'Originals', n('originals','original_action')],
+      [9, 'Originals', n('originals','original_action')
+          + (draft.originals_path ? ` in ${draft.originals_path}` : '')],
       [10, 'Size check', (draft.min_saving_percent
             ? `must save ${draft.min_saving_percent}%` : 'must come out smaller')
           + (draft.auto_retry && draft.original_action === 'archive'
@@ -1893,6 +1904,7 @@ async function saveLibrary() {
     watch_path: draft.watch_path.trim(),
     output_path: draft.output_path.trim() || null,
     original_action: draft.original_action,
+    originals_path: draft.originals_path.trim() || null,
     profile: {
       video_codec: draft.video_codec, container: draft.container,
       quality_level: draft.quality_level, audio_codec: draft.audio_codec,

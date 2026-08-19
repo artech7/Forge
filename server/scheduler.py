@@ -22,6 +22,16 @@ CODEC_FAMILIES = {
 REMOTE_MIN_BYTES = 512 * 1024 * 1024
 
 
+def _slashes(path):
+    """One separator style, so Windows and Unix paths can be compared.
+
+    A Windows worker reports C:\\Media\\file.mkv while its mount is written
+    C:/Media. Without normalising, the two never match and the finished file
+    is never placed.
+    """
+    return (path or "").replace("\\", "/").rstrip("/")
+
+
 def resolve_path(node, path):
     """Return (transport, path_for_node).
 
@@ -29,11 +39,12 @@ def resolve_path(node, path):
     If the file lives under a mapped prefix the node opens it directly;
     otherwise the server streams it and takes the result back.
     """
+    normalised = _slashes(path)
     for mount in node.get("mounts", []):
-        server_prefix = mount.get("server", "").rstrip("/")
-        local_prefix = mount.get("local", "").rstrip("/")
-        if server_prefix and path.startswith(server_prefix + "/"):
-            return "local", local_prefix + path[len(server_prefix):]
+        server_prefix = _slashes(mount.get("server", ""))
+        local_prefix = _slashes(mount.get("local", ""))
+        if server_prefix and normalised.startswith(server_prefix + "/"):
+            return "local", local_prefix + normalised[len(server_prefix):]
     return "stream", path
 
 
@@ -126,9 +137,10 @@ def reverse_path(node, node_path):
     """Translate a worker's local path back into server path space."""
     if not node_path:
         return node_path
+    normalised = _slashes(node_path)
     for mount in node.get("mounts", []):
-        server_prefix = mount.get("server", "").rstrip("/")
-        local_prefix = mount.get("local", "").rstrip("/")
-        if local_prefix and node_path.startswith(local_prefix + "/"):
-            return server_prefix + node_path[len(local_prefix):]
+        server_prefix = _slashes(mount.get("server", ""))
+        local_prefix = _slashes(mount.get("local", ""))
+        if local_prefix and normalised.startswith(local_prefix + "/"):
+            return server_prefix + normalised[len(local_prefix):]
     return node_path

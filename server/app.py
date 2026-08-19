@@ -881,6 +881,30 @@ async def get_libraries():
     return db.list_libraries()
 
 
+def check_originals_folder(body, watch):
+    """Validate a chosen originals folder, if there is one.
+
+    Runs for every library, including ones converting in place — that's the
+    case where it matters most, since the default would otherwise put
+    originals inside the folder your media server scans.
+    """
+    chosen = (body.get("originals_path") or "").strip()
+    if not chosen or body.get("original_action", "archive") != "archive":
+        return
+    originals = Path(chosen).expanduser()
+    try:
+        originals.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise HTTPException(400, f"Can't use {originals} for originals: {exc}")
+    if not os.access(originals, os.W_OK):
+        raise HTTPException(400, f"Forge can't write to {originals}.")
+    if originals == watch or watch in originals.parents:
+        raise HTTPException(
+            400, "The originals folder is inside the folder being watched, so "
+                 "those files would be found and converted over and over. "
+                 "Put it somewhere outside it.")
+
+
 def validate_library(body, existing_id=None):
     """Reject setups that would fail confusingly later."""
     for field in ("name", "watch_path", "profile"):
@@ -897,6 +921,8 @@ def validate_library(body, existing_id=None):
     watch = Path(body["watch_path"]).expanduser()
     if not watch.is_dir():
         raise HTTPException(400, f"That watch folder doesn't exist: {watch}")
+
+    check_originals_folder(body, watch)
 
     out = body.get("output_path")
     if not out:
@@ -926,6 +952,24 @@ def validate_library(body, existing_id=None):
         if other == watch:
             raise HTTPException(
                 400, f'"{library["name"]}" already watches that folder.')
+
+    # Archived originals go beside the destination, so that folder's parent
+    # has to be writable. Picking the top of a mounted share puts them
+    # outside it, which in a container means the read-only root filesystem —
+    # and the failure would otherwise appear only after a file was encoded.
+    if body.get("original_action", "archive") == "archive":
+        parent = output.parent
+        if str(parent) in ("/", ""):
+            raise HTTPException(
+                400, "Pick a folder inside your media share rather than the "
+                     "top of it — Forge keeps originals alongside the "
+                     "destination, and there's nowhere above this to put "
+                     "them. For example /media/Movies rather than /media.")
+        if not os.access(parent, os.W_OK):
+            raise HTTPException(
+                400, f"Forge can't write to {parent}, where it would keep "
+                     f"originals. Check the folder is mounted and writable, "
+                     f"or choose a destination further inside your share.")
     return watch, output
 
 
@@ -948,6 +992,7 @@ async def add_library(req: Request):
             body.get("skip_matching", True),
             body.get("filters") or {},
             body.get("naming") or {},
+            body.get("originals_path") or None,
         )
     except sqlite3.IntegrityError as exc:
         raise HTTPException(400, f"Could not create that library: {exc}")
@@ -970,7 +1015,8 @@ async def edit_library(lib_id: int, req: Request):
         merged = {**current, **body}
         validate_library(merged, existing_id=lib_id)
     allowed = {"name", "watch_path", "output_path", "profile", "filters", "naming",
-               "original_action", "mirror_folders", "skip_matching", "enabled"}
+               "original_action", "mirror_folders", "skip_matching", "enabled",
+               "originals_path"}
     fields = {k: v for k, v in body.items() if k in allowed}
     if "name" in fields:
         fields["name"] = str(fields["name"]).strip()

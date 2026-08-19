@@ -320,6 +320,15 @@ def destination_for(library, source_path: str, container: str):
 
 
 def originals_dir(library):
+    """Where this library's archived sources go.
+
+    A chosen folder wins. Otherwise they sit beside the destination, or —
+    when converting in place — inside the watched folder, which is fine for
+    a staging area but wrong for a media library your server also scans.
+    """
+    chosen = (library.get("originals_path") or "").strip()
+    if chosen:
+        return Path(chosen) / library["name"]
     if library.get("output_path"):
         return Path(library["output_path"]).parent / "Originals" / library["name"]
     return Path(library["watch_path"]) / "Originals"

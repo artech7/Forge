@@ -37,6 +37,7 @@ CREATE TABLE IF NOT EXISTS libraries (
     skip_matching  INTEGER NOT NULL DEFAULT 1,
     filters        TEXT NOT NULL DEFAULT '{}',
     naming         TEXT NOT NULL DEFAULT '{}',
+    originals_path TEXT,
     enabled       INTEGER NOT NULL DEFAULT 1,
     created_at    REAL NOT NULL
 );
@@ -408,7 +409,8 @@ def migrate():
                  ("size_now", "INTEGER"), ("outcome", "TEXT"),
                  ("progress_at", "REAL")],
         "libraries": [("filters", "TEXT NOT NULL DEFAULT '{}'"),
-                      ("naming", "TEXT NOT NULL DEFAULT '{}'")],
+                      ("naming", "TEXT NOT NULL DEFAULT '{}'"),
+                      ("originals_path", "TEXT")],
         "nodes": [("recipes", "TEXT NOT NULL DEFAULT '{}'"),
                   ("benchmarks", "TEXT NOT NULL DEFAULT '{}'"),
                   ("slots", "INTEGER"), ("cpus", "INTEGER"),
@@ -428,16 +430,18 @@ def migrate():
 
 def create_library(name, watch_path, output_path, profile, original_action,
                    mirror_folders=True, skip_matching=True, filters=None,
-                   naming=None):
+                   naming=None, originals_path=None):
     with connect() as conn:
         cur = conn.execute(
             """INSERT INTO libraries
                (name, watch_path, output_path, profile, original_action,
-                mirror_folders, skip_matching, filters, naming, created_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                mirror_folders, skip_matching, filters, naming,
+                originals_path, created_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
             (name, watch_path, output_path or None, json.dumps(profile),
              original_action, int(mirror_folders), int(skip_matching),
-             json.dumps(filters or {}), json.dumps(naming or {}), time.time()),
+             json.dumps(filters or {}), json.dumps(naming or {}),
+             originals_path or None, time.time()),
         )
         return cur.lastrowid
 

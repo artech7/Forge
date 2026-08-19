@@ -1,0 +1,76 @@
+# Forge, fitted to an existing Radarr / Sonarr / SABnzbd / qBittorrent setup.
+#
+# Nothing about those containers changes. Radarr and Sonarr keep importing
+# exactly where they do now; Forge watches those same library folders and
+# converts each file where it sits. Because the file never moves, Radarr and
+# Sonarr stay pointed at it.
+#
+# Your library, as the other containers see it:
+#
+#   /volume1/homes/Dylan/Media/Movies      Radarr's /nasroot/Movies
+#   /volume1/homes/Dylan/Media/TV Shows    Sonarr's /tvshows
+#   /volume1/homes/Dylan/Media/Anime       Sonarr's /anime
+#
+# Forge mounts the parent of all three once, so it sees every library and
+# every move within them is an instant rename rather than a copy.
+
+name: forge
+services:
+  forge:
+    image: ghcr.io/YOURNAME/forge:latest
+    pull_policy: always
+    container_name: FORGE-SYNOLOGY
+    init: true
+    restart: on-failure:5
+    stop_grace_period: 15s
+    healthcheck:
+      test: curl -f http://localhost:8420/api/health || exit 1
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      TZ: America/Denver
+      MEDIA_ROOTS: /media
+    volumes:
+      - /volume1/docker/forge/data:/data:rw
+      # The whole media folder, so all three libraries are reachable.
+      - /volume1/homes/Dylan/Media:/media:rw
+      # Originals wait here before being deleted. Deliberately outside the
+      # media folder so Jellyfin and the *arrs never see them.
+      - /volume1/docker/forge/originals:/originals:rw
+    # Same as your other containers, so files keep the right owner.
+    user: "1026:100"
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    ports:
+      - 58420:8420
+    networks:
+      custom:
+        ipv4_address: 172.40.0.13
+
+networks:
+  custom:
+    external: true
+
+# ---------------------------------------------------------------------
+# Before starting:
+#
+#   mkdir -p /volume1/docker/forge/data /volume1/docker/forge/originals
+#   chown -R 1026:100 /volume1/docker/forge
+#
+# Then add three libraries in Forge. Leave the destination blank on each —
+# that is what makes it convert in place and keeps Radarr and Sonarr happy.
+#
+#   Name      Folder to watch     Move to   Keep originals in
+#   Movies    /media/Movies       (blank)   /originals
+#   TV        /media/TV Shows     (blank)   /originals
+#   Anime     /media/Anime        (blank)   /originals
+#
+# Turn OFF renaming on all three: Radarr and Sonarr have already named
+# everything, and renaming would break their tracking.
+#
+# Then Settings > "Automatically empty the Originals folder" to clear the
+# second copy after however many days you want.
+# ---------------------------------------------------------------------

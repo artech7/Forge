@@ -1,0 +1,74 @@
+# Forge alongside Radarr and Sonarr.
+#
+# The arrangement this is set up for:
+#
+#   Radarr/Sonarr import into  /volume1/media/inbox/{movies,tv}
+#   Forge converts and files into  /volume1/media/{Movies,TV}
+#   Originals wait in  /volume1/media/Originals/  and are deleted later
+#
+# Everything is one share mounted once, so moving a finished file is an
+# instant rename rather than a copy. That matters at 40 GB.
+#
+# Point your Jellyfin libraries at Movies and TV specifically, not at the
+# top of the share, or it will index the Originals folder as duplicates.
+
+name: forge
+services:
+  forge:
+    image: ghcr.io/YOURNAME/forge:latest
+    pull_policy: always
+    container_name: forge
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 15s
+    ports:
+      - "58420:8420"
+    environment:
+      TZ: America/Denver
+      MEDIA_ROOTS: /media
+    volumes:
+      - forge-data:/data
+      # One mount for the whole share. Radarr and Sonarr should use the same
+      # left-hand path so everyone agrees on where files are.
+      - /volume1/media:/media
+    # Whoever owns the media. `id yourusername` on the NAS gives you these.
+    # Radarr and Sonarr should run as the same user, or files arrive with
+    # owners Forge can't move.
+    user: "1026:100"
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8420/api/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+
+volumes:
+  forge-data:
+
+# ---------------------------------------------------------------------
+# On the NAS, before starting:
+#
+#   mkdir -p /volume1/media/inbox/movies
+#   mkdir -p /volume1/media/inbox/tv
+#   mkdir -p /volume1/media/Movies
+#   mkdir -p /volume1/media/TV
+#
+# In Radarr:  Settings > Media Management > Root Folder = /media/inbox/movies
+# In Sonarr:  Settings > Media Management > Root Folder = /media/inbox/tv
+#   (assuming they mount /volume1/media at /media too — if they use a
+#    different container path, use theirs; only the NAS path has to match)
+#
+# In Forge, add two libraries:
+#
+#   Movies   watch /media/inbox/movies   destination /media/Movies
+#   TV       watch /media/inbox/tv       destination /media/TV
+#
+# Then Settings > "Automatically empty the Originals folder", set how many
+# days to keep them and when to run.
+# ---------------------------------------------------------------------

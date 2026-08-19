@@ -183,6 +183,44 @@ check("record_original re-points the job", lambda: (
       db.record_original("/a/x.mkv", 102, 1, "/b/x.mkv", 10),
       db.original_for_job(102) is not None)[-1], lambda r: r is True)
 
+print("\nPath mapping across platforms:")
+_WIN = {"mounts": [{"server": "/media", "local": "Z:/Media"}]}
+_UNC = {"mounts": [{"server": "/media", "local": "//nas/media"}]}
+_NIX = {"mounts": [{"server": "/media", "local": "/mnt/nas/media"}]}
+check("Windows drive letter maps home", lambda: scheduler.reverse_path(
+      _WIN, "Z:\\Media\\Movies\\.forge-7.mkv"),
+      lambda r: r == "/media/Movies/.forge-7.mkv")
+check("Windows UNC path maps home", lambda: scheduler.reverse_path(
+      _UNC, "\\\\nas\\media\\Movies\\.forge-7.mkv"),
+      lambda r: r == "/media/Movies/.forge-7.mkv")
+check("a mount written with backslashes still matches", lambda:
+      scheduler.reverse_path({"mounts": [{"server": "/media",
+                                          "local": "Z:\\Media"}]},
+                             "Z:\\Media\\a.mkv"),
+      lambda r: r == "/media/a.mkv")
+check("Unix still works", lambda: scheduler.reverse_path(
+      _NIX, "/mnt/nas/media/Movies/.forge-7.mkv"),
+      lambda r: r == "/media/Movies/.forge-7.mkv")
+check("forward mapping to Windows", lambda: scheduler.resolve_path(
+      _WIN, "/media/Movies/a.mkv"),
+      lambda r: r == ("local", "Z:/Media/Movies/a.mkv"))
+check("an unmapped path is streamed", lambda: scheduler.resolve_path(
+      _WIN, "/other/a.mkv")[0], lambda r: r == "stream")
+
+print("\nWhere originals go:")
+check("in place, no choice", lambda: str(watcher.originals_dir(
+      {"name": "Movies", "watch_path": "/media/Movies", "output_path": None})),
+      lambda r: r == "/media/Movies/Originals")
+check("in place, chosen folder", lambda: str(watcher.originals_dir(
+      {"name": "Movies", "watch_path": "/media/Movies", "output_path": None,
+       "originals_path": "/originals"})), lambda r: r == "/originals/Movies")
+check("staged, chosen folder", lambda: str(watcher.originals_dir(
+      {"name": "TV", "watch_path": "/in", "output_path": "/media/TV",
+       "originals_path": "/originals"})), lambda r: r == "/originals/TV")
+check("a blank choice falls back", lambda: str(watcher.originals_dir(
+      {"name": "TV", "watch_path": "/in", "output_path": "/media/TV",
+       "originals_path": "  "})), lambda r: r == "/media/Originals/TV")
+
 print("\nGiving up on stuck jobs:")
 _AF = {"enabled": True, "amount": 2, "unit": "hours",
        "stall_enabled": True, "stall_minutes": 30}
