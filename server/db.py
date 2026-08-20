@@ -137,17 +137,36 @@ def init():
         conn.executescript(SCHEMA)
 
 
+def parse_json(value, default=None):
+    """Decode a stored JSON column, tolerating anything unexpected.
+
+    A NULL column raises TypeError rather than JSONDecodeError, which is a
+    different exception and was slipping past narrower handlers.
+    """
+    if value is None:
+        return default
+    if isinstance(value, (bytes, bytearray)):
+        try:
+            value = value.decode("utf-8")
+        except UnicodeDecodeError:
+            return default
+    if not isinstance(value, str):
+        return value if isinstance(value, (dict, list)) else default
+    try:
+        return json.loads(value)
+    except (json.JSONDecodeError, ValueError):
+        return default
+
+
 def row_to_dict(row):
     if row is None:
         return None
     d = dict(row)
     for key in ("encoders", "mounts", "spec", "profile", "filters",
                 "recipes", "benchmarks", "benchmarks_10bit", "naming"):
-        if key in d and isinstance(d[key], str):
-            try:
-                d[key] = json.loads(d[key])
-            except (json.JSONDecodeError, TypeError):
-                pass
+        if key in d:
+            d[key] = parse_json(d[key], {} if key not in
+                                ("encoders", "mounts") else [])
     return d
 
 
@@ -551,10 +570,9 @@ def get_settings():
     merged = json.loads(json.dumps(DEFAULT_SETTINGS))
     with connect() as conn:
         for row in conn.execute("SELECT key, value FROM settings").fetchall():
-            try:
-                merged[row["key"]] = json.loads(row["value"])
-            except json.JSONDecodeError:
-                pass
+            value = parse_json(row["value"])
+            if value is not None:
+                merged[row["key"]] = value
     return merged
 
 

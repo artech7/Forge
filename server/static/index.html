@@ -405,8 +405,11 @@ function render(state) {
       // A hardware encoder that quietly drops to software for 10-bit is the
       // most confusing cliff there is: the badge says 170 fps, one file runs
       // at 5. Worth stating outright.
+      // A zero means the 10-bit test produced nothing, which is normal for
+      // H.264 hardware encoders — no consumer chip does 10-bit H.264. Only
+      // an encoder that manages 10-bit *badly* is worth mentioning.
       const slow10 = Object.entries(marks10)
-        .filter(([e, ten]) => marks[e] && ten < marks[e] * 0.4)
+        .filter(([e, ten]) => marks[e] && ten > 0 && ten < marks[e] * 0.4)
         .map(([e, ten]) => ({enc: e, ten, eight: marks[e]}));
       const softwareFallback = Object.entries(recipes)
         .filter(([, r]) => (r || '').includes('SOFTWARE')).map(([e]) => e);
@@ -414,10 +417,10 @@ function render(state) {
         const isHw = HW.some(h => e.endsWith(h));
         const isSw = softwareFallback.includes(e);
         const ten = marks10[e];
-        const tenSlow = ten && marks[e] && ten < marks[e] * 0.4;
+        const tenSlow = ten > 0 && marks[e] && ten < marks[e] * 0.4;
         const fps = marks[e]
-          ? `<span class="fps">${marks[e]}fps${ten
-              ? ` / ${ten}<span style="opacity:.7">×10bit</span>` : ''}</span>`
+          ? `<span class="fps">${marks[e]}fps${ten > 0
+              ? ` / ${ten}<span style="opacity:.7">\u00d710bit</span>` : ''}</span>`
           : '';
         return `<span class="cap ${isSw || tenSlow ? (isSw ? 'sw' : 'hw') : isHw ? 'hw' : ''}"
                 >${e}${fps}</span>`;

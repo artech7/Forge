@@ -325,6 +325,42 @@ check("no cliff means 10-bit is kept", lambda: (
       _enc.BENCHMARKS_10BIT.update({"libx265": 55.0}),
       _enc.choose_depth("libx265", {"bit_depth": "match"}, 10)[0])[-1],
       lambda r: r == "10")
+# A zero measurement means the encode failed, not that it was slow. H.264
+# hardware encoders always come back zero, because no consumer chip does
+# 10-bit H.264 — reporting that as a fault is noise.
+_enc.BENCHMARKS.update({"h264_amf": 269.5, "hevc_amf": 284.5})
+_enc.BENCHMARKS_10BIT.update({"h264_amf": 0, "hevc_amf": 279.8})
+check("zero 10-bit is not reported as slow", lambda: _enc.ten_bit_warnings(),
+      lambda r: "h264_amf" not in r)
+check("an encoder with no 10-bit is recognised", lambda:
+      _enc.can_do_ten_bit("h264_amf"), lambda r: r is False)
+check("and scores zero for a 10-bit job", lambda:
+      _enc.effective_speed("h264_amf", True), lambda r: r == 0)
+check("a capable encoder keeps 10-bit", lambda: _enc.choose_depth(
+      "hevc_amf", {"bit_depth": "match"}, 10)[0], lambda r: r == "10")
+check("an incapable one falls back with a clear reason", lambda:
+      _enc.choose_depth("h264_amf", {"bit_depth": "match"}, 10)[1],
+      lambda r: r and "can't produce 10-bit" in r)
+
+print("\nTolerating odd stored values:")
+check("parse_json handles NULL", lambda: db.parse_json(None, {}),
+      lambda r: r == {})
+check("parse_json handles rubbish", lambda: db.parse_json("not json", {}),
+      lambda r: r == {})
+check("parse_json handles bytes", lambda: db.parse_json(b'{"a":1}'),
+      lambda r: r == {"a": 1})
+check("parse_json passes a dict through", lambda: db.parse_json({"a": 1}),
+      lambda r: r == {"a": 1})
+def _write_bad_setting():
+    with db.connect() as conn:
+        conn.execute("INSERT OR REPLACE INTO settings (key, value) "
+                     "VALUES ('junk', '{{{')")
+    return db.get_settings()
+
+
+check("settings survive a bad row", _write_bad_setting,
+      lambda r: "schedule" in r)
+
 check("hardware decode for an 8-bit source", lambda: " ".join(
       __import__("encoders").build_command("i.mkv", "o.mp4", "hevc_videotoolbox",
         {"codec": "hevc", "quality": 22, "container": "mp4", "audio": "copy"},

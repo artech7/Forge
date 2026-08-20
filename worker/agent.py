@@ -13,6 +13,7 @@ import threading
 import sys
 import tempfile
 import time
+import traceback
 import uuid
 from pathlib import Path
 
@@ -242,7 +243,12 @@ def run_job(job, caps):
     except Exception as exc:
         if local_out:
             Path(local_out).unlink(missing_ok=True)
-        report_fail(job_id, str(exc)[:400])
+        # Where it happened matters as much as what happened: a bare message
+        # like "must be str, not NoneType" says nothing about the cause.
+        where = traceback.extract_tb(exc.__traceback__)[-1]
+        report_fail(job_id, f"{type(exc).__name__}: {exc} "
+                            f"(at {Path(where.filename).name} line "
+                            f"{where.lineno}, in {where.name})"[:400])
     finally:
         if fetched:
             Path(fetched).unlink(missing_ok=True)

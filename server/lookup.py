@@ -34,10 +34,7 @@ def _cache_get(key):
         return None
     if time.time() - (row["at"] or 0) > CACHE_DAYS * 86400:
         return None
-    try:
-        return json.loads(row["value"])
-    except json.JSONDecodeError:
-        return None
+    return db.parse_json(row["value"])
 
 
 def _cache_put(key, value):
