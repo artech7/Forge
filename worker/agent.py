@@ -75,6 +75,31 @@ ERROR_MARKERS = ("error", "invalid", "unable to", "no such file",
 NOISE_MARKERS = ("error opening output files:",)
 
 
+# FFmpeg returns its own error codes rather than small exit statuses, and
+# Windows reports them unsigned, so they arrive as huge meaningless numbers.
+FFMPEG_CODES = {
+    -1094995529: "the data in the file wasn't valid",
+    -541478725: "the file ended sooner than expected",
+    -1179861752: "no decoder for one of the streams",
+    -1128613112: "no encoder for one of the streams",
+    -1330794744: "the file format wasn't recognised",
+    -2: "a file was missing",
+    -13: "permission denied",
+    -22: "an argument was rejected",
+    -28: "the disk is full",
+    -32: "a pipe closed early",
+}
+
+
+def describe_exit(returncode):
+    """A code a person can act on, rather than a 10-digit number."""
+    signed = returncode - 2 ** 32 if returncode > 2 ** 31 else returncode
+    meaning = FFMPEG_CODES.get(signed)
+    if meaning:
+        return f"FFmpeg gave up \u2014 {meaning}"
+    return f"FFmpeg exited {signed}"
+
+
 def explain_failure(stderr, returncode):
     """Pull the lines that actually say what went wrong."""
     lines = [l.strip() for l in (stderr or "").splitlines() if l.strip()]
@@ -86,10 +111,24 @@ def explain_failure(stderr, returncode):
                 continue          # generic summary, we already have the cause
             if line not in hits:
                 hits.append(line)
+    prefix = describe_exit(returncode)
     if not hits:
-        return f"FFmpeg exited {returncode}: " + (lines[-1] if lines else "no output")
-    # The first two are almost always the cause; the rest are consequences.
-    return f"FFmpeg exited {returncode}: " + " | ".join(hits[:2])
+        return f"{prefix}: " + (lines[-1] if lines else "no output")
+
+    # A muxer complaining it can't write a header is a consequence; the
+    # stream that failed to decode is the cause, and belongs first.
+    hits.sort(key=lambda line: 0 if ("af#" in line or "vst#" in line
+                                     or "Error while decoding" in line)
+              else 1)
+    message = f"{prefix}: " + " | ".join(hits[:2])
+
+    joined = " ".join(hits).lower()
+    if "af#" in joined or "audio" in joined:
+        message += (" — this usually means one audio track is damaged or "
+                    "uses something FFmpeg can't decode. Try setting this "
+                    "library's audio to \"Leave audio alone\" to see whether "
+                    "the rest of the file is fine.")
+    return message
 
 
 def parse_progress(line, duration):

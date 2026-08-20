@@ -143,6 +143,18 @@ If you do want the NAS itself converting, uncomment the `worker-nas` service
 in `docker-compose.yml`. It is off by default because most NAS hardware is
 slow at this and will be tied up for hours.
 
+## Why did one file fail to convert?
+
+```bash
+python3 check-media.py "/path/to/the/file.mkv"
+```
+
+Decodes every stream in turn and names the one that failed. A damaged audio
+track is the usual answer, and the usual fix is to leave that library's audio
+alone so the track is copied rather than decoded.
+
+Run it on the machine holding the file — the worker, not the server.
+
 ## Why isn't Forge picking up a file?
 
 ```bash

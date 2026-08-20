@@ -349,6 +349,25 @@ check("an incapable one falls back with a clear reason", lambda:
       _enc.choose_depth("h264_amf", {"bit_depth": "match"}, 10)[1],
       lambda r: r and "can't produce 10-bit" in r)
 
+print("\nReadable FFmpeg failures:")
+_agent_path = str(pathlib.Path(__file__).parent / "worker")
+if _agent_path not in sys.path:
+    sys.path.insert(0, _agent_path)
+import agent as _agent                            # noqa: E402
+check("a Windows unsigned code is decoded", lambda:
+      _agent.describe_exit(3199971767),
+      lambda r: "wasn't valid" in r)
+check("a plain exit code survives", lambda: _agent.describe_exit(1),
+      lambda r: r == "FFmpeg exited 1")
+check("the cause is put before the consequence", lambda: _agent.explain_failure(
+      "[out#0/matroska @ 0x1] Could not write header (incorrect codec "
+      "parameters ?): Invalid data found when processing input\n"
+      "[af#0:1 @ 0x2] Error sending frames to consumers: Invalid data found",
+      3199971767), lambda r: r.index("af#0:1") < r.index("out#0/matroska"))
+check("and audio trouble gets a suggestion", lambda: _agent.explain_failure(
+      "[af#0:1 @ 0x2] Error sending frames to consumers: Invalid data found",
+      3199971767), lambda r: "Leave audio alone" in r)
+
 print("\nRetrying a failed job:")
 _spec = {"codec": "copy", "audio": "aac", "container": "mkv"}
 _dup_path = "/m/dup.mkv"
