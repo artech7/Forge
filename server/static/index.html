@@ -616,9 +616,28 @@ async function setSlots(id, value) {
 }
 
 /* ------------------------------------------------------- job actions */
+// Every one of these ignored the reply, so a rejected request looked
+// exactly like a working button that did nothing.
+async function callJob(id, path, options) {
+  try {
+    const r = await fetch(`/api/jobs/${id}/${path}`, {method:'POST', ...options});
+    if (!r.ok) {
+      let detail = `The server refused that (error ${r.status}).`;
+      try { detail = (await r.json()).detail || detail; } catch (e) {}
+      alert(detail);
+      return null;
+    }
+    return await r.json().catch(() => ({}));
+  } catch (e) {
+    alert('Could not reach the server.');
+    return null;
+  }
+}
+
 async function retryJob(id) {
-  await fetch(`/api/jobs/${id}/retry`, {method:'POST'});
-  if (view.name !== 'active') loadView();
+  const result = await callJob(id, 'retry');
+  if (result && result.message) alert(result.message);
+  if (result) loadView();
 }
 
 async function requeueJob(id, state) {
@@ -627,14 +646,15 @@ async function requeueJob(id, state) {
     + 'starts over — worth it only if it would now use a faster encoder.\n\nRestart?'
     : 'Put this job back in the queue?';
   if (!confirm(warning)) return;
-  await fetch(`/api/jobs/${id}/retry`, {method:'POST'});
-  if (view.name !== 'active') loadView();
+  const result = await callJob(id, 'retry');
+  if (result && result.message) alert(result.message);
+  if (result && view.name !== 'active') loadView();
 }
 
 async function cancelJob(id) {
   if (!confirm('Cancel this job? The original file is left untouched.')) return;
-  await fetch(`/api/jobs/${id}/cancel`, {method:'POST'});
-  if (view.name !== 'active') loadView();
+  const result = await callJob(id, 'cancel');
+  if (result && view.name !== 'active') loadView();
 }
 
 /* --------------------------------------------------------- job views */
@@ -807,8 +827,7 @@ async function doRetranscode(jobId) {
 
 async function acceptJob(jobId) {
   if (!confirm('Keep the converted file even though it got bigger?')) return;
-  await fetch('/api/jobs/' + jobId + '/accept', {method:'POST'});
-  loadView();
+  if (await callJob(jobId, 'accept')) loadView();
 }
 
 function renderPager(meta) {

@@ -16,10 +16,17 @@ import db                                        # noqa: E402
 db.DB_PATH = pathlib.Path(tempfile.mkdtemp()) / "check.db"
 
 from datetime import datetime as _DT             # noqa: E402
+import app                                       # noqa: E402
 import naming, profiles, schedule, watcher       # noqa: E402
 import lookup, scheduler                         # noqa: E402
 
 failures = []
+
+
+def _run(coroutine):
+    """Run one async endpoint from this synchronous script."""
+    import asyncio
+    return asyncio.run(coroutine)
 
 
 def check(label, fn, expect=None):
@@ -341,6 +348,24 @@ check("a capable encoder keeps 10-bit", lambda: _enc.choose_depth(
 check("an incapable one falls back with a clear reason", lambda:
       _enc.choose_depth("h264_amf", {"bit_depth": "match"}, 10)[1],
       lambda r: r and "can't produce 10-bit" in r)
+
+print("\nRetrying a failed job:")
+_spec = {"codec": "copy", "audio": "aac", "container": "mkv"}
+_dup_path = "/m/dup.mkv"
+_failed = db.enqueue(_dup_path, _spec, 1000)
+db.update_job(_failed, state="failed", error="x")
+db.enqueue(_dup_path, _spec, 1000)
+check("a duplicate is cleared rather than erroring", lambda: _run(
+      app.retry_job(_failed)), lambda r: r.get("removed") is True)
+check("and the live job is untouched", lambda: db.count_jobs(["queued"]),
+      lambda r: r >= 1)
+
+_solo = db.enqueue("/m/solo.mkv", _spec, 1000)
+db.update_job(_solo, state="failed", error="x")
+check("a lone failed job requeues", lambda: (_run(app.retry_job(_solo)),
+      db.get_job(_solo)["state"])[-1], lambda r: r == "queued")
+check("and its error is cleared", lambda: db.get_job(_solo)["error"],
+      lambda r: r is None)
 
 print("\nTolerating odd stored values:")
 check("parse_json handles NULL", lambda: db.parse_json(None, {}),

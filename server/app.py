@@ -1142,8 +1142,22 @@ async def retry_job(job_id: int):
     job = db.get_job(job_id)
     if not job:
         raise HTTPException(404, "No such job")
-    db.update_job(job_id, state="queued", node_id=None, lease_expires=None,
-                  progress=0, fps=0, speed=0, error=None)
+
+    # Only one live job per file. If this path is already waiting or running,
+    # putting this one back would break that rule — and the file is going to
+    # be converted anyway, so the stale entry is simply cleared.
+    if db.has_job_for(job["path"], list(db.ACTIVE_STATES)):
+        db.delete_job(job_id)
+        await broadcast()
+        return {"ok": True, "removed": True,
+                "message": "That file is already in the queue, so this old "
+                           "entry has been cleared."}
+
+    try:
+        db.update_job(job_id, state="queued", node_id=None, lease_expires=None,
+                      progress=0, fps=0, speed=0, error=None, outcome=None)
+    except sqlite3.IntegrityError as exc:
+        raise HTTPException(400, f"Couldn't queue that again: {exc}")
     await broadcast()
     return {"ok": True}
 

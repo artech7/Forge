@@ -3,6 +3,7 @@
     NODE_NAME=basement-4090 SERVER=http://nas:8420 \
     MOUNTS='[{"server":"/media","local":"/mnt/nas/media"}]' python agent.py
 """
+import collections
 import json
 import os
 import shutil
@@ -197,6 +198,23 @@ def run_job(job, caps):
 
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
                                 stderr=subprocess.PIPE, text=True, bufsize=1)
+
+        # FFmpeg writes warnings to stderr continuously. Nothing was reading
+        # that pipe until the process finished, so once the operating
+        # system's buffer filled — a few dozen kilobytes of "non-monotonous
+        # DTS" is plenty — FFmpeg blocked writing to it and waited forever
+        # while this loop waited on stdout. Neither side could move.
+        # Draining it in the background keeps both flowing, and the last few
+        # hundred lines are kept for reporting a failure.
+        stderr_tail = collections.deque(maxlen=300)
+
+        def drain_stderr():
+            for line in proc.stderr:
+                stderr_tail.append(line)
+
+        stderr_thread = threading.Thread(target=drain_stderr, daemon=True)
+        stderr_thread.start()
+
         update = {"encoder": encoder or "remux"}
         if depth_note:
             update["note"] = depth_note
@@ -213,15 +231,16 @@ def run_job(job, caps):
                     stopped = True
                     break
         proc.wait()
+        stderr_thread.join(timeout=5)
 
         if stopped:
             scratch.unlink(missing_ok=True)
             return
 
         if proc.returncode != 0:
-            stderr = proc.stderr.read() or ""
             scratch.unlink(missing_ok=True)
-            report_fail(job_id, explain_failure(stderr, proc.returncode))
+            report_fail(job_id,
+                        explain_failure("".join(stderr_tail), proc.returncode))
             return
 
         size_after = scratch.stat().st_size
