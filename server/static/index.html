@@ -160,6 +160,10 @@
   .empty b{display:block;color:var(--text);font-weight:600;margin-bottom:5px}
 
   .actions{display:flex;gap:9px;flex-wrap:wrap;margin-top:14px}
+  .queue-head{display:flex;align-items:center;justify-content:space-between;
+              flex-wrap:wrap;gap:10px 14px;margin:30px 0 12px}
+  .queue-head h2{margin:0}
+  .queue-head .actions{margin:0}
   button{font-family:Archivo,sans-serif;font-size:13px;font-weight:600;
          color:var(--text);background:rgba(255,255,255,.08);
          border:1px solid var(--edge);border-radius:11px;padding:9px 16px;
@@ -306,17 +310,19 @@
   <h2>Nodes</h2>
   <div class="nodes" id="nodes"></div>
 
-  <h2>Queue</h2>
+  <div class="queue-head">
+    <h2>Queue</h2>
+    <div class="actions">
+      <button class="primary" onclick="openWizard()">Add a library</button>
+      <button onclick="scanAll()">Check folders now</button>
+      <button onclick="openSettings()">Settings</button>
+      <button onclick="sweepNow()">Clean up Originals</button>
+    </div>
+  </div>
+  <div class="tabs" id="libtabs"></div>
   <div class="tabs" id="jobtabs"></div>
   <div class="queue" id="queue"></div>
   <div class="pager" id="pager"></div>
-
-  <div class="actions">
-    <button class="primary" onclick="openWizard()">Add a library</button>
-    <button onclick="scanAll()">Check folders now</button>
-    <button onclick="openSettings()">Settings</button>
-    <button onclick="sweepNow()">Clean up Originals</button>
-  </div>
 </div>
 
 <div class="veil" id="veil">
@@ -490,10 +496,16 @@ function render(state) {
       ? `  \u00b7  ${state.cleanup_text.toLowerCase()}` : '');
 
   renderLibs(state.libraries);
+  renderLibTabs(state.libraries);
 
-  renderTabs(state.counts || {});
-  if (view.name === 'active') renderJobs(state.jobs || [], null);
-  else if (!view.loaded) loadView();
+  const id = view.library_id;
+  const counts = id == null ? (state.counts || {})
+    : (state.counts_by_library || {})[id] || {active:0,failed:0,bloated:0,done:0};
+  view.counts = counts;
+  renderTabs(counts);
+  if (view.name === 'active') {
+    renderJobs((state.jobs || []).filter(j => id == null || j.library_id === id), null);
+  } else if (!view.loaded) loadView();
 }
 
 
@@ -658,7 +670,43 @@ async function cancelJob(id) {
 }
 
 /* --------------------------------------------------------- job views */
-const view = {name:'active', page:1, perPage:20, loaded:false, counts:{}};
+const view = {name:'active', page:1, perPage:20, loaded:false, counts:{},
+              library_id:null};
+
+/* Each library gets its own queue: this draws the picker (All + one tab
+   per library) and switchLibrary() below re-scopes whichever state tab
+   (active/failed/bloated/done) is currently open to just that library. */
+function renderLibTabs(libs) {
+  const el = document.getElementById('libtabs');
+  const all = [{id: null, name: 'All'}].concat(
+    (libs || []).map(l => ({id: l.id, name: l.name})));
+  el.innerHTML = all.map(l =>
+    `<button class="${view.library_id === l.id ? 'on' : ''}"
+      onclick="switchLibrary(${l.id === null ? 'null' : l.id})">${l.name}</button>`
+  ).join('');
+}
+
+function switchLibrary(id) {
+  if (view.library_id === id) return;
+  view.library_id = id;
+  view.page = 1;
+  view.loaded = false;
+  renderLibTabs((window.__state || {}).libraries || []);
+  if (view.name === 'active') {
+    // Active jobs already arrive live over the websocket, so filtering
+    // that in place keeps progress updating instead of falling back to
+    // polling — only the other (non-live) tabs need a fetch.
+    const state = window.__state || {};
+    const counts = id == null ? state.counts
+      : (state.counts_by_library || {})[id] || {active:0,failed:0,bloated:0,done:0};
+    view.counts = counts;
+    renderTabs(counts);
+    renderJobs((state.jobs || []).filter(j => id == null || j.library_id === id), null);
+    document.getElementById('pager').innerHTML = '';
+  } else {
+    loadView();
+  }
+}
 
 function renderTabs(counts) {
   view.counts = counts;
@@ -680,7 +728,9 @@ function switchView(name) {
   view.loaded = false;
   renderTabs(view.counts);
   if (name === 'active') {
-    renderJobs((window.__state || {}).jobs || [], null);
+    const id = view.library_id;
+    renderJobs((((window.__state || {}).jobs) || [])
+      .filter(j => id == null || j.library_id === id), null);
     document.getElementById('pager').innerHTML = '';
   } else {
     loadView();
@@ -691,8 +741,9 @@ async function loadView() {
   const el = document.getElementById('queue');
   el.innerHTML = '<div class="glass empty">Loading…</div>';
   try {
+    const libParam = view.library_id == null ? '' : `&library_id=${view.library_id}`;
     const r = await (await fetch(
-      `/api/jobs?view=${view.name}&page=${view.page}&per_page=${view.perPage}`)).json();
+      `/api/jobs?view=${view.name}&page=${view.page}&per_page=${view.perPage}${libParam}`)).json();
     view.loaded = true;
     view.page = r.page;
     renderTabs(r.counts || view.counts);

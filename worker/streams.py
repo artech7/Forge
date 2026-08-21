@@ -87,16 +87,28 @@ UNSUPPORTED_SUB_CODECS = {"eia_608", "eia_708"}
 
 
 def analyze(path):
-    """Full stream inventory for one file."""
+    """Full stream inventory for one file.
+
+    ffprobe's JSON is trusted here the same way db.parse_json distrusts a
+    NULL column: TypeError sits alongside JSONDecodeError because "the
+    output wasn't parseable JSON" and "the output wasn't a string at all"
+    are different exceptions for the same underlying situation, and only
+    one of them was being caught. Whatever produced a non-string result —
+    a killed process, an odd platform quirk in how the pipe was read, a
+    race where the file changed mid-probe — the right outcome is the same
+    as any other failed probe: report no stream info rather than crash
+    the whole job over a metadata read.
+    """
     try:
         out = subprocess.run(
             ["ffprobe", "-v", "quiet", "-print_format", "json",
              "-show_streams", "-show_format", path],
             capture_output=True, text=True, timeout=120)
-        if out.returncode != 0:
+        if out.returncode != 0 or not out.stdout:
             return None
         return json.loads(out.stdout)
-    except (subprocess.TimeoutExpired, json.JSONDecodeError, OSError):
+    except (subprocess.TimeoutExpired, json.JSONDecodeError, OSError,
+            TypeError, UnicodeDecodeError):
         return None
 
 

@@ -257,12 +257,17 @@ VIEWS = {
 }
 
 
-def list_jobs(states=None, limit=200, offset=0):
+def list_jobs(states=None, limit=200, offset=0, library_id=None):
     query = "SELECT * FROM jobs"
-    params = []
+    clauses, params = [], []
     if states:
-        query += f" WHERE state IN ({','.join('?' * len(states))})"
+        clauses.append(f"state IN ({','.join('?' * len(states))})")
         params.extend(states)
+    if library_id is not None:
+        clauses.append("library_id=?")
+        params.append(library_id)
+    if clauses:
+        query += " WHERE " + " AND ".join(clauses)
     # Active work reads best oldest-first (that's the running order);
     # history reads best newest-first.
     ascending = states and set(states) <= set(ACTIVE_STATES)
@@ -273,18 +278,47 @@ def list_jobs(states=None, limit=200, offset=0):
         return [row_to_dict(r) for r in conn.execute(query, params).fetchall()]
 
 
-def count_jobs(states=None):
+def count_jobs(states=None, library_id=None):
     query = "SELECT COUNT(*) FROM jobs"
-    params = []
+    clauses, params = [], []
     if states:
-        query += f" WHERE state IN ({','.join('?' * len(states))})"
+        clauses.append(f"state IN ({','.join('?' * len(states))})")
         params.extend(states)
+    if library_id is not None:
+        clauses.append("library_id=?")
+        params.append(library_id)
+    if clauses:
+        query += " WHERE " + " AND ".join(clauses)
     with connect() as conn:
         return conn.execute(query, params).fetchone()[0]
 
 
-def job_counts():
-    return {view: count_jobs(states) for view, states in VIEWS.items()}
+def job_counts(library_id=None):
+    return {view: count_jobs(states, library_id) for view, states in VIEWS.items()}
+
+
+def counts_by_library():
+    """View counts for every library in one query, keyed by library_id.
+
+    Used on every broadcast (a running job reports progress every second or
+    two), so this is one GROUP BY rather than 4 queries per library — the
+    difference matters once there are several libraries with jobs in flight.
+    Jobs queued without a library (e.g. by hand via /api/queue) land under
+    the None key, which the interface's "All" view already covers without
+    needing a lookup here.
+    """
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT library_id, state, COUNT(*) FROM jobs GROUP BY library_id, state"
+        ).fetchall()
+    per_lib = {}
+    for library_id, state_name, n in rows:
+        per_lib.setdefault(library_id, {})[state_name] = n
+    return {
+        lib_id: {view: sum(state_counts.get(s, 0) for s in states)
+                 for view, states in VIEWS.items()}
+        for lib_id, state_counts in per_lib.items()
+    }
 
 
 def delete_job(job_id):

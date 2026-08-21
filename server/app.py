@@ -225,6 +225,10 @@ async def build_state():
         # every update enormous.
         "jobs": db.list_jobs(states=list(db.ACTIVE_STATES), limit=50),
         "counts": db.job_counts(),
+        # Per-library breakdown of the same counts, so the interface can
+        # show accurate tab badges the instant a library is selected,
+        # without a round trip. Cheap: one GROUP BY, not 4 queries per lib.
+        "counts_by_library": db.counts_by_library(),
         "stats": db.stats(),
         "libraries": db.list_libraries(),
         "settings": db.get_settings(),
@@ -592,20 +596,26 @@ async def fail(job_id: int, req: Request):
 # ----------------------------------------------------------------- client API
 
 @app.get("/api/jobs")
-async def list_jobs(view: str = "active", page: int = 1, per_page: int = 20):
-    """One page of jobs from a view, with enough detail to render a pager."""
+async def list_jobs(view: str = "active", page: int = 1, per_page: int = 20,
+                     library_id: int = None):
+    """One page of jobs from a view, with enough detail to render a pager.
+
+    library_id narrows both the page of jobs and the counts to one library,
+    so each library's queue tab can be paged independently of the others.
+    """
     states = db.VIEWS.get(view)
     if not states:
         raise HTTPException(400, f"Unknown view: {view}")
     per_page = max(1, min(100, int(per_page)))
-    total = db.count_jobs(list(states))
+    total = db.count_jobs(list(states), library_id)
     pages = max(1, -(-total // per_page))
     page = max(1, min(page, pages))
     return {
         "view": view, "page": page, "pages": pages, "total": total,
         "per_page": per_page,
-        "jobs": db.list_jobs(list(states), per_page, (page - 1) * per_page),
-        "counts": db.job_counts(),
+        "jobs": db.list_jobs(list(states), per_page, (page - 1) * per_page,
+                             library_id),
+        "counts": db.job_counts(library_id),
     }
 
 
