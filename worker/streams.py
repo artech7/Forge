@@ -77,6 +77,14 @@ CHANNEL_NAMES = {1: "Mono", 2: "Stereo", 3: "2.1", 6: "5.1", 8: "7.1"}
 TEXT_SUB_CODECS = {"subrip", "srt", "ass", "ssa", "mov_text", "webvtt", "text"}
 IMAGE_SUB_CODECS = {"hdmv_pgs_subtitle", "dvd_subtitle", "dvb_subtitle", "xsub"}
 
+# CEA-608/708 closed captions. ffprobe reports these as subtitle streams,
+# but no container's muxer (Matroska included) can hold them via stream
+# copy and there's no sane re-encode target either — so unlike
+# IMAGE_SUB_CODECS above, these are dropped regardless of output container.
+# Left in place, "-c:s copy" fails at mux time and takes the whole job
+# down with it, even though only this one caption track is bad.
+UNSUPPORTED_SUB_CODECS = {"eia_608", "eia_708"}
+
 
 def analyze(path):
     """Full stream inventory for one file."""
@@ -234,6 +242,14 @@ def _plan(info, spec):
     kept_subs.sort(key=lambda s: (0 if looks_forced(s) else 1,
                                   sub_langs.index(_lang(s))
                                   if _lang(s) in sub_langs else len(sub_langs)))
+
+    unsupported = [s for s in kept_subs
+                   if s.get("codec_name") in UNSUPPORTED_SUB_CODECS]
+    if unsupported:
+        kept_subs = [s for s in kept_subs if s not in unsupported]
+        notes.append(f"dropped {len(unsupported)} closed-caption track"
+                     f"{'s' if len(unsupported) > 1 else ''} "
+                     "(no container can copy eia_608/708)")
 
     container = spec.get("container", "mkv")
     if container == "mp4":
