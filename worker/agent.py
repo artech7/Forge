@@ -8,6 +8,7 @@ import json
 import os
 import shutil
 import platform
+import re
 import socket
 import subprocess
 import threading
@@ -72,7 +73,32 @@ def register(nid, caps):
 ERROR_MARKERS = ("error", "invalid", "unable to", "no such file",
                  "permission denied", "not supported", "failed",
                  "cannot", "unrecognized", "no space left")
-NOISE_MARKERS = ("error opening output files:",)
+# Lines that restate a cause already captured elsewhere in different words —
+# skipped once at least one real cause line has been found, so the message
+# doesn't say the same thing twice.
+NOISE_MARKERS = ("error opening output files:",
+                 "task finished with error code")
+
+# FFmpeg tags each log line with the internal component that produced it —
+# "[af#0:1 @ 000002c3d107a840]" — which is meaningful to FFmpeg's own
+# developers and noise to everyone else. This turns the ones that identify
+# an actual stream (af/vf/sf = audio/video/subtitle filtergraph) into a
+# plain "audio track 2:", and just drops the memory address for everything
+# else, rather than showing a hex pointer no one can act on.
+_TAG_RE = re.compile(r"^\[([a-zA-Z_]+)(?:#(\d+):(\d+))?\s*@\s*(?:0x)?[0-9a-fA-F]+\]\s*")
+_TAG_KIND = {"af": "audio", "vf": "video", "sf": "subtitle"}
+
+
+def _clean_line(line):
+    m = _TAG_RE.match(line)
+    if not m:
+        return line
+    kind, _file_idx, stream_idx = m.groups()
+    rest = line[m.end():].strip()
+    name = _TAG_KIND.get(kind)
+    if name and stream_idx is not None:
+        return f"{name} track {int(stream_idx) + 1}: {rest}"
+    return rest
 
 
 # FFmpeg returns its own error codes rather than small exit statuses, and
@@ -104,27 +130,31 @@ def explain_failure(stderr, returncode):
     """Pull the lines that actually say what went wrong."""
     lines = [l.strip() for l in (stderr or "").splitlines() if l.strip()]
     hits = []
+    audio_related = False
     for line in lines:
         low = line.lower()
-        if any(marker in low for marker in ERROR_MARKERS):
-            if any(noise in low for noise in NOISE_MARKERS) and hits:
-                continue          # generic summary, we already have the cause
-            if line not in hits:
-                hits.append(line)
+        if not any(marker in low for marker in ERROR_MARKERS):
+            continue
+        if any(noise in low for noise in NOISE_MARKERS) and hits:
+            continue          # generic summary, we already have the cause
+        if "af#" in low or "audio" in low:
+            audio_related = True
+        cleaned = _clean_line(line)
+        if cleaned not in hits:
+            hits.append(cleaned)
     prefix = describe_exit(returncode)
     if not hits:
-        return f"{prefix}: " + (lines[-1] if lines else "no output")
+        return f"{prefix}: " + (_clean_line(lines[-1]) if lines else "no output")
 
     # A muxer complaining it can't write a header is a consequence; the
     # stream that failed to decode is the cause, and belongs first.
-    hits.sort(key=lambda line: 0 if ("af#" in line or "vst#" in line
+    hits.sort(key=lambda line: 0 if ("audio track" in line or "video track" in line
                                      or "Error while decoding" in line)
               else 1)
-    message = f"{prefix}: " + " | ".join(hits[:2])
+    message = f"{prefix}: " + " \u2014 ".join(hits[:2])
 
-    joined = " ".join(hits).lower()
-    if "af#" in joined or "audio" in joined:
-        message += (" — this usually means one audio track is damaged or "
+    if audio_related:
+        message += (". This usually means one audio track is damaged or "
                     "uses something FFmpeg can't decode. Try setting this "
                     "library's audio to \"Leave audio alone\" to see whether "
                     "the rest of the file is fine.")
@@ -278,8 +308,12 @@ def run_job(job, caps):
 
         if proc.returncode != 0:
             scratch.unlink(missing_ok=True)
-            report_fail(job_id,
-                        explain_failure("".join(stderr_tail), proc.returncode))
+            explanation = explain_failure("".join(stderr_tail), proc.returncode)
+            # The phrase is only ever appended when explain_failure decided
+            # the cause was audio-related — cheaper than re-deriving the
+            # same judgement a second time from the raw stderr.
+            report_fail(job_id, explanation,
+                        audio_related="Leave audio alone" in explanation)
             return
 
         size_after = scratch.stat().st_size
@@ -323,9 +357,9 @@ def post(path, payload, params=None):
         return None
 
 
-def report_fail(job_id, message):
+def report_fail(job_id, message, **extra):
     print(f"[job {job_id}] failed: {message}")
-    post(f"/api/jobs/{job_id}/fail", {"error": message})
+    post(f"/api/jobs/{job_id}/fail", {"error": message, **extra})
 
 
 def heartbeat(nid, caps):

@@ -210,6 +210,14 @@ def scan_library(library, probe_fn):
         if db.was_processed(str(path), stat.st_mtime):
             continue
 
+        # A file already sitting in Failed/Ignored/Got-bigger is waiting for
+        # a person, not for another automatic attempt — unless it's actually
+        # a different file now (someone replaced or re-ripped it), which
+        # shows up as a different size.
+        stuck = db.unresolved_job_for(str(path))
+        if stuck and stuck.get("size_before") == stat.st_size:
+            continue
+
         # A file that hasn't changed in a while is finished arriving.
         # Anything newer has to prove it by holding its size across scans.
         settled = (now - stat.st_mtime) > SETTLED_AGE

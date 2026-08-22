@@ -122,6 +122,7 @@
   .st-queued .pct{color:var(--amber)}
   .st-running .pct{color:var(--signal)}
   .st-failed .pct{color:var(--fault)}
+  .st-ignored .pct{color:var(--idle)}
   .st-done .pct{color:var(--idle)}
 
   .tabs{display:flex;gap:6px;margin-bottom:14px;flex-wrap:wrap}
@@ -714,6 +715,7 @@ function renderTabs(counts) {
     ['active', 'In progress', counts.active || 0, ''],
     ['failed', 'Failed', counts.failed || 0, 'bad'],
     ['bloated', 'Got bigger', counts.bloated || 0, 'warn-badge'],
+    ['ignored', 'Ignored', counts.ignored || 0, ''],
     ['done', 'Completed', counts.done || 0, ''],
   ];
   document.getElementById('jobtabs').innerHTML = defs.map(([id, label, n, cls]) =>
@@ -762,6 +764,7 @@ function renderJobs(jobs, meta) {
     el.innerHTML = `<div class="glass empty">${
       view.name === 'failed' ? '<b>Nothing has failed</b>All good.'
       : view.name === 'bloated' ? '<b>Nothing came out bigger</b>Files that grow instead of shrinking are listed here.'
+      : view.name === 'ignored' ? '<b>Nothing ignored</b>Files that still fail with their audio left untouched land here instead of cluttering Failed.'
       : view.name === 'done' ? '<b>Nothing finished yet</b>Completed conversions collect here.'
       : '<b>Nothing queued</b>Drop a file into a watch folder and it will appear.'}</div>`;
     renderPager(meta);
@@ -777,6 +780,7 @@ function renderJobs(jobs, meta) {
     if (j.speed) bits.push(j.speed.toFixed(1) + '×');
 
     const pct = j.state === 'failed' ? '!'
+              : j.state === 'ignored' ? '–'
               : j.state === 'bloated' ? '↑'
               : j.state === 'done' ? '✓'
               : j.state === 'queued' ? '·'
@@ -798,6 +802,9 @@ function renderJobs(jobs, meta) {
     }
 
     const actions = j.state === 'failed'
+      ? `<button onclick="retryJob(${j.id})">Try again</button>
+         <button onclick="removeJob(${j.id})">Remove</button>`
+      : j.state === 'ignored'
       ? `<button onclick="retryJob(${j.id})">Try again</button>
          <button onclick="removeJob(${j.id})">Remove</button>`
       : j.state === 'bloated'
@@ -886,7 +893,7 @@ function renderPager(meta) {
   if (!meta) { el.innerHTML = ''; return; }
   const first = (meta.page - 1) * meta.per_page + 1;
   const last = Math.min(meta.page * meta.per_page, meta.total);
-  const bulk = view.name === 'failed'
+  const bulk = (view.name === 'failed' || view.name === 'ignored')
     ? `<button onclick="bulkJobs('retry')">Retry all ${meta.total}</button>
        <button onclick="bulkJobs('clear')">Remove all</button>`
     : view.name === 'done'
@@ -912,8 +919,9 @@ async function removeJob(id) {
 
 async function bulkJobs(action) {
   const total = view.counts[view.name] || 0;
+  const label = view.name === 'ignored' ? 'ignored' : view.name;
   const message = action === 'retry'
-    ? `Put all ${total} failed job(s) back in the queue?`
+    ? `Put all ${total} ${label} job(s) back in the queue?`
     : `Remove all ${total} entries from this list? Video files are not touched.`;
   if (!confirm(message)) return;
   const r = await (await fetch('/api/jobs/bulk', {method:'POST',

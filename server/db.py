@@ -95,7 +95,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     path          TEXT NOT NULL,
     library_id    INTEGER,
     spec          TEXT NOT NULL,      -- JSON intent: codec, quality, audio, container
-    state         TEXT NOT NULL,      -- queued|leased|running|done|failed|cancelled
+    state         TEXT NOT NULL,      -- queued|leased|running|done|failed|cancelled|bloated|ignored
     node_id       TEXT,
     transport     TEXT,               -- local|stream
     lease_expires REAL,
@@ -254,6 +254,10 @@ VIEWS = {
     "done": ("done",),
     "bloated": ("bloated",),
     "cancelled": ("cancelled",),
+    # Failed once, then failed again even with audio left untouched — not
+    # worth re-showing in "Failed" every time the queue is checked, but
+    # not silently discarded either. See handle_audio_fail() in app.py.
+    "ignored": ("ignored",),
 }
 
 
@@ -672,6 +676,23 @@ def forget_processed(path):
     """Let a path be picked up by the scanner again."""
     with connect() as conn:
         conn.execute("DELETE FROM processed WHERE path=?", (path,))
+
+
+def unresolved_job_for(path):
+    """The most recent Failed/Ignored/Got-bigger job still sitting for this path.
+
+    Only those three states matter here: they leave the original file in
+    place waiting for a person to look at it. Without this check, the
+    scanner has no memory of a failure — was_processed() is only ever set
+    on success — so every scan cycle re-queues the same broken file as a
+    brand-new job, fails it again, and the Failed list refills itself.
+    """
+    with connect() as conn:
+        row = conn.execute(
+            """SELECT * FROM jobs WHERE path=? AND state IN
+               ('failed','ignored','bloated') ORDER BY id DESC LIMIT 1""",
+            (path,)).fetchone()
+    return row_to_dict(row)
 
 
 def has_job_for(path, states=None):

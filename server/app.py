@@ -587,10 +587,47 @@ def handle_original(job, library, final):
 @app.post("/api/jobs/{job_id}/fail")
 async def fail(job_id: int, req: Request):
     body = await req.json()
-    db.update_job(job_id, state="failed", error=body.get("error", "Unknown"),
-                  finished_at=time.time())
+    error = body.get("error", "Unknown")
+    job = db.get_job(job_id)
+
+    if job and body.get("audio_related"):
+        retried = await handle_audio_fail(job, error)
+        if retried:
+            return retried
+
+    # Either this wasn't an audio problem, or it was and leaving the audio
+    # untouched still didn't get through — that's the file's own condition,
+    # not something a retry will fix. Sending it to "ignored" instead of
+    # "failed" the second time keeps it out of the list you actually need
+    # to act on, without deleting the record.
+    state = "ignored" if (job or {}).get("spec", {}).get("audio_salvage") \
+        else "failed"
+    db.update_job(job_id, state=state, error=error, finished_at=time.time())
     await broadcast()
     return {"ok": True}
+
+
+async def handle_audio_fail(job, error):
+    """One automatic retry with this job's audio left untouched.
+
+    A track FFmpeg can't decode kills the whole job even when the video and
+    every other track are fine. Retrying once with audio_salvage set proves
+    that quickly — if a straight audio copy still fails, the file itself is
+    the problem and no further automatic retry will help, so update_job in
+    the caller lets it fall through to "ignored" instead of trying forever.
+    """
+    spec = job.get("spec") or {}
+    if spec.get("audio_salvage") or spec.get("audio") == "copy":
+        return None    # already tried this, or audio was never being touched
+
+    new_spec = {**spec, "audio": "copy", "audio_salvage": True}
+    new_id = db.enqueue(job["path"], new_spec, job.get("size_before"),
+                        job.get("library_id"), attempt=job.get("attempt", 1) + 1)
+    if not new_id:
+        return None
+    db.delete_job(job["id"])
+    await broadcast()
+    return {"ok": True, "retrying_with_audio_copied": True, "job": new_id}
 
 
 # ----------------------------------------------------------------- client API
