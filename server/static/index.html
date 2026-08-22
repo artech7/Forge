@@ -512,7 +512,9 @@ function render(state) {
   view.counts = counts;
   renderTabs(counts);
   if (view.name === 'active') {
-    renderJobs((state.jobs || []).filter(j => id == null || j.library_id === id), null);
+    const jobs = (state.jobs || []).filter(j => id == null || j.library_id === id);
+    renderJobs(jobs, null);
+    renderActiveBar(jobs);
   } else if (!view.loaded) loadView();
 }
 
@@ -694,6 +696,30 @@ function renderLibTabs(libs) {
   ).join('');
 }
 
+/* The "active" tab has no pages to click through — it's whatever's running
+   right now — but it still gets a bar in the same spot, for Cancel All. */
+function renderActiveBar(jobs) {
+  const el = document.getElementById('pager');
+  const n = jobs.length;
+  if (!n) { el.innerHTML = ''; return; }
+  const label = view.library_id == null ? `Cancel all ${n}` : `Cancel all ${n} here`;
+  el.innerHTML = `<span class="grow"></span><button onclick="cancelAllJobs()">${label}</button>`;
+}
+
+async function cancelAllJobs() {
+  const id = view.library_id;
+  const jobs = ((window.__state || {}).jobs || [])
+    .filter(j => id == null || j.library_id === id);
+  if (!jobs.length) return;
+  const scope = id == null ? 'every library' : 'this library only';
+  if (!confirm(`Cancel all ${jobs.length} in-progress job(s) in ${scope}? `
+              + 'Video files are left untouched.')) return;
+  await fetch('/api/jobs/bulk', {method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({action:'cancel', library_id: id})});
+  // The next websocket broadcast reflects the change; nothing else to do.
+}
+
 function switchLibrary(id) {
   if (view.library_id === id) return;
   view.library_id = id;
@@ -709,8 +735,9 @@ function switchLibrary(id) {
       : (state.counts_by_library || {})[id] || {active:0,failed:0,bloated:0,done:0};
     view.counts = counts;
     renderTabs(counts);
-    renderJobs((state.jobs || []).filter(j => id == null || j.library_id === id), null);
-    document.getElementById('pager').innerHTML = '';
+    const jobs = (state.jobs || []).filter(j => id == null || j.library_id === id);
+    renderJobs(jobs, null);
+    renderActiveBar(jobs);
   } else {
     loadView();
   }
@@ -738,9 +765,10 @@ function switchView(name) {
   renderTabs(view.counts);
   if (name === 'active') {
     const id = view.library_id;
-    renderJobs((((window.__state || {}).jobs) || [])
-      .filter(j => id == null || j.library_id === id), null);
-    document.getElementById('pager').innerHTML = '';
+    const jobs = (((window.__state || {}).jobs) || [])
+      .filter(j => id == null || j.library_id === id);
+    renderJobs(jobs, null);
+    renderActiveBar(jobs);
   } else {
     loadView();
   }
@@ -945,13 +973,14 @@ async function removeJob(id) {
 async function bulkJobs(action) {
   const total = view.counts[view.name] || 0;
   const label = view.name === 'ignored' ? 'ignored' : view.name;
+  const scope = view.library_id == null ? '' : ' in this library';
   const message = action === 'retry'
-    ? `Put all ${total} ${label} job(s) back in the queue?`
-    : `Remove all ${total} entries from this list? Video files are not touched.`;
+    ? `Put all ${total} ${label} job(s)${scope} back in the queue?`
+    : `Remove all ${total} entries${scope} from this list? Video files are not touched.`;
   if (!confirm(message)) return;
   const r = await (await fetch('/api/jobs/bulk', {method:'POST',
     headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({action, view: view.name})})).json();
+    body: JSON.stringify({action, view: view.name, library_id: view.library_id})})).json();
   if (r.skipped) alert(`${r.requeued} requeued. ${r.skipped} skipped — already queued.`);
   view.page = 1;
   loadView();

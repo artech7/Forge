@@ -777,9 +777,20 @@ async def accept_job(job_id: int):
 
 @app.post("/api/jobs/bulk")
 async def bulk_jobs(req: Request):
-    """Retry or clear a whole view at once."""
+    """Retry, clear, or cancel a whole view — or a whole library — at once."""
     body = await req.json()
     action = body.get("action")
+    library_id = body.get("library_id")
+
+    if action == "cancel":
+        # Cancel targets whatever is active, not a state list from VIEWS,
+        # since "in progress" isn't a single fixed set of rows the way
+        # failed/done/ignored are — it's whichever jobs happen to be
+        # queued/leased/running right now.
+        cancelled = db.cancel_active_jobs(library_id)
+        await broadcast()
+        return {"cancelled": cancelled}
+
     states = db.VIEWS.get(body.get("view", "failed"))
     if not states:
         raise HTTPException(400, "Unknown view")
@@ -787,14 +798,14 @@ async def bulk_jobs(req: Request):
     if action == "retry":
         if set(states) & set(db.ACTIVE_STATES):
             raise HTTPException(400, "Those jobs are already queued")
-        moved, skipped = db.requeue_jobs(list(states))
+        moved, skipped = db.requeue_jobs(list(states), library_id)
         await broadcast()
         return {"requeued": moved, "skipped": skipped}
 
     if action == "clear":
         if set(states) & set(db.ACTIVE_STATES):
             raise HTTPException(400, "Cancel active jobs instead of clearing them")
-        removed = db.delete_jobs(list(states))
+        removed = db.delete_jobs(list(states), library_id)
         await broadcast()
         return {"removed": removed}
 

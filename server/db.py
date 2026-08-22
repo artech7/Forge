@@ -330,22 +330,25 @@ def delete_job(job_id):
         conn.execute("DELETE FROM jobs WHERE id=?", (job_id,))
 
 
-def delete_jobs(states):
+def delete_jobs(states, library_id=None):
+    query = f"DELETE FROM jobs WHERE state IN ({','.join('?' * len(states))})"
+    params = list(states)
+    if library_id is not None:
+        query += " AND library_id=?"
+        params.append(library_id)
     with connect() as conn:
-        cur = conn.execute(
-            f"DELETE FROM jobs WHERE state IN ({','.join('?' * len(states))})",
-            list(states))
+        cur = conn.execute(query, params)
         return cur.rowcount
 
 
-def requeue_jobs(states):
+def requeue_jobs(states, library_id=None):
     """Put jobs back in the queue, skipping any whose path is already active.
 
     The partial unique index would reject a duplicate, so those are counted
     and reported rather than raising.
     """
     moved, skipped = 0, 0
-    for job in list_jobs(states=list(states), limit=2000):
+    for job in list_jobs(states=list(states), limit=2000, library_id=library_id):
         try:
             with connect() as conn:
                 conn.execute(
@@ -356,6 +359,26 @@ def requeue_jobs(states):
         except sqlite3.IntegrityError:
             skipped += 1
     return moved, skipped
+
+
+def cancel_active_jobs(library_id=None):
+    """Cancel every currently active (queued/leased/running) job.
+
+    A worker mid-encode finds out on its next progress report — the
+    endpoint tells it to stop, same as cancelling one job by hand. A
+    queued job is simply no longer eligible to be leased. Scoped to one
+    library when given, so cancelling doesn't reach into other libraries'
+    queues.
+    """
+    query = (f"UPDATE jobs SET state='cancelled', finished_at=? "
+            f"WHERE state IN ({','.join('?' * len(ACTIVE_STATES))})")
+    params = [time.time(), *ACTIVE_STATES]
+    if library_id is not None:
+        query += " AND library_id=?"
+        params.append(library_id)
+    with connect() as conn:
+        cur = conn.execute(query, params)
+        return cur.rowcount
 
 
 def get_job(job_id):
