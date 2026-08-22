@@ -589,19 +589,26 @@ async def fail(job_id: int, req: Request):
     body = await req.json()
     error = body.get("error", "Unknown")
     job = db.get_job(job_id)
+    spec = (job or {}).get("spec") or {}
 
-    if job and body.get("audio_related"):
+    # Only worth retrying when audio was actually being re-encoded — if it
+    # was already a straight copy (the library's own setting, or Forge's
+    # own remux shortcut when the source already matched), retrying with
+    # "leave audio alone" would send FFmpeg the exact same audio handling
+    # that just failed.
+    if job and body.get("audio_related") and spec.get("audio") != "copy":
         retried = await handle_audio_fail(job, error)
         if retried:
             return retried
 
-    # Either this wasn't an audio problem, or it was and leaving the audio
-    # untouched still didn't get through — that's the file's own condition,
-    # not something a retry will fix. Sending it to "ignored" instead of
-    # "failed" the second time keeps it out of the list you actually need
-    # to act on, without deleting the record.
-    state = "ignored" if (job or {}).get("spec", {}).get("audio_salvage") \
-        else "failed"
+    # Either this wasn't an audio problem, or it was and the audio was
+    # already untouched — by the library's setting, by a remux shortcut,
+    # or by an earlier salvage retry — and it still failed. That last case
+    # is exactly what "ignored" is for: this already *is* the "leave the
+    # audio alone" attempt, and it didn't work, so there's nothing left to
+    # try automatically.
+    already_left_alone = bool(body.get("audio_related")) and spec.get("audio") == "copy"
+    state = "ignored" if already_left_alone else "failed"
     db.update_job(job_id, state=state, error=error, finished_at=time.time())
     await broadcast()
     return {"ok": True}
@@ -610,16 +617,13 @@ async def fail(job_id: int, req: Request):
 async def handle_audio_fail(job, error):
     """One automatic retry with this job's audio left untouched.
 
-    A track FFmpeg can't decode kills the whole job even when the video and
-    every other track are fine. Retrying once with audio_salvage set proves
-    that quickly — if a straight audio copy still fails, the file itself is
-    the problem and no further automatic retry will help, so update_job in
-    the caller lets it fall through to "ignored" instead of trying forever.
+    Only called when the failed attempt was genuinely re-encoding audio
+    (see the "audio" != "copy" check in fail() above) — so this is always
+    a real, different configuration from what just failed, never a repeat
+    of it. If this retry also fails, fail() will see spec["audio"] =="copy"
+    next time and route straight to "ignored" instead of looping.
     """
     spec = job.get("spec") or {}
-    if spec.get("audio_salvage") or spec.get("audio") == "copy":
-        return None    # already tried this, or audio was never being touched
-
     new_spec = {**spec, "audio": "copy", "audio_salvage": True}
     new_id = db.enqueue(job["path"], new_spec, job.get("size_before"),
                         job.get("library_id"), attempt=job.get("attempt", 1) + 1)
