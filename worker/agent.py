@@ -194,7 +194,8 @@ def source_duration(path):
         out = subprocess.run(
             ["ffprobe", "-v", "quiet", "-show_entries", "format=duration",
              "-of", "csv=p=0", path],
-            capture_output=True, text=True, timeout=60)
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=60)
         return float(out.stdout.strip())
     except (ValueError, OSError, subprocess.TimeoutExpired):
         return 0
@@ -266,7 +267,8 @@ def run_job(job, caps):
         print(f"[job {job_id}] {encoder or 'remux'}: {Path(job['source_path']).name}")
 
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
-                                stderr=subprocess.PIPE, text=True, bufsize=1)
+                                stderr=subprocess.PIPE, text=True,
+                                encoding="utf-8", errors="replace", bufsize=1)
 
         # FFmpeg writes warnings to stderr continuously. Nothing was reading
         # that pipe until the process finished, so once the operating

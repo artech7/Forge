@@ -187,7 +187,8 @@ def probe_encoder(enc, width=1280, height=720):
             continue
         cmd += ["-frames:v", "10", "-f", "null", "-"]
         try:
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=90)
+            result = subprocess.run(cmd, capture_output=True, text=True,
+                                    encoding="utf-8", errors="replace", timeout=90)
         except subprocess.TimeoutExpired:
             last_error = "timed out"
             continue
@@ -210,7 +211,9 @@ def detect(verify=True, explain=False):
     """
     try:
         listed = subprocess.run(["ffmpeg", "-hide_banner", "-encoders"],
-                                capture_output=True, text=True, timeout=30).stdout
+                                capture_output=True, text=True,
+                                encoding="utf-8", errors="replace",
+                                timeout=30).stdout
     except (OSError, subprocess.TimeoutExpired):
         return ([], {"ffmpeg": "not found"}) if explain else []
 
@@ -491,6 +494,18 @@ def build_command(src, dst, encoder, spec, info=None):
                 f"title={spec.get('metadata_title', '')}"]
     else:
         cmd += ["-map_metadata", "0"]
+        # mkvmerge stamps every stream with write-time statistics
+        # (_STATISTICS_TAGS, _STATISTICS_WRITING_APP,
+        # _STATISTICS_WRITING_DATE_UTC) describing the ORIGINAL encode -
+        # stale the moment this file is touched, and FFmpeg has been seen
+        # rejecting the whole command outright on some files while
+        # carrying them through, taking a perfectly fine remux down with
+        # it. There's no "every stream" specifier, so this clears them
+        # per stream type instead.
+        for stat_tag in ("_STATISTICS_TAGS", "_STATISTICS_WRITING_APP",
+                         "_STATISTICS_WRITING_DATE_UTC"):
+            for stream_type in ("v", "a", "s"):
+                cmd += [f"-metadata:s:{stream_type}", f"{stat_tag}="]
     cmd += ["-max_muxing_queue_size", "1024"]
     if container == "mp4":
         cmd += ["-movflags", "+faststart"]

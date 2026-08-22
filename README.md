@@ -186,6 +186,9 @@ in the wrong function.
 | `make-test-files.sh` | Builds a test library from one real video, with a file for every decision Forge can make. |
 | `setup.sh` | Only needed if files were downloaded individually and lost their folders. |
 | `queue-all.sh` | Queues everything the scanner has found, for manual testing. |
+| `run-node.ps1` | Sets up and runs one worker on Windows natively, so NVENC/QuickSync work directly. Stops when the window closes. |
+| `worker/run-node-forever.ps1` | Wraps `run-node.ps1` in a restart loop, so a crash doesn't take the worker down. Logs to `%TEMP%\forge\logs\worker.log` instead of the console. |
+| `worker/install-startup-task.ps1` | Registers the worker as a Windows Scheduled Task that starts at boot and keeps running through sign-outs and Remote Desktop disconnects — run once, elevated. See the comments at the top of the script. |
 
 ## How a file gets handled
 
