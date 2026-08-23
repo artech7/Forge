@@ -191,7 +191,11 @@ AUDIO_LANGUAGE_MODES = [
                "the front so they play by default."},
     {"id": "preferred_only", "name": "Keep only my languages",
      "detail": "Removes audio in other languages entirely. Big space saving "
-               "on films that ship with eight dubs, but it is permanent."},
+               "on films that ship with eight dubs, but it is permanent. "
+               "If a file has none of your chosen languages at all — a "
+               "Japanese-only anime episode when English is preferred, say "
+               "— every track on it is kept instead, so you never end up "
+               "with a silent video."},
 ]
 
 SUBTITLE_MODES_EXTRA = [

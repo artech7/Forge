@@ -226,11 +226,21 @@ def _plan(info, spec):
                 dropped = sorted({_lang(s) for s in others})
                 notes.append(f"dropped audio: {', '.join(dropped)}")
             audios = sorted(wanted, key=audio_rank)
+        elif spec.get("remove_other_audio") and not wanted and others:
+            # None of the preferred languages are on this file at all —
+            # an anime library set to "English only" hitting a Japanese-only
+            # release is the everyday version of this. Keeping everything
+            # instead of stripping it down to a silent video; this is the
+            # one case "keep only my languages" deliberately doesn't apply.
+            audios = sorted(others, key=audio_rank)
+            notes.append("kept all audio — none of the preferred languages "
+                        "were on this file")
         else:
             audios = sorted(wanted, key=audio_rank) + others
         if not audios:
             audios = [s for s in streams if s.get("codec_type") == "audio"]
-            notes.append("kept all audio — none matched the preferred languages")
+            notes.append("kept all audio — the file had no audio tracks "
+                        "matching any expected language")
 
     # ---- subtitles ---------------------------------------------------
     mode = spec.get("subtitle_mode", "keep")
