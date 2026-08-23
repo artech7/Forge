@@ -95,7 +95,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     path          TEXT NOT NULL,
     library_id    INTEGER,
     spec          TEXT NOT NULL,      -- JSON intent: codec, quality, audio, container
-    state         TEXT NOT NULL,      -- queued|leased|running|done|failed|cancelled|bloated|ignored
+    state         TEXT NOT NULL,      -- queued|leased|running|done|failed|cancelled|bloated|ignored|removed
     node_id       TEXT,
     transport     TEXT,               -- local|stream
     lease_expires REAL,
@@ -258,6 +258,9 @@ VIEWS = {
     # worth re-showing in "Failed" every time the queue is checked, but
     # not silently discarded either. See handle_audio_fail() in app.py.
     "ignored": ("ignored",),
+    # The video itself was unrecoverable and Radarr/Sonarr agreed to fetch
+    # a working copy — the source file is gone by design, not by failure.
+    "removed": ("removed",),
 }
 
 

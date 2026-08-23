@@ -113,6 +113,66 @@ def analyze(path):
         return None
 
 
+# How long a single stream's decode check may run before it's abandoned as
+# inconclusive rather than treated as a failure — a slow/flaky mount
+# shouldn't get diagnosed as a corrupt file.
+HEALTH_CHECK_TIMEOUT = 600
+
+
+def health_check(path, info):
+    """Decode every video and audio stream once, without re-encoding.
+
+    This is the difference between finding out a track is damaged during a
+    30-second check versus during a 40-minute encode that then has to be
+    thrown away. Each stream is checked in isolation — one ffmpeg run per
+    stream — specifically so a bad audio track doesn't stop the video
+    stream from being checked too, and so the result says exactly which
+    stream index is at fault rather than "something in this file failed."
+
+    Subtitle streams aren't checked: a broken subtitle can't produce a
+    silent or corrupted video, and worst case it just gets dropped like
+    any other subtitle FFmpeg can't make sense of.
+
+    Returns {"video": (ok, message) | None, "audio": {index: (ok, message)}}.
+    "video" is None if the file has no real video stream to check (already
+    handled elsewhere as its own failure).
+    """
+    streams = (info or {}).get("streams", [])
+    videos = [s for s in streams if s.get("codec_type") == "video"
+             and not is_image(s)]
+    audios = [s for s in streams if s.get("codec_type") == "audio"]
+
+    result = {"video": None, "audio": {}}
+    if videos:
+        result["video"] = _decode_check(path, videos[0]["index"])
+    for stream in audios:
+        result["audio"][stream["index"]] = _decode_check(path, stream["index"])
+    return result
+
+
+def _decode_check(path, stream_index):
+    """Decode one stream to nothing, reporting whether FFmpeg complained.
+
+    -v error means the only output possible is an actual decode problem —
+    no progress lines, no warnings, nothing to misinterpret as a failure.
+    """
+    try:
+        out = subprocess.run(
+            ["ffmpeg", "-v", "error", "-xerror", "-i", path,
+             "-map", f"0:{stream_index}", "-f", "null", "-"],
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=HEALTH_CHECK_TIMEOUT)
+    except (subprocess.TimeoutExpired, OSError):
+        # Inconclusive, not a failure — a health check that can't finish
+        # shouldn't be treated the same as one that finished and found
+        # damage. The real encode attempt will surface a genuine problem.
+        return (True, None)
+    if out.returncode == 0 and not (out.stderr or "").strip():
+        return (True, None)
+    message = (out.stderr or "").strip().splitlines()
+    return (False, message[-1] if message else f"exited {out.returncode}")
+
+
 def _lang(stream):
     return (stream.get("tags") or {}).get("language", "und").lower()
 
@@ -193,6 +253,18 @@ def _plan(info, spec):
     """
     streams = (info or {}).get("streams", [])
     notes = []
+
+    # Tracks the health check found couldn't be decoded at all — excluded
+    # before any other logic runs, the same way a source file simply
+    # wouldn't offer a stream FFmpeg can't read.
+    unhealthy = set(spec.get("exclude_stream_indexes") or [])
+    if unhealthy:
+        dropped = len([s for s in streams if s.get("index") in unhealthy])
+        streams = [s for s in streams if s.get("index") not in unhealthy]
+        if dropped:
+            notes.append(f"excluded {dropped} track"
+                        f"{'s' if dropped > 1 else ''} that failed a health "
+                        "check")
 
     videos = [s for s in streams if s.get("codec_type") == "video"]
     audios = [s for s in streams if s.get("codec_type") == "audio"]

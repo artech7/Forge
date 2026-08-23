@@ -255,6 +255,32 @@ def run_job(job, caps):
         # dropped, and forced subtitles spotted.
         info = source_info if (source_info and src == job["path"]) \
             else streams.analyze(src)
+
+        # Decode every stream once, cheaply, before committing real encode
+        # time to this file. Catches a damaged track in seconds instead of
+        # discovering it after a long encode fails outright — and for video
+        # damage specifically, no retry would ever have fixed it anyway.
+        # Skipped on a retry that's already been checked once.
+        if info and not spec.get("health_checked"):
+            health = streams.health_check(src, info)
+            video_ok, video_msg = health["video"] or (True, None)
+            if not video_ok:
+                report_fail(
+                    job_id,
+                    "Health check failed — the video stream itself won't "
+                    f"decode: {video_msg}",
+                    unhealthy_video=True)
+                return
+            bad_audio = [idx for idx, (ok, msg) in health["audio"].items()
+                        if not ok]
+            if bad_audio:
+                print(f"[job {job_id}] health check: audio track(s) "
+                     f"{bad_audio} won't decode, excluding before encoding")
+            spec = {**spec, "health_checked": True,
+                   "exclude_stream_indexes":
+                       sorted(set(spec.get("exclude_stream_indexes") or [])
+                              | set(bad_audio))}
+
         if info:
             _m, _d, notes = streams.plan_streams(info, spec)
             for note in notes:

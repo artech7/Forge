@@ -270,6 +270,25 @@ ORIGINAL_ACTIONS = [
                "only pick this if you tidy up by hand."},
 ]
 
+UNHEALTHY_VIDEO_ACTIONS = [
+    {"id": "ignore", "name": "Flag it for me to review", "recommended": True,
+     "detail": "The file is marked Ignored, separately from ordinary "
+               "failures, so it's clear at a glance this isn't just a slow "
+               "retry — the video itself won't decode and needs a person "
+               "to decide what happens to it."},
+    {"id": "delete_and_research", "name": "Remove it and ask Radarr/Sonarr "
+     "to fetch it again",
+     "detail": "Deleted through Radarr or Sonarr's own API — so their "
+               "library stays correct, not just Forge's view of it — then "
+               "a new search is requested automatically. Needs Radarr or "
+               "Sonarr connected below."},
+]
+
+ARR_KINDS = [
+    {"id": "radarr", "name": "Radarr", "detail": "For a movie library."},
+    {"id": "sonarr", "name": "Sonarr", "detail": "For a TV library."},
+]
+
 
 def catalog():
     return {
@@ -285,6 +304,8 @@ def catalog():
         "naming": NAMING_SCHEMES,
         "retry_steps": RETRY_STEPS,
         "quality_scale": QUALITY_SCALE,
+        "unhealthy_video": UNHEALTHY_VIDEO_ACTIONS,
+        "arr_kinds": ARR_KINDS,
     }
 
 

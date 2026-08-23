@@ -123,6 +123,7 @@
   .st-running .pct{color:var(--signal)}
   .st-failed .pct{color:var(--fault)}
   .st-ignored .pct{color:var(--idle)}
+  .st-removed .pct{color:var(--idle)}
   .st-done .pct{color:var(--idle)}
 
   .tabs{display:flex;gap:6px;margin-bottom:14px;flex-wrap:wrap}
@@ -235,6 +236,13 @@
   .wiz{width:min(620px,100%);max-height:88vh;overflow-y:auto;padding:26px}
   .wiz h3{margin:0 0 5px;font-size:20px;font-weight:800;letter-spacing:-.02em}
   .wiz .lead{color:var(--muted);font-size:13.5px;line-height:1.6;margin:0 0 20px}
+  .wiz-groups{display:flex;flex-wrap:wrap;gap:4px 14px;margin-bottom:12px}
+  .wiz-group{font-size:11.5px;font-weight:600;letter-spacing:.02em;
+             color:var(--muted);cursor:pointer;padding:2px 0;
+             border-bottom:2px solid transparent;transition:color .15s}
+  .wiz-group:hover{color:var(--text)}
+  .wiz-group.done{color:var(--text)}
+  .wiz-group.on{color:var(--signal);border-bottom-color:var(--signal)}
   .steps{display:flex;gap:5px;margin-bottom:22px}
   .steps i{flex:1;height:3px;border-radius:2px;background:rgba(255,255,255,.1);
            cursor:pointer;transition:background .15s;position:relative}
@@ -244,6 +252,9 @@
   .steps i.on:hover{background:#7af0b8}
 
   /* Review rows jump straight to the step that owns them. */
+  .review-heading{font-size:11px;font-weight:700;letter-spacing:.04em;
+    text-transform:uppercase;color:var(--muted);margin:20px 0 4px}
+  .review-heading:first-child{margin-top:0}
   .review-row{display:flex;gap:12px;align-items:baseline;padding:8px 11px;
     margin:0 -11px;border-radius:9px;cursor:pointer;transition:background .15s}
   .review-row:hover{background:rgba(255,255,255,.06)}
@@ -750,6 +761,7 @@ function renderTabs(counts) {
     ['failed', 'Failed', counts.failed || 0, 'bad'],
     ['bloated', 'Got bigger', counts.bloated || 0, 'warn-badge'],
     ['ignored', 'Ignored', counts.ignored || 0, ''],
+    ['removed', 'Removed', counts.removed || 0, ''],
     ['done', 'Completed', counts.done || 0, ''],
   ];
   document.getElementById('jobtabs').innerHTML = defs.map(([id, label, n, cls]) =>
@@ -800,6 +812,7 @@ function renderJobs(jobs, meta) {
       view.name === 'failed' ? '<b>Nothing has failed</b>All good.'
       : view.name === 'bloated' ? '<b>Nothing came out bigger</b>Files that grow instead of shrinking are listed here.'
       : view.name === 'ignored' ? '<b>Nothing ignored</b>Files that still fail with their audio left untouched land here instead of cluttering Failed.'
+      : view.name === 'removed' ? '<b>Nothing removed</b>Files whose video was unrecoverable and were handed to Radarr/Sonarr to re-fetch land here.'
       : view.name === 'done' ? '<b>Nothing finished yet</b>Completed conversions collect here.'
       : '<b>Nothing queued</b>Drop a file into a watch folder and it will appear.'}</div>`;
     renderPager(meta);
@@ -816,6 +829,7 @@ function renderJobs(jobs, meta) {
 
     const pct = j.state === 'failed' ? '!'
               : j.state === 'ignored' ? '–'
+              : j.state === 'removed' ? '\u21bb'
               : j.state === 'bloated' ? '↑'
               : j.state === 'done' ? '✓'
               : j.state === 'queued' ? '·'
@@ -859,6 +873,8 @@ function renderJobs(jobs, meta) {
       : j.state === 'ignored'
       ? `<button onclick="retryJob(${j.id})">Try again</button>
          <button onclick="removeJob(${j.id})">Remove</button>`
+      : j.state === 'removed'
+      ? `<button onclick="removeJob(${j.id})">Clear</button>`
       : j.state === 'bloated'
       ? `<button onclick="acceptJob(${j.id})">Keep it anyway</button>
          <button onclick="removeJob(${j.id})">Remove</button>`
@@ -949,7 +965,7 @@ function renderPager(meta) {
   const bulk = (view.name === 'failed' || view.name === 'ignored')
     ? `<button onclick="bulkJobs('retry')">Retry all ${meta.total}</button>
        <button onclick="bulkJobs('clear')">Remove all</button>`
-    : view.name === 'done'
+    : (view.name === 'done' || view.name === 'removed')
     ? `<button onclick="bulkJobs('clear')">Clear history</button>` : '';
 
   el.innerHTML = `
@@ -1275,7 +1291,23 @@ async function sweepNow() {
 
 /* ------------------------------------------------------------- wizard */
 let CAT = null, step = 0, draft = {};
-const STEPS = ['Name and folders', 'Video', 'Colour and HDR', 'Audio', 'Subtitles', 'Tracks', 'Naming', 'Extras', 'Skip rules', 'Originals', 'Size check', 'Review'];
+const STEPS = ['Name and folders', 'Video', 'Colour and HDR', 'Audio', 'Subtitles', 'Tracks', 'Naming', 'Extras', 'Skip rules', 'Originals', 'Size check', 'Recovery', 'Review'];
+
+// Thirteen flat steps stopped being a friendly shape a while back. Grouping
+// them is purely a navigation aid — every existing step keeps its own
+// content and validation untouched; this only changes how you get to it.
+const GROUPS = [
+  {name: 'Basics', steps: [0]},
+  {name: 'Picture', steps: [1, 2]},
+  {name: 'Sound & Subtitles', steps: [3, 4, 5]},
+  {name: 'Naming & Cleanup', steps: [6, 7]},
+  {name: 'Automation & Safety', steps: [8, 9, 10, 11]},
+  {name: 'Review', steps: [12]},
+];
+
+function groupIndexOf(stepIndex) {
+  return GROUPS.findIndex(g => g.steps.includes(stepIndex));
+}
 
 function blankDraft() {
   return { name:'', watch_path:'', output_path:'',
@@ -1291,6 +1323,8 @@ function blankDraft() {
     downmix:'', normalise_loudness:false,
     original_action:'archive', originals_path:'',
     min_saving_percent:'', auto_retry:true, salvage_when_stuck:true,
+    on_unhealthy_video:'ignore', arr_kind:'radarr', arr_url:'',
+    arr_api_key:'', arr_path_from:'', arr_path_to:'',
     auto_retry_steps:['small','smaller'], auto_retry_custom:'',
     filters:{ skip_extensions:[], skip_name_contains:[],
               min_size_mb:'', max_size_mb:'',
@@ -1326,12 +1360,19 @@ function draftFromLibrary(lib) {
     ...blankDraft().filters.bitrate_ceiling,
     ...((lib.filters || {}).bitrate_ceiling || {})};
   d.naming = {...d.naming, ...(lib.naming || {})};
+
+  const a = p.arr || {};
+  d.on_unhealthy_video = a.on_unhealthy_video || 'ignore';
+  d.arr_kind = a.kind || 'radarr';
+  d.arr_url = a.url || '';
+  d.arr_api_key = a.api_key || '';
+  d.arr_path_from = a.path_from || '';
+  d.arr_path_to = a.path_to || '';
   return d;
 }
 
 async function openWizard(libId) {
   CAT = CAT || await (await fetch('/api/catalog')).json();
-  step = 0;
   returnTo = null;
   editingId = libId != null ? libId : null;
 
@@ -1340,8 +1381,13 @@ async function openWizard(libId) {
       .find(l => l.id === editingId);
     if (!lib) return alert('Could not find that library.');
     draft = draftFromLibrary(lib);
+    // Editing is almost always "change one thing," not "go through this
+    // again from the top" — the review step is already a jump-to-anything
+    // hub, so that's the useful place to land, not step 0.
+    step = STEPS.length - 1;
   } else {
     draft = blankDraft();
+    step = 0;
   }
   document.getElementById('veil').classList.add('open');
   drawStep();
@@ -1384,9 +1430,21 @@ function pick(key, val) {
 function setField(key, val) { draft[key] = val; }
 
 function bar() {
-  return `<div class="steps">${STEPS.map((label, i) =>
-    `<i class="${i <= step ? 'on' : ''}" title="${label}"
-        onclick="jumpTo(${i})"></i>`).join('')}</div>`;
+  const current = groupIndexOf(step);
+  const groupRow = GROUPS.map((g, gi) => `
+    <span class="wiz-group ${gi === current ? 'on' : gi < current ? 'done' : ''}"
+          onclick="jumpToGroup(${gi})">${g.name}</span>`).join('');
+  // Individual dots only for steps within the current section — thirteen
+  // dots at once told you nothing useful; three or four do.
+  const withinGroup = GROUPS[current] ? GROUPS[current].steps : [step];
+  const dotRow = withinGroup.length > 1 ? `<div class="steps">${
+    withinGroup.map(i => `<i class="${i <= step ? 'on' : ''}" title="${STEPS[i]}"
+        onclick="jumpTo(${i})"></i>`).join('')}</div>` : '';
+  return `<div class="wiz-groups">${groupRow}</div>${dotRow}`;
+}
+
+function jumpToGroup(groupIndex) {
+  jumpTo(GROUPS[groupIndex].steps[0]);
 }
 
 // Where the wizard should return to after a detour. Set when you jump from
@@ -1863,6 +1921,64 @@ async function drawStep() {
   }
 
   if (step === 11) {
+    lead = 'Before any real encoding time is spent, Forge decodes every '
+         + 'video and audio track once to check it actually works. This '
+         + 'catches a damaged file in seconds instead of after a long '
+         + 'encode fails.';
+    const arrChosen = draft.on_unhealthy_video === 'delete_and_research';
+    body = `
+      <div style="font-size:13px;font-weight:600;margin-bottom:3px">
+        A damaged audio track</div>
+      <em style="display:block;font-style:normal;font-size:12px;color:var(--muted);
+        margin-bottom:9px;line-height:1.5">Handled automatically, always: that
+        one track is left out and the rest of the file converts normally.
+        Nothing to choose here.</em>
+
+      <div style="font-size:13px;font-weight:600;margin:20px 0 3px">
+        The video itself won't decode</div>
+      <em style="display:block;font-style:normal;font-size:12px;color:var(--muted);
+        margin-bottom:9px;line-height:1.5">This is different — no retry or
+        setting fixes a picture that isn't there. Choose what should happen.</em>
+      ${(CAT.unhealthy_video || []).map(o => `<label class="choice ${
+          draft.on_unhealthy_video===o.id?'sel':''}"
+        onclick="pick('on_unhealthy_video','${o.id}')">
+        <div class="t">${o.name}${o.recommended?'<span class="badge">recommended</span>':''}</div>
+        <div class="w">${o.detail}</div></label>`).join('')}
+
+      ${arrChosen ? `
+        <div style="font-size:13px;font-weight:600;margin:20px 0 9px">
+          Connect Radarr or Sonarr</div>
+        ${(CAT.arr_kinds || []).map(o => `<label class="choice ${
+            draft.arr_kind===o.id?'sel':''}" onclick="pick('arr_kind','${o.id}')">
+          <div class="t">${o.name}</div>
+          <div class="d">${o.detail}</div></label>`).join('')}
+        <label class="fld"><span>Address</span>
+          <em>Wherever its web page loads, without a trailing slash.</em>
+          <input type="text" value="${draft.arr_url}"
+            placeholder="http://192.168.1.10:7878"
+            oninput="draft.arr_url=this.value"></label>
+        <label class="fld"><span>API key</span>
+          <em>Settings \u2192 General in ${draft.arr_kind === 'radarr' ? 'Radarr' : 'Sonarr'}.</em>
+          <input type="text" value="${draft.arr_api_key}"
+            oninput="draft.arr_api_key=this.value"></label>
+        <div style="margin:10px 0">
+          <button onclick="testArrConnection()">Test connection</button>
+          <span id="arr-test-result" style="margin-left:10px;font-size:12.5px"></span>
+        </div>
+        <label class="fld"><span>Path mapping (only if needed)</span>
+          <em>Leave both blank unless Forge and ${draft.arr_kind === 'radarr' ? 'Radarr' : 'Sonarr'}
+              see this library at different paths — for example Forge at
+              /media/Movies while ${draft.arr_kind === 'radarr' ? 'Radarr' : 'Sonarr'} sees
+              /movies for the same folder.</em>
+          <input type="text" value="${draft.arr_path_from}"
+            placeholder="What Forge sees, e.g. /media/Movies"
+            oninput="draft.arr_path_from=this.value" style="margin-bottom:8px">
+          <input type="text" value="${draft.arr_path_to}"
+            placeholder="What ${draft.arr_kind === 'radarr' ? 'Radarr' : 'Sonarr'} sees, e.g. /movies"
+            oninput="draft.arr_path_to=this.value"></label>` : ''}`;
+  }
+
+  if (step === 12) {
     const warns = (await (await fetch('/api/profile/check', {method:'POST',
       headers:{'Content-Type':'application/json'},
       body:JSON.stringify(draft)})).json()).warnings || [];
@@ -1912,15 +2028,23 @@ async function drawStep() {
              ? ', retries automatically' : '')
           + (draft.salvage_when_stuck && draft.original_action === 'archive'
              ? ', keeps the picture if nothing helps' : '')],
+      [11, 'Recovery', draft.on_unhealthy_video === 'delete_and_research'
+          ? `unrecoverable files removed via ${draft.arr_kind === 'radarr' ? 'Radarr' : 'Sonarr'}`
+          : 'unrecoverable files flagged for review'],
     ];
 
     body = warns.map(x => `<div class="warn">${x}</div>`).join('')
-      + rows.map(([target, label, value]) => `
-        <div class="review-row" onclick="jumpTo(${target})">
-          <b>${label}</b>
-          <span class="val">${value}</span>
-          <span class="edit">change</span>
-        </div>`).join('');
+      + rows.map(([target, label, value], i) => {
+          const g = groupIndexOf(target);
+          const heading = (i === 0 || groupIndexOf(rows[i - 1][0]) !== g)
+            ? `<div class="review-heading">${GROUPS[g].name}</div>` : '';
+          return `${heading}
+            <div class="review-row" onclick="jumpTo(${target})">
+              <b>${label}</b>
+              <span class="val">${value}</span>
+              <span class="edit">change</span>
+            </div>`;
+        }).join('');
   }
 
   const heading = editingId != null && step === 0
@@ -1946,6 +2070,29 @@ function toggleRetryStep(id) {
   const at = list.indexOf(id);
   if (at >= 0) list.splice(at, 1); else list.push(id);
   drawStep();
+}
+
+async function testArrConnection() {
+  const el = document.getElementById('arr-test-result');
+  if (!el) return;
+  if (!draft.arr_url.trim() || !draft.arr_api_key.trim()) {
+    el.textContent = 'Enter an address and API key first.';
+    el.style.color = 'var(--muted)';
+    return;
+  }
+  el.textContent = 'Testing…';
+  el.style.color = 'var(--muted)';
+  try {
+    const r = await (await fetch('/api/arr/test', {method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({kind: draft.arr_kind, url: draft.arr_url.trim(),
+                            api_key: draft.arr_api_key.trim()})})).json();
+    el.textContent = r.message || (r.ok ? 'Connected.' : 'Could not connect.');
+    el.style.color = r.ok ? 'var(--signal)' : 'var(--fault)';
+  } catch (e) {
+    el.textContent = 'Could not reach the server to test this.';
+    el.style.color = 'var(--fault)';
+  }
 }
 
 function toggleCeiling() {
@@ -2087,6 +2234,12 @@ async function saveLibrary() {
       auto_retry: draft.auto_retry,
       auto_retry_steps: draft.auto_retry_steps,
       auto_retry_custom: draft.auto_retry_custom,
+      arr: {
+        on_unhealthy_video: draft.on_unhealthy_video,
+        kind: draft.arr_kind, url: draft.arr_url.trim(),
+        api_key: draft.arr_api_key.trim(),
+        path_from: draft.arr_path_from.trim(), path_to: draft.arr_path_to.trim(),
+      },
     },
     naming: draft.naming,
     filters: draft.filters,

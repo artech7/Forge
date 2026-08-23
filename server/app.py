@@ -21,6 +21,7 @@ import naming
 import profiles
 import watcher
 import schedule
+import arr
 
 STATIC = Path(__file__).parent / "static"
 MEDIA_ROOTS = [r.strip() for r in os.environ.get("MEDIA_ROOTS", "/media").split(",") if r.strip()]
@@ -591,6 +592,9 @@ async def fail(job_id: int, req: Request):
     job = db.get_job(job_id)
     spec = (job or {}).get("spec") or {}
 
+    if job and body.get("unhealthy_video"):
+        return await handle_unhealthy_video(job, error)
+
     # Only worth retrying when audio was actually being re-encoded — if it
     # was already a straight copy (the library's own setting, or Forge's
     # own remux shortcut when the source already matched), retrying with
@@ -614,6 +618,39 @@ async def fail(job_id: int, req: Request):
     return {"ok": True}
 
 
+async def handle_unhealthy_video(job, error):
+    """A file whose video stream can't be decoded at all.
+
+    Unlike a damaged audio track, there's no fallback encode setting that
+    fixes this — the picture data itself is gone. No retry, ladder, or
+    audio-copy substitution helps. The only two honest outcomes are
+    "someone should look at this" or, if Radarr/Sonarr are configured for
+    this library, "ask the *arr to fetch a working copy instead."
+    """
+    library = db.get_library(job["library_id"]) if job.get("library_id") else None
+    profile = (library or {}).get("profile") or {}
+    conf = profile.get("arr") or {}
+    note = ("The video stream itself won't decode — this file is corrupt, "
+           "not just this attempt.")
+
+    if conf.get("on_unhealthy_video") == "delete_and_research" and conf.get("url"):
+        ok, message = await asyncio.to_thread(
+            arr.find_and_research, conf.get("kind"), conf.get("url"),
+            conf.get("api_key"), job["path"],
+            conf.get("path_from", ""), conf.get("path_to", ""))
+        if ok:
+            db.update_job(job["id"], state="removed", progress=100,
+                          finished_at=time.time(), outcome=f"{note} {message}")
+            await broadcast()
+            return {"ok": True, "removed_and_researched": True}
+        note += f" Tried to remove it via {conf.get('kind')}, but: {message}"
+
+    db.update_job(job["id"], state="ignored", error=note,
+                  finished_at=time.time())
+    await broadcast()
+    return {"ok": True}
+
+
 async def handle_audio_fail(job, error):
     """One automatic retry with this job's audio left untouched.
 
@@ -625,9 +662,20 @@ async def handle_audio_fail(job, error):
     """
     spec = job.get("spec") or {}
     new_spec = {**spec, "audio": "copy", "audio_salvage": True}
+    # This job's row is still 'running' at this point - nothing has updated
+    # it yet - and the database won't allow a second active row for the
+    # same path, which is exactly what the retry would be. Marking this
+    # one out of the way first is the same ordering handle_bloated() uses
+    # for the same reason; without it, enqueue() below always silently
+    # fails and this retry can never actually happen.
+    db.update_job(job["id"], state="cancelled")
     new_id = db.enqueue(job["path"], new_spec, job.get("size_before"),
                         job.get("library_id"), attempt=job.get("attempt", 1) + 1)
     if not new_id:
+        # A genuine race, not the expected case above - put this job back
+        # exactly as it was so fail()'s normal Failed/Ignored logic still
+        # applies to it, rather than it vanishing with no result at all.
+        db.update_job(job["id"], state="running")
         return None
     db.delete_job(job["id"])
     await broadcast()
@@ -895,6 +943,20 @@ async def lookup_test(req: Request):
     key = body.get("key") or (db.get_settings().get("tmdb") or {}).get("key")
     ok, message = await asyncio.to_thread(lookup.TMDB(key).test)
     return {"ok": ok, "message": message, "attribution": lookup.ATTRIBUTION}
+
+
+@app.post("/api/arr/test")
+async def arr_test(req: Request):
+    """Used by the wizard's "Test connection" button before saving a library."""
+    body = await req.json()
+    kind = body.get("kind")
+    if kind not in ("radarr", "sonarr"):
+        raise HTTPException(400, "kind must be radarr or sonarr")
+    url, key = body.get("url", ""), body.get("api_key", "")
+    if not url or not key:
+        return {"ok": False, "message": "Enter an address and API key first."}
+    ok, message = await asyncio.to_thread(arr.test_connection, kind, url, key)
+    return {"ok": ok, "message": message}
 
 
 @app.get("/api/naming/samples")
