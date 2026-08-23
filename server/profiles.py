@@ -156,6 +156,9 @@ QUALITY_LEVELS = [
      "detail": "The sweet spot. Looks great on a TV, roughly half the size."},
     {"id": "small", "name": "Small files", "crf": 26,
      "detail": "Noticeably compressed on a big screen, but very space-efficient."},
+    {"id": "advanced", "name": "Advanced", "crf": 22,
+     "detail": "Pick an exact point between quality and size yourself, "
+              "instead of one of the presets above."},
 ]
 
 HDR_MODES = [

@@ -1280,6 +1280,7 @@ const STEPS = ['Name and folders', 'Video', 'Colour and HDR', 'Audio', 'Subtitle
 function blankDraft() {
   return { name:'', watch_path:'', output_path:'',
     video_codec:'hevc', container:'mkv', quality_level:'balanced',
+    crf_override:'',
     audio_codec:'aac', audio_bitrate:'160k',
     hdr_mode:'preserve', bit_depth:'match', tag_colours:true,
     audio_language_mode:'keep_all', audio_languages_list:['eng'],
@@ -1369,6 +1370,11 @@ function pick(key, val) {
     return;
   }
   draft[key] = val;
+  if (key === 'quality_level' && val !== 'advanced') {
+    // A stale exact setting shouldn't silently keep applying once you've
+    // switched back to a named preset.
+    draft.crf_override = '';
+  }
   if (key === 'audio_codec') {
     const a = CAT.audio.find(x => x.id === val);
     draft.audio_bitrate = a?.default_bitrate || '';
@@ -1446,6 +1452,15 @@ async function drawStep() {
         onclick="pick('quality_level','${o.id}')">
         <div class="t">${o.name}${o.recommended?'<span class="badge">recommended</span>':''}</div>
         <div class="w">${o.detail}</div></label>`).join('')}
+      ${draft.quality_level === 'advanced' ? `
+        <select style="margin-top:9px"
+                onchange="draft.crf_override=this.value;drawStep()">
+          <option value="">Choose a setting…</option>
+          ${(CAT.quality_scale || []).map(q =>
+            `<option value="${q.value}" ${String(draft.crf_override)
+              === String(q.value) ? 'selected' : ''}>${q.name} — ${q.detail}</option>`
+          ).join('')}
+        </select>` : ''}
       <div style="font-size:13px;font-weight:600;margin:22px 0 3px">File type</div>
       <em style="display:block;font-style:normal;font-size:12px;color:var(--muted);
         margin-bottom:9px;line-height:1.5">The wrapper around the video — this is the
@@ -1862,7 +1877,11 @@ async function drawStep() {
       [0, 'Name', draft.name || '—'],
       [0, 'Watches', draft.watch_path || '—'],
       [0, 'Moves to', draft.output_path || 'stays in the watch folder'],
-      [1, 'Video', `${n('video','video_codec')}, ${n('quality','quality_level')}`],
+      [1, 'Video', `${n('video','video_codec')}, ${
+          draft.quality_level === 'advanced' && draft.crf_override
+            ? (CAT.quality_scale.find(q => String(q.value) === String(draft.crf_override)) || {}).name
+              || `setting ${draft.crf_override}`
+            : n('quality','quality_level')}`],
       [1, 'File type', n('containers','container')],
       [2, 'Colour', `${n('hdr','hdr_mode')}, ${n('depth','bit_depth')}`],
       [3, 'Audio', n('audio','audio_codec')
@@ -2049,7 +2068,8 @@ async function saveLibrary() {
     originals_path: draft.originals_path.trim() || null,
     profile: {
       video_codec: draft.video_codec, container: draft.container,
-      quality_level: draft.quality_level, audio_codec: draft.audio_codec,
+      quality_level: draft.quality_level, crf_override: draft.crf_override,
+      audio_codec: draft.audio_codec,
       audio_bitrate: draft.audio_bitrate, subtitle_mode: draft.subtitle_mode,
       subtitle_languages: draft.subtitle_languages,
       hdr_mode: draft.hdr_mode, bit_depth: draft.bit_depth,
