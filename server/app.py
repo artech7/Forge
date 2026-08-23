@@ -1059,9 +1059,18 @@ async def add_library(req: Request):
     except sqlite3.IntegrityError as exc:
         raise HTTPException(400, f"Could not create that library: {exc}")
 
-    # Don't make the user wait for the next tick to see something happen.
-    report = await asyncio.to_thread(watcher.scan_library,
-                                     db.get_library(lib_id), probe)
+    # Don't make the user wait for the next tick to see something happen —
+    # but this is a convenience, not part of "did the save work." The
+    # library is already committed above; a scan hiccup here (a bad file,
+    # a flaky mount) must never turn a successful save into a false
+    # "couldn't save" error. Worst case, the next scheduled scan picks up
+    # the folder instead of this one happening immediately.
+    report = {}
+    try:
+        report = await asyncio.to_thread(watcher.scan_library,
+                                         db.get_library(lib_id), probe)
+    except Exception as exc:
+        print(f"add_library: initial scan of library {lib_id} failed ({exc})")
     await broadcast()
     return {"id": lib_id, "first_scan": report}
 
