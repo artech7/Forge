@@ -29,16 +29,57 @@
   *{box-sizing:border-box}
   html,body{margin:0;height:100%}
   body{
-    background:
-      radial-gradient(120% 80% at 12% -10%, #1a2740 0%, transparent 55%),
-      radial-gradient(100% 70% at 100% 0%, #16283a 0%, transparent 50%),
-      var(--ink);
+    background:var(--ink);
     color:var(--text);
     font-family:Archivo,system-ui,sans-serif;
     -webkit-font-smoothing:antialiased;
     padding:22px 18px 60px;
   }
+  /* Pinned to the viewport, not the page, so it never scrolls, stretches,
+     or runs out partway down a long list — a gradient painted on <body>
+     itself is painted across the whole scrollable height, which is why
+     it used to look fine at the top and just stop looking like anything
+     once you scrolled past it. */
+  body::before{
+    content:'';
+    position:fixed;
+    inset:0;
+    z-index:-1;
+    background:
+      radial-gradient(120% 80% at 12% -10%, #1a2740 0%, transparent 55%),
+      radial-gradient(100% 70% at 100% 0%, #16283a 0%, transparent 50%),
+      var(--ink);
+  }
   .wrap{max-width:1180px;margin:0 auto}
+
+  .toptabs{display:flex;gap:2px;margin:24px 0 26px;border-bottom:1px solid var(--edge)}
+  .toptab{background:none;border:none;color:var(--muted);font-family:Archivo,sans-serif;
+    font-size:14.5px;font-weight:600;padding:11px 18px;cursor:pointer;
+    border-radius:10px 10px 0 0;position:relative;top:1px;
+    transition:color .15s,background .15s}
+  .toptab:hover{color:var(--text);background:rgba(255,255,255,.04)}
+  .toptab.on{color:var(--text)}
+  .toptab.on::after{content:'';position:absolute;left:12px;right:12px;bottom:-1px;
+    height:2px;background:var(--signal);border-radius:2px}
+
+  /* A literal 3D flip looked gimmicky with real data inside it (grids of
+     job cards mid-rotation just look broken), so this is a settle-in
+     glide instead — fades and a few pixels of motion, not a rotation. */
+  .tabpanel{display:none}
+  .tabpanel.active{display:block}
+  .tabpanel.leaving{display:block;animation:tabOut .18s ease forwards}
+  .tabpanel.entering{animation:tabIn .32s cubic-bezier(.16,1,.3,1) forwards}
+  @keyframes tabOut{
+    from{opacity:1;transform:translateY(0) scale(1)}
+    to{opacity:0;transform:translateY(-10px) scale(.98)}
+  }
+  @keyframes tabIn{
+    from{opacity:0;transform:translateY(12px) scale(.98)}
+    to{opacity:1;transform:translateY(0) scale(1)}
+  }
+  @media (prefers-reduced-motion:reduce){
+    .tabpanel.leaving,.tabpanel.entering{animation:none}
+  }
 
   header{display:flex;align-items:baseline;gap:14px;flex-wrap:wrap;margin-bottom:26px}
   h1{font-size:22px;font-weight:800;letter-spacing:-.02em;margin:0}
@@ -321,33 +362,54 @@
   <div id="banner"></div>
   <div class="sched"><span class="lamp" id="lamp"></span><span id="schedtext">—</span></div>
 
-  <div class="stats">
-    <div class="glass stat"><div class="k">Space reclaimed</div><div class="v" id="s-saved">—</div></div>
-    <div class="glass stat"><div class="k">Completed</div><div class="v" id="s-done">—</div></div>
-    <div class="glass stat"><div class="k">In queue</div><div class="v" id="s-queued">—</div></div>
-    <div class="glass stat"><div class="k">Failed</div><div class="v" id="s-failed">—</div></div>
+  <nav class="toptabs" id="toptabs">
+    <button class="toptab on" data-tab="nodes" onclick="switchTopTab('nodes')">Nodes &amp; Libraries</button>
+    <button class="toptab" data-tab="queue" onclick="switchTopTab('queue')">Queue</button>
+    <button class="toptab" data-tab="stats" onclick="switchTopTab('stats')">Stats</button>
+    <button class="toptab" data-tab="settings" onclick="switchTopTab('settings')">Settings</button>
+  </nav>
+
+  <div class="tabpanel active" data-panel="nodes" id="panel-nodes">
+    <div class="queue-head">
+      <h2>Libraries</h2>
+      <div class="actions">
+        <button class="primary" onclick="openWizard()">Add a library</button>
+        <button onclick="scanAll()">Check folders now</button>
+      </div>
+    </div>
+    <div class="libs" id="libs"></div>
+
+    <h2 style="margin-top:32px">Nodes</h2>
+    <div class="nodes" id="nodes"></div>
   </div>
 
-  <h2>Libraries</h2>
-  <div class="libs" id="libs"></div>
+  <div class="tabpanel" data-panel="queue" id="panel-queue">
+    <div class="queue-head">
+      <h2>Queue</h2>
+      <div class="actions">
+        <button onclick="sweepNow()">Clean up Originals</button>
+      </div>
+    </div>
+    <div class="tabs" id="libtabs"></div>
+    <div class="tabs" id="jobtabs"></div>
+    <div class="batchbar" id="batchbar"></div>
+    <div class="queue" id="queue"></div>
+    <div class="pager" id="pager"></div>
+  </div>
 
-  <h2>Nodes</h2>
-  <div class="nodes" id="nodes"></div>
-
-  <div class="queue-head">
-    <h2>Queue</h2>
-    <div class="actions">
-      <button class="primary" onclick="openWizard()">Add a library</button>
-      <button onclick="scanAll()">Check folders now</button>
-      <button onclick="openSettings()">Settings</button>
-      <button onclick="sweepNow()">Clean up Originals</button>
+  <div class="tabpanel" data-panel="stats" id="panel-stats">
+    <h2>Stats</h2>
+    <div class="stats">
+      <div class="glass stat"><div class="k">Space reclaimed</div><div class="v" id="s-saved">—</div></div>
+      <div class="glass stat"><div class="k">Completed</div><div class="v" id="s-done">—</div></div>
+      <div class="glass stat"><div class="k">In queue</div><div class="v" id="s-queued">—</div></div>
+      <div class="glass stat"><div class="k">Failed</div><div class="v" id="s-failed">—</div></div>
+    </div>
+    <div class="note" style="margin-top:16px;color:var(--muted);font-size:12.5px">
+      Space reclaimed and Completed are lifetime totals — they survive
+      clearing the Completed list. In queue and Failed reflect right now.
     </div>
   </div>
-  <div class="tabs" id="libtabs"></div>
-  <div class="tabs" id="jobtabs"></div>
-  <div class="batchbar" id="batchbar"></div>
-  <div class="queue" id="queue"></div>
-  <div class="pager" id="pager"></div>
 </div>
 
 <div class="veil" id="veil">
@@ -1474,6 +1536,40 @@ async function openWizard(libId) {
 }
 
 function closeWizard() { document.getElementById('veil').classList.remove('open'); }
+
+// Which top-level tab is showing. Settings doesn't get a panel of its own —
+// it opens the existing settings modal instead, so this only ever tracks
+// nodes/queue/stats.
+let activeTopTab = 'nodes';
+
+function switchTopTab(name) {
+  if (name === 'settings') { openSettings(); return; }
+  if (name === activeTopTab) return;
+
+  document.querySelectorAll('.toptab').forEach(b =>
+    b.classList.toggle('on', b.dataset.tab === name));
+
+  const current = document.getElementById('panel-' + activeTopTab);
+  const next = document.getElementById('panel-' + name);
+  activeTopTab = name;
+
+  // Timed rather than tied to animationend — with reduced-motion on, no
+  // animation plays and that event never fires, which would otherwise
+  // leave the next panel permanently hidden.
+  if (matchMedia('(prefers-reduced-motion: reduce)').matches) {
+    current.classList.remove('active');
+    next.classList.add('active');
+    return;
+  }
+  current.classList.remove('active');
+  current.classList.add('leaving');
+  setTimeout(() => {
+    current.classList.remove('leaving');
+    next.classList.add('active', 'entering');
+    setTimeout(() => next.classList.remove('entering'), 320);
+  }, 180);
+}
+
 
 function opt(list, key, extra = '') {
   const current = key === 'naming_scheme_proxy' ? draft.naming.scheme : draft[key];
