@@ -13,7 +13,10 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;800&family=Chivo+Mono:wght@300;400;600&display=swap" rel="stylesheet">
 <style>
-  :root{
+  /* Four palettes, one shape. Everything else in the app only ever
+     reaches for these variable names, so a theme is nothing more than
+     re-pointing them — nothing about layout or behaviour changes. */
+  :root, [data-theme="ironforge"]{
     --ink:#0a0e14;
     --ink-2:#111722;
     --glass:rgba(255,255,255,.055);
@@ -24,7 +27,53 @@
     --amber:#f2b03d;    /* queued, waiting */
     --fault:#ff6b6b;    /* failed */
     --idle:#5b6b85;
+    --bg-1:#1a2740; --bg-2:#16283a;
     --r:18px;
+  }
+
+  /* Molten metal straight off the anvil. */
+  [data-theme="emberforge"]{
+    --ink:#150b08;
+    --ink-2:#1f130d;
+    --glass:rgba(255,205,160,.055);
+    --edge:rgba(255,150,80,.16);
+    --text:#f7e8da;
+    --muted:#a9836a;
+    --signal:#ffb454;
+    --amber:#ff7a3d;
+    --fault:#ff5a4d;
+    --idle:#8a6a55;
+    --bg-1:#3d2012; --bg-2:#2a1608;
+  }
+
+  /* Niflheim: the frost realm. */
+  [data-theme="frostbound"]{
+    --ink:#060d15;
+    --ink-2:#0c1721;
+    --glass:rgba(200,230,255,.055);
+    --edge:rgba(160,210,255,.15);
+    --text:#e9f4fc;
+    --muted:#7391ac;
+    --signal:#5fd4e0;
+    --amber:#7fb8e8;
+    --fault:#ff6b6b;
+    --idle:#4a6478;
+    --bg-1:#173350; --bg-2:#0f2438;
+  }
+
+  /* Weathered stone, carved and mossed over. */
+  [data-theme="runestone"]{
+    --ink:#0c110d;
+    --ink-2:#151b16;
+    --glass:rgba(205,255,215,.05);
+    --edge:rgba(180,255,190,.13);
+    --text:#e9f1e7;
+    --muted:#7f9386;
+    --signal:#8fd694;
+    --amber:#c9a24d;
+    --fault:#ff6b6b;
+    --idle:#5c6c60;
+    --bg-1:#1d2c20; --bg-2:#152018;
   }
   *{box-sizing:border-box}
   html,body{margin:0;height:100%}
@@ -46,8 +95,8 @@
     inset:0;
     z-index:-1;
     background:
-      radial-gradient(120% 80% at 12% -10%, #1a2740 0%, transparent 55%),
-      radial-gradient(100% 70% at 100% 0%, #16283a 0%, transparent 50%),
+      radial-gradient(120% 80% at 12% -10%, var(--bg-1) 0%, transparent 55%),
+      radial-gradient(100% 70% at 100% 0%, var(--bg-2) 0%, transparent 50%),
       var(--ink);
   }
   .wrap{max-width:1180px;margin:0 auto}
@@ -82,6 +131,10 @@
   }
 
   header{display:flex;align-items:baseline;gap:14px;flex-wrap:wrap;margin-bottom:26px}
+  .rune{color:var(--signal);text-shadow:0 0 12px color-mix(in srgb, var(--signal) 60%, transparent);
+        font-size:.85em;margin-right:1px}
+  #theme-picker{margin-left:auto;width:auto;padding:6px 10px;font-size:12px;
+                background:rgba(255,255,255,.06)}
   h1{font-size:22px;font-weight:800;letter-spacing:-.02em;margin:0}
   .tag{font-family:'Chivo Mono',monospace;font-size:11px;letter-spacing:.14em;
        text-transform:uppercase;color:var(--muted)}
@@ -354,8 +407,14 @@
 <body>
 <div class="wrap">
   <header>
-    <h1>Forge</h1>
+    <h1><span class="rune" aria-hidden="true">ᚠ</span> Forge</h1>
     <span class="tag">distributed transcoding</span>
+    <select id="theme-picker" title="Theme" onchange="setTheme(this.value)">
+      <option value="ironforge">Ironforge</option>
+      <option value="emberforge">Emberforge</option>
+      <option value="frostbound">Frostbound</option>
+      <option value="runestone">Runestone</option>
+    </select>
     <span class="pill"><span class="dot" id="dot"></span><span id="conn">connecting</span></span>
   </header>
 
@@ -2474,6 +2533,20 @@ function connect() {
     setTimeout(connect, 3000);
   };
 }
+// Four palettes sharing the same set of variable names — see the
+// [data-theme] blocks in <style>. Persisted so the choice survives a
+// reload; applied immediately on load, before anything else paints, so
+// there's no flash of the wrong theme.
+const THEMES = ['ironforge', 'emberforge', 'frostbound', 'runestone'];
+function setTheme(name) {
+  if (!THEMES.includes(name)) name = 'ironforge';
+  document.documentElement.dataset.theme = name;
+  document.getElementById('theme-picker').value = name;
+  try { localStorage.setItem('forge-theme', name); } catch (e) {}
+}
+setTheme((() => { try { return localStorage.getItem('forge-theme'); }
+                  catch (e) { return null; } })() || 'ironforge');
+
 connect();
 
 // Used by both the per-job and batch "convert again, smaller" pickers —
