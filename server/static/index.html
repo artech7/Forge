@@ -138,6 +138,11 @@
   .tabs .badge.bad{background:rgba(255,107,107,.18);color:var(--fault)}
 
   .pager{display:flex;align-items:center;gap:9px;margin-top:14px;flex-wrap:wrap}
+  .batchbar{display:flex;align-items:center;gap:9px;flex-wrap:wrap;
+            padding:10px 13px;margin-bottom:9px;border-radius:11px;
+            background:rgba(255,181,71,.08);border:1px solid rgba(255,181,71,.25)}
+  .batchbar:empty{display:none;padding:0;margin:0;border:none}
+  .job .select{margin-right:9px;vertical-align:middle}
   .pager .grow{flex:1}
   .pager .where{font-family:'Chivo Mono',monospace;font-size:11.5px;
                 color:var(--muted)}
@@ -340,6 +345,7 @@
   </div>
   <div class="tabs" id="libtabs"></div>
   <div class="tabs" id="jobtabs"></div>
+  <div class="batchbar" id="batchbar"></div>
   <div class="queue" id="queue"></div>
   <div class="pager" id="pager"></div>
 </div>
@@ -884,7 +890,9 @@ function renderJobs(jobs, meta) {
          <button onclick="cancelJob(${j.id})">Cancel</button>`;
 
     return `<div class="glass job st-${j.state}">
-      <div class="file">${name}</div>
+      <div class="file">${view.name === 'bloated'
+        ? `<input class="select" type="checkbox" ${selectedBloated.has(j.id) ? 'checked' : ''}
+            onclick="toggleBloatedSelect(${j.id},this.checked)">` : ''}${name}</div>
       <div class="pct">${pct}</div>
       <div class="meta">${bits.filter(Boolean).join(' · ')}</div>
       ${sizes ? `<div class="sizes">${sizes}</div>` : ''}
@@ -902,7 +910,79 @@ function renderJobs(jobs, meta) {
   }).join('');
 
   renderPager(meta);
-  jobs.filter(j => j.state === 'bloated').forEach(j => loadRetryOptions(j.id));
+  currentBloatedJobs = jobs.filter(j => j.state === 'bloated');
+  renderBatchBar(currentBloatedJobs);
+  currentBloatedJobs.forEach(j => loadRetryOptions(j.id));
+}
+
+// Selected job ids on the "Got bigger" tab, for batch retry/accept. Pruned
+// to whatever's actually on screen each render, so a stale id from a page
+// you've since left never lingers.
+let selectedBloated = new Set();
+let currentBloatedJobs = [];
+
+function toggleBloatedSelect(id, checked) {
+  if (checked) selectedBloated.add(id); else selectedBloated.delete(id);
+  renderBatchBar(currentBloatedJobs);
+}
+
+function renderBatchBar(jobs) {
+  const el = document.getElementById('batchbar');
+  if (view.name !== 'bloated' || !jobs || !jobs.length) { el.innerHTML = ''; return; }
+  const onScreen = new Set(jobs.map(j => j.id));
+  for (const id of [...selectedBloated]) if (!onScreen.has(id)) selectedBloated.delete(id);
+
+  const n = selectedBloated.size;
+  const allChecked = n > 0 && jobs.every(j => selectedBloated.has(j.id));
+  const scale = (CAT_SCALE || []).map(q =>
+    `<option value="${q.value}">${q.name} \u2014 ${q.detail}</option>`).join('');
+
+  el.innerHTML = `
+    <label style="display:flex;align-items:center;gap:7px;font-size:12.5px">
+      <input type="checkbox" ${allChecked ? 'checked' : ''}
+        onclick="selectAllBloated(this.checked)"> select all on this page
+    </label>
+    ${n ? `
+      <span style="font-size:12.5px;color:var(--muted)">${n} selected</span>
+      <select id="batch-quality">
+        <option value="">Pick a quality\u2026</option>${scale}
+      </select>
+      <button onclick="doBatchRetranscode()">Convert selected again, smaller</button>
+      <button onclick="doBatchAccept()">Keep selected anyway</button>
+      <span class="grow"></span>
+      <button onclick="selectedBloated.clear();renderBatchBar(currentBloatedJobs)">Clear selection</button>
+    ` : ''}`;
+}
+
+function selectAllBloated(checked) {
+  if (checked) currentBloatedJobs.forEach(j => selectedBloated.add(j.id));
+  else selectedBloated.clear();
+  renderBatchBar(currentBloatedJobs);
+}
+
+async function doBatchRetranscode() {
+  const quality = +(document.getElementById('batch-quality') || {}).value;
+  if (!quality) return alert('Pick a quality first.');
+  const ids = [...selectedBloated];
+  const r = await (await fetch('/api/jobs/bloated/bulk-retranscode', {method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({job_ids: ids, quality})})).json();
+  selectedBloated.clear();
+  if (r.failed && r.failed.length) {
+    alert(`${r.queued} queued. ${r.failed.length} couldn't be: `
+        + r.failed.map(f => `#${f.id} (${f.reason})`).join('; '));
+  }
+  loadView();
+}
+
+async function doBatchAccept() {
+  const ids = [...selectedBloated];
+  if (!confirm(`Keep all ${ids.length} selected files even though they got bigger?`)) return;
+  await fetch('/api/jobs/bloated/bulk-accept', {method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({job_ids: ids})});
+  selectedBloated.clear();
+  loadView();
 }
 
 const fmtSize = b => !b ? '0 MB'
@@ -2299,6 +2379,14 @@ function connect() {
   };
 }
 connect();
+
+// Used by both the per-job and batch "convert again, smaller" pickers —
+// fetched once up front so the first render of either doesn't show an
+// empty dropdown while it loads.
+(async () => {
+  try { CAT_SCALE = (await (await fetch('/api/catalog')).json()).quality_scale; }
+  catch (e) { CAT_SCALE = []; }
+})();
 </script>
 </body>
 </html>

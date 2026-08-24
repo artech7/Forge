@@ -785,17 +785,29 @@ async def retranscode(job_id: int, req: Request):
     quality = int(body.get("quality") or 0)
     if not 1 <= quality <= 51:
         raise HTTPException(400, "Pick a quality between 1 and 51.")
+    ok, message = await _retranscode_one(job_id, quality)
+    if not ok:
+        raise HTTPException(400, message)
+    await broadcast()
+    return {"ok": True, "quality": quality}
 
+
+async def _retranscode_one(job_id, quality):
+    """Shared by the single-job and batch retranscode endpoints.
+
+    Doesn't broadcast itself — batch callers do one broadcast after the
+    whole selection is processed rather than one per job.
+    """
     job = db.get_job(job_id)
     if not job:
-        raise HTTPException(404, "No such job")
+        return False, "No such job."
     library = db.get_library(job["library_id"]) if job.get("library_id") else None
 
     source = Path(job["path"])
     if not source.is_file():
-        ok, message = watcher.restore_original(job, library)
-        if not ok:
-            raise HTTPException(400, f"Can't convert it again: {message}.")
+        restored, message = watcher.restore_original(job, library)
+        if not restored:
+            return False, f"Can't convert it again: {message}."
 
     # Cleared so the scanner stops treating this file as settled.
     db.forget_processed(str(source))
@@ -804,10 +816,55 @@ async def retranscode(job_id: int, req: Request):
                         job.get("library_id"),
                         attempt=job.get("attempt", 1) + 1)
     if not new_id:
-        raise HTTPException(400, "That file is already queued.")
+        return False, "That file is already queued."
     db.delete_job(job_id)
+    return True, None
+
+
+@app.post("/api/jobs/bloated/bulk-retranscode")
+async def bulk_retranscode(req: Request):
+    """Apply one quality setting to a whole batch of bloated jobs at once.
+
+    Selecting through them one at a time to pick the same quality on each
+    is the exact tedium this exists to remove — same underlying retry as
+    the single-job button, just looped, with one broadcast at the end
+    instead of one per job.
+    """
+    body = await req.json()
+    job_ids = body.get("job_ids") or []
+    quality = int(body.get("quality") or 0)
+    if not 1 <= quality <= 51:
+        raise HTTPException(400, "Pick a quality between 1 and 51.")
+    if not job_ids:
+        raise HTTPException(400, "No jobs selected.")
+
+    succeeded, failed = [], []
+    for job_id in job_ids:
+        ok, message = await _retranscode_one(job_id, quality)
+        (succeeded if ok else failed).append(
+            job_id if ok else {"id": job_id, "reason": message})
     await broadcast()
-    return {"ok": True, "job": new_id, "quality": quality}
+    return {"queued": len(succeeded), "failed": failed}
+
+
+@app.post("/api/jobs/bloated/bulk-accept")
+async def bulk_accept(req: Request):
+    """Keep a whole batch of bloated files as they are, in one action."""
+    body = await req.json()
+    job_ids = body.get("job_ids") or []
+    if not job_ids:
+        raise HTTPException(400, "No jobs selected.")
+    n = 0
+    for job_id in job_ids:
+        job = db.get_job(job_id)
+        if not job or job.get("state") != "bloated":
+            continue
+        db.record_completion(job.get("size_before"), job.get("size_after"))
+        db.update_job(job_id, state="done",
+                      outcome=(job.get("outcome") or "") + " — kept anyway")
+        n += 1
+    await broadcast()
+    return {"kept": n}
 
 
 @app.post("/api/jobs/{job_id}/accept")
