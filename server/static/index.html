@@ -279,7 +279,11 @@
   .scanbar .fill::after{content:'';position:absolute;inset:0;
     background:linear-gradient(90deg, transparent, rgba(255,255,255,.35), transparent);
     background-size:60px 100%;animation:scanshine 1.1s linear infinite}
-  .scanbar .label{font-family:'Chivo Mono',monospace;font-size:11px;color:var(--muted)}
+  .scanbar .label{font-family:'Chivo Mono',monospace;font-size:11px;color:var(--muted);
+                  display:flex;justify-content:space-between;gap:12px}
+  .scanbar .label .current{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1}
+  .scanbar .label .count{flex:none;font-weight:600;color:var(--text);
+                          font-variant-numeric:tabular-nums}
   @keyframes scanshine{from{background-position:-60px 0}to{background-position:120px 0}}
   @media (prefers-reduced-motion:reduce){.scanbar .fill::after{animation:none}}
   .batchbar{display:flex;align-items:center;gap:9px;flex-wrap:wrap;
@@ -1291,20 +1295,24 @@ async function scanAll() {
   btn.disabled = true;
   bar.classList.add('on');
   bar.innerHTML = `<div class="track"><div class="fill" id="scanfill"></div></div>
-                    <div class="label" id="scanlabel">Checking 0 of ${libs.length}…</div>`;
+    <div class="label"><span class="current" id="scancurrent">Starting…</span>
+      <span class="count" id="scancount">0 / ${libs.length}</span></div>`;
   const fill = document.getElementById('scanfill');
-  const label = document.getElementById('scanlabel');
+  const current = document.getElementById('scancurrent');
+  const count = document.getElementById('scancount');
 
   let done = 0;
   for (const l of libs) {
-    label.textContent = `Checking "${l.name}"… (${done} of ${libs.length})`;
+    current.textContent = `Checking "${l.name}"…`;
+    count.textContent = `${done} / ${libs.length}`;
     try { await fetch(`/api/libraries/${l.id}/scan`, {method: 'POST'}); }
     catch (e) { /* one library's check failing to respond shouldn't stop the rest */ }
     done++;
+    count.textContent = `${done} / ${libs.length}`;
     fill.style.width = `${Math.round((done / libs.length) * 100)}%`;
   }
 
-  label.textContent = 'Checked every watch folder.';
+  current.textContent = 'Checked every watch folder.';
   await new Promise(r => setTimeout(r, 900));
   bar.classList.remove('on');
   btn.disabled = false;
@@ -1755,8 +1763,10 @@ function renderDeepScanBar(scan) {
   const pct = scan.total ? Math.round((scan.done / scan.total) * 100) : 0;
   bar.classList.add('on');
   bar.innerHTML = `<div class="track"><div class="fill" style="width:${pct}%"></div></div>
-    <div class="label">Scanning "${scan.library || ''}" \u2014 ${scan.current || ''} `
-    + `(${scan.done} of ${scan.total})</div>`;
+    <div class="label">
+      <span class="current">Scanning "${scan.library || ''}" \u2014 ${scan.current || ''}</span>
+      <span class="count">${scan.done} / ${scan.total}</span>
+    </div>`;
 }
 
 async function startDeepScan() {
