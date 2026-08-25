@@ -119,6 +119,50 @@ def analyze(path):
 HEALTH_CHECK_TIMEOUT = 600
 
 
+# Genuinely slow compared to everything else in this file — measuring
+# loudness means decoding the whole audio track, not reading a header, so
+# this is given real encode-length room rather than a probe's timeout.
+LOUDNESS_TIMEOUT = 3600
+
+
+def measure_loudness(path):
+    """One-pass loudness measurement — the read half of normalise_loudness.
+
+    Uses the exact same loudnorm target (-16 LUFS, -1.5 dBTP, 11 LU range)
+    the encode-time filter targets, so "how far is this file from where
+    normalise_loudness would put it" is a direct, honest comparison rather
+    than measuring against one standard and normalizing against another.
+
+    Returns (values, error). values is {"integrated", "range", "true_peak"}
+    in LUFS/LU/dBTP, or None if nothing usable came back.
+    """
+    try:
+        out = subprocess.run(
+            ["ffmpeg", "-hide_banner", "-i", path,
+             "-af", "loudnorm=I=-16:TP=-1.5:LRA=11:print_format=json",
+             "-f", "null", "-"],
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=LOUDNESS_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        return None, "timed out"
+    except OSError as exc:
+        return None, str(exc)
+
+    stderr = out.stderr or ""
+    start, end = stderr.rfind("{"), stderr.rfind("}")
+    if start == -1 or end == -1 or end < start:
+        return None, "FFmpeg didn't report a measurement for this file"
+    try:
+        parsed = json.loads(stderr[start:end + 1])
+        return {
+            "integrated": float(parsed["input_i"]),
+            "range": float(parsed["input_lra"]),
+            "true_peak": float(parsed["input_tp"]),
+        }, None
+    except (json.JSONDecodeError, KeyError, ValueError, TypeError):
+        return None, "Could not read FFmpeg's measurement output"
+
+
 def health_check(path, info):
     """Decode every video and audio stream once, without re-encoding.
 

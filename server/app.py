@@ -1038,6 +1038,94 @@ async def scan_deep(req: Request):
     return {"started": True}
 
 
+def _find_unmeasured(libraries):
+    """Every video file across these libraries that has no loudness
+    reading yet. Plain filesystem + cache-lookup work, no ffprobe here —
+    run off the event loop anyway since a big library is still a lot of
+    small operations in a row.
+    """
+    targets = []
+    for lib in libraries:
+        for path in Path(lib["watch_path"]).rglob("*"):
+            if not (path.is_file() and path.suffix.lower() in VIDEO_EXT):
+                continue
+            cached = db.get_cached_file(str(path)) or {}
+            try:
+                detail = json.loads(cached.get("detail") or "{}")
+            except (json.JSONDecodeError, TypeError):
+                detail = {}
+            if not detail.get("loudness"):
+                targets.append((lib, path))
+    return targets
+
+
+@app.get("/api/stats/loudness")
+async def stats_loudness(library_id: int = None):
+    """Every file with a loudness reading, for the Audio Leveling panel."""
+    return {"files": db.files_with_loudness(library_id)}
+
+
+@app.post("/api/scan/loudness")
+async def scan_loudness(req: Request):
+    """Queue a measurement-only pass for every file that hasn't been
+    measured yet — no auto-anything, this only ever queues jobs that a
+    person can then choose to act on individually or in bulk from the
+    Stats tab.
+
+    Distributed through the normal worker queue rather than measured
+    here on the server: an honest reading means decoding the whole audio
+    track, which is worker-grade work — exactly the kind of thing this
+    queue already exists to spread across whatever machines are
+    connected, not something to do serially on the NAS.
+    """
+    try:
+        body = await req.json()
+    except Exception:
+        body = {}
+    library_ids = (body or {}).get("library_ids")
+    libraries = [l for l in db.list_libraries()
+                if library_ids is None or l["id"] in library_ids]
+
+    targets = await asyncio.to_thread(_find_unmeasured, libraries)
+    queued = 0
+    for lib, path in targets:
+        if db.enqueue(str(path), {"measure": "loudness"}, None, lib["id"]):
+            queued += 1
+    if queued:
+        await broadcast()
+    return {"queued": queued, "already_measured": len(targets) - queued}
+
+
+@app.post("/api/jobs/{job_id}/measured")
+async def job_measured(job_id: int, req: Request):
+    """A loudness-measurement pass reporting back.
+
+    No output file exists for this kind of job, so it skips the normal
+    complete() pipeline entirely — nothing to move, and nothing to add to
+    the lifetime space-saved totals, since nothing was converted.
+    """
+    body = await req.json()
+    loudness = body.get("loudness") or {}
+    job = db.get_job(job_id)
+    if not job:
+        raise HTTPException(404, "No such job")
+
+    cached = db.get_cached_file(job["path"]) or {}
+    try:
+        detail = json.loads(cached.get("detail") or "{}")
+    except (json.JSONDecodeError, TypeError):
+        detail = {}
+    detail["loudness"] = {**loudness, "measured_at": time.time()}
+    db.set_file_detail(job["path"], detail)
+
+    summary = (f"{loudness.get('integrated', '?')} LUFS, "
+              f"range {loudness.get('range', '?')} LU")
+    db.update_job(job_id, state="done", progress=100,
+                  outcome=f"Measured: {summary}", finished_at=time.time())
+    await broadcast()
+    return {"ok": True}
+
+
 @app.get("/api/stats/files")
 async def stats_files(attribute: str, value: str, library_id: int = None):
     """The files behind one chart segment, for clicking into a chart."""
@@ -1073,20 +1161,22 @@ async def stats_queue(req: Request):
         raise HTTPException(400, "No files selected.")
 
     overrides = {}
-    if body.get("convert_audio"):
-        if not body.get("audio_codec"):
-            raise HTTPException(400, "Choose an audio codec.")
+    if body.get("convert_audio") and body.get("audio_codec"):
         overrides["audio"] = body["audio_codec"]
         if body.get("audio_bitrate"):
             overrides["audio_bitrate"] = body["audio_bitrate"]
-    if body.get("convert_video"):
-        if not body.get("video_codec"):
-            raise HTTPException(400, "Choose a video codec.")
+    if body.get("convert_video") and body.get("video_codec"):
         overrides["codec"] = body["video_codec"]
         if body.get("quality"):
             overrides["quality"] = int(body["quality"])
     if body.get("container"):
         overrides["container"] = body["container"]
+    if body.get("normalise_loudness"):
+        # Doesn't force an audio codec choice by itself — a library whose
+        # own default is "copy" still works here, since build_command
+        # already substitutes a real codec whenever a filter needs one.
+        overrides["normalise_loudness"] = True
+
     if not overrides:
         raise HTTPException(400, "Choose at least one thing to convert.")
 

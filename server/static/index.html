@@ -192,6 +192,9 @@
               line-height:1.6}
   .drill-path{font-family:'Chivo Mono',monospace;font-size:10.5px;color:var(--muted);
               opacity:.6;margin-top:2px;word-break:break-all}
+  .badge-wide{font-family:'Chivo Mono',monospace;font-size:9.5px;letter-spacing:.08em;
+              text-transform:uppercase;color:var(--amber);border:1px solid rgba(242,176,61,.35);
+              border-radius:5px;padding:1px 6px;vertical-align:middle}
   .drill-row.with-checkbox{display:flex;gap:11px;align-items:flex-start}
   .drill-row.with-checkbox input[type=checkbox]{margin-top:3px;flex:none}
   .drill-row-body{flex:1;min-width:0}
@@ -552,6 +555,22 @@
 
     <div class="stats-libpick" id="stats-libpick"></div>
     <div id="stats-detail"><div class="stats-empty">Loading…</div></div>
+
+    <div class="queue-head" style="margin-top:34px">
+      <h2 style="margin:0">Audio Leveling</h2>
+      <div class="actions">
+        <button id="loudness-scan-btn" onclick="startLoudnessScan()">Scan for unleveled audio</button>
+        <button onclick="loadLoudness()">Refresh results</button>
+      </div>
+    </div>
+    <div class="note" style="margin:-4px 0 14px;color:var(--muted);font-size:12.5px">
+      Measures actual loudness by decoding each file's audio — real work
+      done by your worker nodes, not an instant check, so this queues jobs
+      you'll see finish over time rather than a single progress bar.
+      Nothing is changed automatically: review the results below and
+      choose which files to level yourself, individually or in bulk.
+    </div>
+    <div id="loudness-detail"><div class="stats-empty">Not scanned yet.</div></div>
   </div>
 </div>
 
@@ -1038,8 +1057,10 @@ function renderJobs(jobs, meta) {
 
   el.innerHTML = jobs.map(j => {
     const name = j.path.split('/').pop();
-    const bits = [ACTION_LABEL[j.spec.action] || (j.spec.codec || '').toUpperCase()];
-    if (!['audio_only','remux'].includes(j.spec.action)) bits.push('q' + j.spec.quality);
+    const bits = j.spec.measure === 'loudness' ? ['measuring loudness']
+      : [ACTION_LABEL[j.spec.action] || (j.spec.codec || '').toUpperCase()];
+    if (j.spec.measure !== 'loudness' && !['audio_only','remux'].includes(j.spec.action))
+      bits.push('q' + j.spec.quality);
     if (j.transport) bits.push(j.transport === 'stream' ? 'streamed' : 'mounted');
     if (j.encoder_used) bits.push(j.encoder_used);
     if (j.speed) bits.push(j.speed.toFixed(1) + '×');
@@ -1807,6 +1828,7 @@ async function loadStats() {
   }
   renderStatsLibPicker();
   renderStatsDetail();
+  loadLoudness();
 }
 
 function renderStatsLibPicker() {
@@ -1816,7 +1838,7 @@ function renderStatsLibPicker() {
   const all = [{id: 'all', name: 'All libraries'}, ...libs];
   el.innerHTML = all.map(l => `<button data-libid="${l.id}"
     class="${String(l.id) === String(statsLibId) ? 'on' : ''}"
-    onclick="statsLibId='${l.id}';renderStatsDetail()">${l.name}</button>`).join('');
+    onclick="statsLibId='${l.id}';renderStatsDetail();loadLoudness()">${l.name}</button>`).join('');
 }
 
 function pickStatsBucket(payload) {
@@ -1936,6 +1958,154 @@ function donutSVG(entries, total, attribute, source, size = 108) {
 
 let selectedDrillPaths = new Set();
 let currentDrillFiles = [];   // last fetch, so select-all/queue don't need to refetch
+
+// ------------------------------------------------------- Audio Leveling
+
+// Loudness range (LU) above which a file usually shows up as "turn it up
+// for dialogue, down for action." A judgment call, not a spec — the raw
+// numbers are always shown alongside it so it's never a hidden cutoff.
+const LOUDNESS_RANGE_THRESHOLD = 15;
+
+let currentLoudnessFiles = [];
+let selectedLoudnessPaths = new Set();
+
+async function startLoudnessScan() {
+  const btn = document.getElementById('loudness-scan-btn');
+  btn.disabled = true;
+  const body = statsLibId === 'all' ? {} : {library_ids: [Number(statsLibId) || statsLibId]};
+  let r;
+  try {
+    r = await (await fetch('/api/scan/loudness', {method: 'POST',
+      headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)})).json();
+  } catch (e) {
+    alert('Could not start the scan — check the server is reachable.');
+    btn.disabled = false;
+    return;
+  }
+  btn.disabled = false;
+  alert(`Queued ${r.queued} file${r.queued === 1 ? '' : 's'} for measurement.`
+      + (r.already_measured ? ` ${r.already_measured} already had a reading.` : '')
+      + (r.queued ? ' Track them in the Queue tab as "measuring loudness" — '
+                  + 'come back and hit Refresh once they finish.' : ''));
+}
+
+async function loadLoudness() {
+  const box = document.getElementById('loudness-detail');
+  if (!box) return;   // Stats tab not open yet
+  box.innerHTML = '<div class="stats-empty">Loading…</div>';
+  if (!CAT) CAT = await (await fetch('/api/catalog')).json();
+
+  const params = new URLSearchParams();
+  if (statsLibId !== 'all') params.set('library_id', statsLibId);
+  let data;
+  try { data = await (await fetch('/api/stats/loudness?' + params)).json(); }
+  catch (e) {
+    box.innerHTML = '<div class="stats-empty">Could not load this.</div>';
+    return;
+  }
+  currentLoudnessFiles = data.files || [];
+  selectedLoudnessPaths.clear();
+  renderLoudnessList();
+}
+
+function renderLoudnessList() {
+  const box = document.getElementById('loudness-detail');
+  const files = currentLoudnessFiles;
+  if (!files.length) {
+    box.innerHTML = '<div class="stats-empty">No files measured yet — run a scan above.</div>';
+    return;
+  }
+  const wide = files.filter(f => (f.range || 0) >= LOUDNESS_RANGE_THRESHOLD);
+  const codecOpts = (CAT.audio || [])
+    .map(o => `<option value="${o.id}">${o.name}</option>`).join('');
+
+  box.innerHTML = `
+    <p class="lead">${files.length} file${files.length === 1 ? '' : 's'} measured &middot;
+      ${wide.length} with a wide loudness range (&ge;${LOUDNESS_RANGE_THRESHOLD} LU)</p>
+    <div class="glass drill-convert">
+      <label class="drill-selectall">
+        <input type="checkbox" id="loud-selectall" onclick="selectAllLoudness(this.checked)">
+        select all
+        <span id="loud-selcount">0 selected</span>
+      </label>
+      <label class="drill-toggle">
+        Re-encode audio to
+        <select id="loud-audio-codec">
+          <option value="">this library's usual codec</option>
+          ${codecOpts}
+        </select>
+      </label>
+      <button class="primary" onclick="queueLoudnessSelected()">Queue selected for leveling</button>
+    </div>
+    <div class="drill-list">${files.map(loudnessRow).join('')}</div>`;
+
+  document.querySelectorAll('#loudness-detail .drill-row input[type=checkbox]').forEach(cb => {
+    cb.addEventListener('change', () => {
+      if (cb.checked) selectedLoudnessPaths.add(cb.dataset.path);
+      else selectedLoudnessPaths.delete(cb.dataset.path);
+      updateLoudnessSelCount();
+    });
+  });
+  updateLoudnessSelCount();
+}
+
+function loudnessRow(f) {
+  const wide = (f.range || 0) >= LOUDNESS_RANGE_THRESHOLD;
+  const num = (v) => typeof v === 'number' ? v.toFixed(1) : '?';
+  return `<div class="drill-row with-checkbox">
+    <input type="checkbox" data-path="${f.path}">
+    <div class="drill-row-body">
+      <div class="drill-name">${f.name}${wide ? ' <span class="badge-wide">wide range</span>' : ''}</div>
+      <div class="drill-meta">${num(f.integrated)} LUFS &middot; range ${num(f.range)} LU
+        &middot; peak ${num(f.true_peak)} dBTP</div>
+      <div class="drill-path">${f.path}</div>
+    </div>
+  </div>`;
+}
+
+function updateLoudnessSelCount() {
+  const el = document.getElementById('loud-selcount');
+  if (el) el.textContent = `${selectedLoudnessPaths.size} selected`;
+  const all = document.getElementById('loud-selectall');
+  if (all) all.checked = currentLoudnessFiles.length > 0
+    && selectedLoudnessPaths.size === currentLoudnessFiles.length;
+}
+
+function selectAllLoudness(checked) {
+  selectedLoudnessPaths.clear();
+  if (checked) currentLoudnessFiles.forEach(f => selectedLoudnessPaths.add(f.path));
+  document.querySelectorAll('#loudness-detail .drill-row input[type=checkbox]').forEach(cb => {
+    cb.checked = checked;
+  });
+  updateLoudnessSelCount();
+}
+
+async function queueLoudnessSelected() {
+  if (!selectedLoudnessPaths.size) return alert('Select at least one file first.');
+  const body = {
+    paths: [...selectedLoudnessPaths],
+    convert_audio: true,
+    audio_codec: document.getElementById('loud-audio-codec').value,
+    convert_video: false,
+    normalise_loudness: true,
+  };
+  let r;
+  try {
+    r = await (await fetch('/api/stats/queue', {method: 'POST',
+      headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)})).json();
+  } catch (e) {
+    alert('Could not reach the server to queue those.');
+    return;
+  }
+  if (r.skipped && r.skipped.length) {
+    alert(`${r.queued} queued. ${r.skipped.length} skipped:\n`
+        + r.skipped.map(s => `${s.path} — ${s.reason}`).join('\n'));
+  } else {
+    alert(`${r.queued} file${r.queued === 1 ? '' : 's'} queued for leveling.`);
+  }
+  selectedLoudnessPaths.clear();
+  loadLoudness();
+}
 
 async function openDrilldown(source, attribute, value) {
   document.getElementById('drill-veil').classList.add('open');

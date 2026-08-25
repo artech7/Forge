@@ -205,6 +205,11 @@ def run_job(job, caps):
     """Encode one job. The server decides where the result finally lands."""
     job_id = job["id"]
     spec = job["spec"]
+
+    if spec.get("measure") == "loudness":
+        report_measurement(job)
+        return
+
     container = spec.get("container", "mkv")
 
     # The source's bit depth decides both which encoder is fastest here and
@@ -388,6 +393,29 @@ def post(path, payload, params=None):
 def report_fail(job_id, message, **extra):
     print(f"[job {job_id}] failed: {message}")
     post(f"/api/jobs/{job_id}/fail", {"error": message, **extra})
+
+
+def report_measurement(job):
+    """A loudness-only pass: read the file, report a number, no output.
+
+    Only meaningful for a locally mounted path — measuring loudness
+    means decoding the whole audio track, and streaming an entire file
+    over HTTP first just to throw the decoded result away afterward
+    isn't worth the bandwidth on a remote node.
+    """
+    job_id, src = job["id"], job["path"]
+    if job["transport"] != "local":
+        report_fail(job_id, "Loudness measurement needs a locally mounted path.")
+        return
+    if not Path(src).is_file():
+        report_fail(job_id, f"Mounted path not found: {src}")
+        return
+    print(f"[job {job_id}] measuring loudness: {Path(src).name}")
+    values, error = streams.measure_loudness(src)
+    if not values:
+        report_fail(job_id, f"Could not measure loudness: {error}")
+        return
+    post(f"/api/jobs/{job_id}/measured", {"loudness": values})
 
 
 def heartbeat(nid, caps):

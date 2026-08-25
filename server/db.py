@@ -402,6 +402,42 @@ def update_job(job_id, **fields):
                      (*fields.values(), job_id))
 
 
+def files_with_loudness(library_id=None):
+    """Every file with a loudness reading on record.
+
+    "Needs leveling" isn't decided here — where to draw the line on
+    loudness range (how wide a volume swing counts as a problem) is a
+    judgment call, so the raw measurements are returned and the interface
+    applies whatever threshold it wants, rather than one fixed opinion
+    getting baked into the query.
+    """
+    with connect() as conn:
+        libraries = [row_to_dict(r) for r in conn.execute(
+            "SELECT id, watch_path FROM libraries").fetchall()]
+        rows = [dict(r) for r in conn.execute(
+            "SELECT path, detail FROM files WHERE detail IS NOT NULL").fetchall()]
+
+    library_for = library_matcher(libraries)
+    measured = []
+    for f in rows:
+        if library_id is not None and (library_for(f["path"]) or {}).get("id") != library_id:
+            continue
+        try:
+            detail = json.loads(f.get("detail") or "{}")
+        except (json.JSONDecodeError, TypeError):
+            detail = {}
+        loud = detail.get("loudness")
+        if not loud:
+            continue
+        measured.append({
+            "path": f["path"], "name": Path(f["path"]).name,
+            "integrated": loud.get("integrated"), "range": loud.get("range"),
+            "true_peak": loud.get("true_peak"),
+        })
+    measured.sort(key=lambda f: -(f["range"] or 0))
+    return measured
+
+
 def library_matcher(libraries):
     """A path -> library_id lookup, longest watch_path wins.
 
@@ -418,6 +454,20 @@ def library_matcher(libraries):
         return None
 
     return library_for
+
+
+def set_file_detail(path, detail):
+    """Merge into a file's detail blob directly, without a full re-probe.
+
+    Loudness measurement runs as its own pass and shouldn't need the
+    structural scan to have happened first — if this file has never been
+    probed at all, this still creates a minimal row for it.
+    """
+    with connect() as conn:
+        conn.execute(
+            """INSERT INTO files (path, detail, probed_at) VALUES (?,?,?)
+               ON CONFLICT(path) DO UPDATE SET detail=?, probed_at=?""",
+            (path, json.dumps(detail), time.time(), json.dumps(detail), time.time()))
 
 
 def get_cached_file(path):
