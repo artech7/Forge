@@ -192,6 +192,17 @@
               line-height:1.6}
   .drill-path{font-family:'Chivo Mono',monospace;font-size:10.5px;color:var(--muted);
               opacity:.6;margin-top:2px;word-break:break-all}
+  .drill-row.with-checkbox{display:flex;gap:11px;align-items:flex-start}
+  .drill-row.with-checkbox input[type=checkbox]{margin-top:3px;flex:none}
+  .drill-row-body{flex:1;min-width:0}
+  .drill-convert{padding:14px 16px;margin-bottom:14px;display:flex;
+                  flex-direction:column;gap:10px}
+  .drill-selectall{display:flex;align-items:center;gap:8px;font-size:12.5px;
+                    padding-bottom:8px;border-bottom:1px solid var(--edge)}
+  .drill-selectall #drill-selcount{margin-left:auto;color:var(--muted)}
+  .drill-toggle{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:13px}
+  .drill-toggle select{width:auto;padding:6px 10px;font-size:12.5px}
+  .drill-toggle select:disabled{opacity:.4}
 
   h2{font-size:12px;font-family:'Chivo Mono',monospace;font-weight:600;
      letter-spacing:.16em;text-transform:uppercase;color:var(--muted);
@@ -1923,10 +1934,19 @@ function donutSVG(entries, total, attribute, source, size = 108) {
   return `<svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}">${arcs}</svg>`;
 }
 
+let selectedDrillPaths = new Set();
+let currentDrillFiles = [];   // last fetch, so select-all/queue don't need to refetch
+
 async function openDrilldown(source, attribute, value) {
   document.getElementById('drill-veil').classList.add('open');
   const box = document.getElementById('drill-box');
   box.innerHTML = '<div class="stats-empty">Loading…</div>';
+  selectedDrillPaths.clear();
+
+  // Needed for the convert-options dropdowns below — loaded once and
+  // reused, same as the wizard does, so opening this repeatedly doesn't
+  // refetch a catalog that never changes mid-session.
+  if (!CAT) CAT = await (await fetch('/api/catalog')).json();
 
   const params = new URLSearchParams({attribute, value});
   if (statsLibId !== 'all') params.set('library_id', statsLibId);
@@ -1939,13 +1959,135 @@ async function openDrilldown(source, attribute, value) {
     return;
   }
   const items = data.files || data.jobs || [];
+  currentDrillFiles = source === 'jobs' ? [] : items;   // only files can be queued
+
   box.innerHTML = `
     <button onclick="closeDrilldown()" style="float:right">Close</button>
     <h3>${value}</h3>
     <p class="lead">${items.length} file${items.length === 1 ? '' : 's'}</p>
+    ${source === 'jobs' ? '' : drillConvertBar()}
     <div class="drill-list">${items.length
       ? items.map(f => drillRow(f, source)).join('')
       : '<div class="stats-empty">Nothing matched.</div>'}</div>`;
+
+  if (source !== 'jobs') { wireDrillCheckboxes(); drawDrillConvert(); }
+}
+
+function drillConvertBar() {
+  const codecOpts = (list) => (list || [])
+    .map(o => `<option value="${o.id}">${o.name}</option>`).join('');
+  return `
+    <div class="glass drill-convert">
+      <label class="drill-selectall">
+        <input type="checkbox" id="drill-selectall" onclick="selectAllDrill(this.checked)">
+        select all
+        <span id="drill-selcount">0 selected</span>
+      </label>
+
+      <label class="drill-toggle">
+        <input type="checkbox" id="drill-audio-on" onchange="drawDrillConvert()">
+        Convert audio to
+        <select id="drill-audio-codec">
+          <option value="">this library's usual codec</option>
+          ${codecOpts(CAT.audio)}
+        </select>
+      </label>
+      <label class="drill-toggle">
+        <input type="checkbox" id="drill-video-on" onchange="drawDrillConvert()">
+        Also convert video to
+        <select id="drill-video-codec">
+          <option value="">this library's usual codec</option>
+          ${codecOpts(CAT.video)}
+        </select>
+        at
+        <select id="drill-quality">
+          <option value="">this library's usual quality</option>
+          ${codecOpts(CAT.quality)}
+        </select>
+      </label>
+      <label class="drill-toggle">
+        Container:
+        <select id="drill-container">
+          <option value="">this library's usual container</option>
+          ${codecOpts(CAT.containers)}
+        </select>
+      </label>
+
+      <button class="primary" onclick="queueDrillSelected()">Queue selected for conversion</button>
+    </div>`;
+}
+
+function drawDrillConvert() {
+  const audioOn = document.getElementById('drill-audio-on').checked;
+  const videoOn = document.getElementById('drill-video-on').checked;
+  document.getElementById('drill-audio-codec').disabled = !audioOn;
+  document.getElementById('drill-video-codec').disabled = !videoOn;
+  document.getElementById('drill-quality').disabled = !videoOn;
+}
+
+function wireDrillCheckboxes() {
+  document.querySelectorAll('.drill-row input[type=checkbox]').forEach(cb => {
+    cb.addEventListener('change', () => {
+      if (cb.checked) selectedDrillPaths.add(cb.dataset.path);
+      else selectedDrillPaths.delete(cb.dataset.path);
+      updateDrillSelCount();
+    });
+  });
+  updateDrillSelCount();
+}
+
+function updateDrillSelCount() {
+  const el = document.getElementById('drill-selcount');
+  if (el) el.textContent = `${selectedDrillPaths.size} selected`;
+  const all = document.getElementById('drill-selectall');
+  if (all) all.checked = currentDrillFiles.length > 0
+    && selectedDrillPaths.size === currentDrillFiles.length;
+}
+
+function selectAllDrill(checked) {
+  selectedDrillPaths.clear();
+  if (checked) currentDrillFiles.forEach(f => selectedDrillPaths.add(f.path));
+  document.querySelectorAll('.drill-row input[type=checkbox]').forEach(cb => {
+    cb.checked = checked;
+  });
+  updateDrillSelCount();
+}
+
+async function queueDrillSelected() {
+  if (!selectedDrillPaths.size) return alert('Select at least one file first.');
+
+  const convertAudio = document.getElementById('drill-audio-on').checked;
+  const convertVideo = document.getElementById('drill-video-on').checked;
+  const container = document.getElementById('drill-container').value;
+  if (!convertAudio && !convertVideo && !container) {
+    return alert('Choose at least one thing to convert — audio, video, or a container.');
+  }
+
+  const body = {
+    paths: [...selectedDrillPaths],
+    convert_audio: convertAudio,
+    audio_codec: document.getElementById('drill-audio-codec').value,
+    convert_video: convertVideo,
+    video_codec: document.getElementById('drill-video-codec').value,
+    quality: document.getElementById('drill-quality').value,
+    container: container,
+  };
+
+  let r;
+  try {
+    r = await (await fetch('/api/stats/queue', {method: 'POST',
+      headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)})).json();
+  } catch (e) {
+    alert('Could not reach the server to queue those.');
+    return;
+  }
+  if (r.skipped && r.skipped.length) {
+    alert(`${r.queued} queued. ${r.skipped.length} skipped:\n`
+        + r.skipped.map(s => `${s.path} — ${s.reason}`).join('\n'));
+  } else {
+    alert(`${r.queued} file${r.queued === 1 ? '' : 's'} queued for conversion.`);
+  }
+  closeDrilldown();
 }
 
 function closeDrilldown() {
@@ -1974,12 +2116,15 @@ function drillRow(f, source) {
     d.hdr ? 'HDR' : null, d.frame_rate ? `${d.frame_rate}fps` : null,
     d.profile, fmtSize(f.size), f.duration ? fmtDuration(f.duration) : null,
   ].filter(Boolean).join(' &middot; ');
-  return `<div class="drill-row">
-    <div class="drill-name">${f.name}</div>
-    <div class="drill-meta">${bits}</div>
-    ${audio ? `<div class="drill-meta">Audio: ${audio}</div>` : ''}
-    ${subs ? `<div class="drill-meta">Subtitles: ${subs}</div>` : ''}
-    <div class="drill-path">${f.path}</div>
+  return `<div class="drill-row with-checkbox">
+    <input type="checkbox" data-path="${f.path}">
+    <div class="drill-row-body">
+      <div class="drill-name">${f.name}</div>
+      <div class="drill-meta">${bits}</div>
+      ${audio ? `<div class="drill-meta">Audio: ${audio}</div>` : ''}
+      ${subs ? `<div class="drill-meta">Subtitles: ${subs}</div>` : ''}
+      <div class="drill-path">${f.path}</div>
+    </div>
   </div>`;
 }
 

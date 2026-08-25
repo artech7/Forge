@@ -1055,6 +1055,67 @@ async def stats_jobs(attribute: str, value: str, library_id: int = None):
     return {"jobs": db.jobs_matching(value, library_id)}
 
 
+@app.post("/api/stats/queue")
+async def stats_queue(req: Request):
+    """Queue specific files picked from a stats drill-down, with ad-hoc
+    audio/video overrides — for standardizing a subset of a library
+    (every EAC3 file, say) without changing what the rest of that
+    library does on its own.
+
+    Each file keeps its own library's other settings — naming, subtitle
+    handling, HDR, everything not explicitly overridden here — by
+    starting from that library's normally-resolved spec and only
+    replacing the fields the person actually chose to change.
+    """
+    body = await req.json()
+    paths = body.get("paths") or []
+    if not paths:
+        raise HTTPException(400, "No files selected.")
+
+    overrides = {}
+    if body.get("convert_audio"):
+        if not body.get("audio_codec"):
+            raise HTTPException(400, "Choose an audio codec.")
+        overrides["audio"] = body["audio_codec"]
+        if body.get("audio_bitrate"):
+            overrides["audio_bitrate"] = body["audio_bitrate"]
+    if body.get("convert_video"):
+        if not body.get("video_codec"):
+            raise HTTPException(400, "Choose a video codec.")
+        overrides["codec"] = body["video_codec"]
+        if body.get("quality"):
+            overrides["quality"] = int(body["quality"])
+    if body.get("container"):
+        overrides["container"] = body["container"]
+    if not overrides:
+        raise HTTPException(400, "Choose at least one thing to convert.")
+
+    libraries = db.list_libraries()
+    library_for = db.library_matcher(libraries)
+
+    queued, skipped = 0, []
+    for path in paths:
+        lib = library_for(path)
+        if not lib:
+            skipped.append({"path": path, "reason": "not part of any configured library"})
+            continue
+        if not Path(path).is_file():
+            skipped.append({"path": path, "reason": "file no longer exists"})
+            continue
+        spec = {**profiles.resolve(lib.get("profile") or {}), **overrides}
+        cached = db.get_cached_file(path)
+        size_before = (cached or {}).get("size")
+        new_id = db.enqueue(path, spec, size_before, lib["id"])
+        if new_id:
+            queued += 1
+        else:
+            skipped.append({"path": path, "reason": "already queued or in progress"})
+
+    if queued:
+        await broadcast()
+    return {"queued": queued, "skipped": skipped}
+
+
 @app.post("/api/scan")
 async def scan():
     """Walk the media roots and cache a probe for anything new."""

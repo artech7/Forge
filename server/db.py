@@ -402,6 +402,30 @@ def update_job(job_id, **fields):
                      (*fields.values(), job_id))
 
 
+def library_matcher(libraries):
+    """A path -> library_id lookup, longest watch_path wins.
+
+    Built once and reused per file rather than re-sorting the library
+    list on every call — this runs once per file across a whole library
+    during stats aggregation, so the sort only happening once matters.
+    """
+    by_path_length = sorted(libraries, key=lambda l: -len(l["watch_path"]))
+
+    def library_for(path):
+        for lib in by_path_length:
+            if path.startswith(lib["watch_path"]):
+                return lib
+        return None
+
+    return library_for
+
+
+def get_cached_file(path):
+    with connect() as conn:
+        return row_to_dict(
+            conn.execute("SELECT * FROM files WHERE path=?", (path,)).fetchone())
+
+
 def cache_probe(path, info):
     with connect() as conn:
         conn.execute(
@@ -764,13 +788,7 @@ def files_matching(attribute, value, library_id=None):
             "SELECT id, watch_path FROM libraries").fetchall()]
         files = [dict(r) for r in conn.execute("SELECT * FROM files").fetchall()]
 
-    by_path_length = sorted(libraries, key=lambda l: -len(l["watch_path"]))
-
-    def library_for(path):
-        for lib in by_path_length:
-            if path.startswith(lib["watch_path"]):
-                return lib["id"]
-        return None
+    library_for = library_matcher(libraries)
 
     def audio_list(f):
         try:
@@ -779,7 +797,7 @@ def files_matching(attribute, value, library_id=None):
             return ["unknown"]
 
     def matches(f):
-        if library_id is not None and library_for(f["path"]) != library_id:
+        if library_id is not None and (library_for(f["path"]) or {}).get("id") != library_id:
             return False
         if attribute == "video_codec":
             return (f.get("video_codec") or "unknown") == value
@@ -850,15 +868,7 @@ def library_composition():
             "SELECT id, name, watch_path FROM libraries ORDER BY name").fetchall()]
         files = [dict(r) for r in conn.execute("SELECT * FROM files").fetchall()]
 
-    # Longest matching watch_path wins, so a library nested inside another
-    # library's folder still gets its own files attributed correctly.
-    by_path_length = sorted(libraries, key=lambda l: -len(l["watch_path"]))
-
-    def library_for(path):
-        for lib in by_path_length:
-            if path.startswith(lib["watch_path"]):
-                return lib["id"]
-        return None
+    library_for = library_matcher(libraries)
 
     def new_bucket(name):
         return {"name": name, "files": 0, "video_codec": Counter(),
@@ -878,7 +888,7 @@ def library_composition():
         except (json.JSONDecodeError, TypeError):
             audio_codecs = ["unknown"]
 
-        for bucket in (per_library.get(library_for(f["path"])), overall):
+        for bucket in (per_library.get((library_for(f["path"]) or {}).get("id")), overall):
             if bucket is None:
                 continue
             bucket["files"] += 1
