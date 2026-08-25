@@ -49,8 +49,9 @@ def resolve_path(node, path):
 
 
 def node_can_encode(node, spec):
-    # Copying the video stream needs no encoder at all — any node will do.
-    if spec.get("codec") == "copy":
+    # Copying the video stream, or a measurement-only pass with nothing to
+    # encode at all, needs no encoder — any node will do.
+    if spec.get("codec") == "copy" or spec.get("measure"):
         return True
     wanted = CODEC_FAMILIES.get(spec.get("codec", "hevc"), [])
     available = set(node.get("encoders", []))

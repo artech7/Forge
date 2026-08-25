@@ -1647,13 +1647,25 @@ async def ws_endpoint(ws: WebSocket):
     try:
         try:
             await ws.send_text(json.dumps(await build_state()))
+        except (WebSocketDisconnect, RuntimeError):
+            # The connection itself is already gone - most often a port
+            # scanner opening and immediately closing the socket, not a
+            # real client hitting a bug. Nothing to recover; there's no
+            # one there to send a fallback message to.
+            return
         except Exception as exc:
-            # Never let a bad state payload close the socket on connect:
-            # that turns one broken field into a dead interface.
+            # A genuine problem building the payload, on a connection
+            # that's still open - worth telling the client rather than
+            # dropping it, since a broken state field shouldn't silently
+            # kill the interface. This send can fail too if the client
+            # disconnects in the meantime, so it gets the same guard.
             print(f"websocket: could not send the first update ({exc})")
-            await ws.send_text(json.dumps(
-                {"error": str(exc),
-                 "module_problems": getattr(app.state, "module_problems", [])}))
+            try:
+                await ws.send_text(json.dumps(
+                    {"error": str(exc),
+                     "module_problems": getattr(app.state, "module_problems", [])}))
+            except (WebSocketDisconnect, RuntimeError):
+                return
         while True:
             await ws.receive_text()
     except WebSocketDisconnect:
