@@ -1057,6 +1057,20 @@ async def browse(path: str = ""):
             "folders": folders}
 
 
+@app.get("/api/stats/detailed")
+async def stats_detailed():
+    """Library composition and transcode performance, for the Stats tab.
+
+    Heavier than the summary figures pushed on every websocket broadcast —
+    this scans the whole probe cache and job history — so it's fetched on
+    demand when that tab is actually opened, not pushed continuously.
+    """
+    return {
+        "composition": await asyncio.to_thread(db.library_composition),
+        "performance": await asyncio.to_thread(db.transcode_performance),
+    }
+
+
 @app.get("/api/libraries")
 async def get_libraries():
     return db.list_libraries()

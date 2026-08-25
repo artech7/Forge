@@ -3,6 +3,7 @@ import json
 import os
 import sqlite3
 import time
+from collections import Counter
 from pathlib import Path
 
 # Where the database lives. In a container this is a mounted volume; run
@@ -730,3 +731,131 @@ def has_job_for(path, states=None):
         params.extend(states)
     with connect() as conn:
         return conn.execute(query + " LIMIT 1", params).fetchone() is not None
+
+
+# ----------------------------------------------------------------- stats
+
+def _resolution_bucket(width, height):
+    if not width or not height:
+        return "unknown"
+    longest = max(width, height)
+    if longest >= 3800: return "4K"
+    if longest >= 2500: return "1440p"
+    if longest >= 1900: return "1080p"
+    if longest >= 1260: return "720p"
+    return "SD"
+
+
+def library_composition():
+    """What's actually sitting in each library right now.
+
+    Built from the probe cache ("files"), which is populated for every
+    file a scan finds — not just ones that needed converting — so this
+    reflects the real current shape of a library, not just what Forge has
+    touched.
+    """
+    with connect() as conn:
+        libraries = [row_to_dict(r) for r in conn.execute(
+            "SELECT id, name, watch_path FROM libraries ORDER BY name").fetchall()]
+        files = [dict(r) for r in conn.execute("SELECT * FROM files").fetchall()]
+
+    # Longest matching watch_path wins, so a library nested inside another
+    # library's folder still gets its own files attributed correctly.
+    by_path_length = sorted(libraries, key=lambda l: -len(l["watch_path"]))
+
+    def library_for(path):
+        for lib in by_path_length:
+            if path.startswith(lib["watch_path"]):
+                return lib["id"]
+        return None
+
+    def new_bucket(name):
+        return {"name": name, "files": 0, "video_codec": Counter(),
+                "audio_codec": Counter(), "container": Counter(),
+                "resolution": Counter(), "bit_depth": Counter()}
+
+    per_library = {lib["id"]: new_bucket(lib["name"]) for lib in libraries}
+    overall = new_bucket("All libraries")
+
+    for f in files:
+        container = Path(f["path"]).suffix.lstrip(".").lower() or "unknown"
+        vcodec = f.get("video_codec") or "unknown"
+        resolution = _resolution_bucket(f.get("width"), f.get("height"))
+        depth = f"{f.get('bit_depth') or 8}-bit"
+        try:
+            audio_codecs = json.loads(f.get("audio_codecs") or "[]") or ["none"]
+        except (json.JSONDecodeError, TypeError):
+            audio_codecs = ["unknown"]
+
+        for bucket in (per_library.get(library_for(f["path"])), overall):
+            if bucket is None:
+                continue
+            bucket["files"] += 1
+            bucket["video_codec"][vcodec] += 1
+            bucket["container"][container] += 1
+            bucket["resolution"][resolution] += 1
+            bucket["bit_depth"][depth] += 1
+            for a in audio_codecs:
+                bucket["audio_codec"][a] += 1
+
+    def serialize(b):
+        return {"name": b["name"], "files": b["files"],
+                "video_codec": dict(b["video_codec"]),
+                "audio_codec": dict(b["audio_codec"]),
+                "container": dict(b["container"]),
+                "resolution": dict(b["resolution"]),
+                "bit_depth": dict(b["bit_depth"])}
+
+    return {"overall": serialize(overall),
+            "libraries": {lib_id: serialize(b) for lib_id, b in per_library.items()}}
+
+
+def transcode_performance():
+    """How conversions have actually gone, per library.
+
+    Only jobs with both started_at and finished_at count toward timing —
+    one that failed before starting has neither, and one still running
+    hasn't finished, so there's nothing honest to average for either.
+    """
+    with connect() as conn:
+        libraries = [row_to_dict(r) for r in conn.execute(
+            "SELECT id, name FROM libraries ORDER BY name").fetchall()]
+        rows = [dict(r) for r in conn.execute(
+            """SELECT library_id, encoder_used, size_before, size_after,
+                      started_at, finished_at
+               FROM jobs
+               WHERE state IN ('done','bloated') AND started_at IS NOT NULL
+                     AND finished_at IS NOT NULL""").fetchall()]
+
+    def new_bucket(name):
+        return {"name": name, "jobs": 0, "total_seconds": 0.0,
+                "total_before": 0, "total_after": 0, "encoder_used": Counter()}
+
+    per_library = {lib["id"]: new_bucket(lib["name"]) for lib in libraries}
+    overall = new_bucket("All libraries")
+
+    for r in rows:
+        seconds = r["finished_at"] - r["started_at"]
+        if seconds <= 0:
+            continue
+        before, after = r.get("size_before") or 0, r.get("size_after") or 0
+        encoder = r.get("encoder_used") or "remux"
+        for bucket in (per_library.get(r["library_id"]), overall):
+            if bucket is None:
+                continue
+            bucket["jobs"] += 1
+            bucket["total_seconds"] += seconds
+            bucket["total_before"] += before
+            bucket["total_after"] += after
+            bucket["encoder_used"][encoder] += 1
+
+    def serialize(b):
+        saved = ((1 - b["total_after"] / b["total_before"]) * 100
+                if b["total_before"] else 0)
+        return {"name": b["name"], "jobs": b["jobs"],
+                "avg_seconds": (b["total_seconds"] / b["jobs"]) if b["jobs"] else 0,
+                "avg_saved_percent": saved,
+                "encoder_used": dict(b["encoder_used"])}
+
+    return {"overall": serialize(overall),
+            "libraries": {lib_id: serialize(b) for lib_id, b in per_library.items()}}
