@@ -196,8 +196,18 @@ def probe_encoder(enc, width=1280, height=720):
             return None, str(exc)
         if result.returncode == 0:
             return name, builder
-        lines = (result.stderr or "").strip().splitlines()
-        last_error = lines[-1] if lines else f"exit {result.returncode}"
+        # FFmpeg's own explanation is almost always further up than the
+        # last line — the last line is usually just the muxer noting no
+        # packets arrived, which is a symptom, not a cause. An init
+        # failure ("Cannot init CUDA", "no capable devices", a specific
+        # NVENC/QSV session error) is what actually explains why, and
+        # it's what a person needs to see to fix anything.
+        lines = [l for l in (result.stderr or "").strip().splitlines() if l.strip()]
+        generic = ("nothing was written into output file",
+                  "at least one of its streams received no packets")
+        cause = next((l for l in lines
+                     if not any(g in l.lower() for g in generic)), None)
+        last_error = cause or (lines[-1] if lines else f"exit {result.returncode}")
     return None, last_error
 
 
