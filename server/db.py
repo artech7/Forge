@@ -88,6 +88,7 @@ CREATE TABLE IF NOT EXISTS files (
     width        INTEGER,
     height       INTEGER,
     bitrate      INTEGER,
+    detail       TEXT,                 -- JSON: everything the columns above don't hold
     probed_at    REAL
 );
 
@@ -406,8 +407,8 @@ def cache_probe(path, info):
         conn.execute(
             """INSERT INTO files
                (path, size, duration, video_codec, audio_codecs,
-                width, height, bitrate, video_bitrate, bit_depth, probed_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?)
+                width, height, bitrate, video_bitrate, bit_depth, detail, probed_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
                ON CONFLICT(path) DO UPDATE SET
                  size=excluded.size, duration=excluded.duration,
                  video_codec=excluded.video_codec,
@@ -416,11 +417,13 @@ def cache_probe(path, info):
                  bitrate=excluded.bitrate,
                  video_bitrate=excluded.video_bitrate,
                  bit_depth=excluded.bit_depth,
+                 detail=excluded.detail,
                  probed_at=excluded.probed_at""",
             (path, info.get("size"), info.get("duration"),
              info.get("video_codec"), json.dumps(info.get("audio_codecs", [])),
              info.get("width"), info.get("height"), info.get("bitrate"),
-             info.get("video_bitrate"), info.get("bit_depth"), time.time()),
+             info.get("video_bitrate"), info.get("bit_depth"),
+             json.dumps(info.get("detail") or {}), time.time()),
         )
 
 
@@ -499,7 +502,8 @@ def migrate():
                   ("benchmarks", "TEXT NOT NULL DEFAULT '{}'"),
                   ("slots", "INTEGER"), ("cpus", "INTEGER"),
                   ("benchmarks_10bit", "TEXT NOT NULL DEFAULT '{}'")],
-        "files": [("video_bitrate", "INTEGER"), ("bit_depth", "INTEGER")],
+        "files": [("video_bitrate", "INTEGER"), ("bit_depth", "INTEGER"),
+                  ("detail", "TEXT")],
     }
     with connect() as conn:
         for table, cols in additions.items():
@@ -744,6 +748,93 @@ def _resolution_bucket(width, height):
     if longest >= 1900: return "1080p"
     if longest >= 1260: return "720p"
     return "SD"
+
+
+def files_matching(attribute, value, library_id=None):
+    """Files behind one composition-chart segment, for drilling in from Stats.
+
+    Filtering happens in Python rather than SQL: video_codec is a plain
+    column, but audio_codec is a JSON list per file and container/
+    resolution/bit_depth are derived rather than stored, so there's no
+    single SQL shape that fits all five — doing them the same way here
+    keeps this one function instead of five near-duplicate ones.
+    """
+    with connect() as conn:
+        libraries = [row_to_dict(r) for r in conn.execute(
+            "SELECT id, watch_path FROM libraries").fetchall()]
+        files = [dict(r) for r in conn.execute("SELECT * FROM files").fetchall()]
+
+    by_path_length = sorted(libraries, key=lambda l: -len(l["watch_path"]))
+
+    def library_for(path):
+        for lib in by_path_length:
+            if path.startswith(lib["watch_path"]):
+                return lib["id"]
+        return None
+
+    def audio_list(f):
+        try:
+            return json.loads(f.get("audio_codecs") or "[]") or ["none"]
+        except (json.JSONDecodeError, TypeError):
+            return ["unknown"]
+
+    def matches(f):
+        if library_id is not None and library_for(f["path"]) != library_id:
+            return False
+        if attribute == "video_codec":
+            return (f.get("video_codec") or "unknown") == value
+        if attribute == "container":
+            return (Path(f["path"]).suffix.lstrip(".").lower() or "unknown") == value
+        if attribute == "resolution":
+            return _resolution_bucket(f.get("width"), f.get("height")) == value
+        if attribute == "bit_depth":
+            return f"{f.get('bit_depth') or 8}-bit" == value
+        if attribute == "audio_codec":
+            return value in audio_list(f)
+        return False
+
+    out = []
+    for f in files:
+        if not matches(f):
+            continue
+        try:
+            detail = json.loads(f.get("detail") or "{}")
+        except (json.JSONDecodeError, TypeError):
+            detail = {}
+        out.append({
+            "path": f["path"], "name": Path(f["path"]).name,
+            "size": f.get("size"), "duration": f.get("duration"),
+            "video_codec": f.get("video_codec"),
+            "width": f.get("width"), "height": f.get("height"),
+            "bit_depth": f.get("bit_depth"), "audio_codecs": audio_list(f),
+            "detail": detail,
+        })
+    out.sort(key=lambda f: f["name"].lower())
+    return out
+
+
+def jobs_matching(encoder_used, library_id=None):
+    """The completed jobs behind one encoder segment on the performance chart."""
+    query = """SELECT path, size_before, size_after, encoder_used,
+                      started_at, finished_at, library_id
+               FROM jobs WHERE state IN ('done','bloated') AND encoder_used=?"""
+    params = [encoder_used]
+    if library_id is not None:
+        query += " AND library_id=?"
+        params.append(library_id)
+    with connect() as conn:
+        rows = [dict(r) for r in conn.execute(query, params).fetchall()]
+    out = []
+    for r in rows:
+        seconds = ((r["finished_at"] - r["started_at"])
+                  if r.get("started_at") and r.get("finished_at") else None)
+        out.append({
+            "path": r["path"], "name": Path(r["path"]).name,
+            "size_before": r.get("size_before"), "size_after": r.get("size_after"),
+            "seconds": seconds,
+        })
+    out.sort(key=lambda f: f["name"].lower())
+    return out
 
 
 def library_composition():

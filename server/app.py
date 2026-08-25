@@ -231,6 +231,7 @@ async def build_state():
         # without a round trip. Cheap: one GROUP BY, not 4 queries per lib.
         "counts_by_library": db.counts_by_library(),
         "stats": db.stats(),
+        "deep_scan": DEEP_SCAN_STATE,
         "libraries": db.list_libraries(),
         "settings": db.get_settings(),
         "schedule_open": _text(schedule, "is_open", db.get_settings(),
@@ -270,21 +271,35 @@ def _bit_depth(video):
 
 
 def probe(path):
-    """ffprobe a file into the shape the rules engine will want."""
+    """ffprobe a file into the shape the rules engine will want.
+
+    The rules engine only ever needs the summary fields returned below —
+    but a deep scan (see /api/scan/deep) wants everything ffprobe already
+    handed over and this used to just throw away: every audio and
+    subtitle track with its own language and channel layout, HDR/color
+    info, frame rate, codec profile. Kept under "detail" rather than as
+    more top-level columns, the same way spec/profile/filters are JSON
+    blobs elsewhere in this schema.
+    """
     try:
         out = subprocess.run(
             ["ffprobe", "-v", "quiet", "-print_format", "json",
              "-show_format", "-show_streams", path],
-            capture_output=True, text=True, timeout=60,
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=60,
         )
         if out.returncode != 0:
             return None
         data = json.loads(out.stdout)
-    except (subprocess.TimeoutExpired, json.JSONDecodeError, OSError):
+    except (subprocess.TimeoutExpired, json.JSONDecodeError, OSError,
+            TypeError, UnicodeDecodeError):
         return None
 
-    video = next((s for s in data.get("streams", []) if s.get("codec_type") == "video"), None)
-    audio = [s.get("codec_name") for s in data.get("streams", []) if s.get("codec_type") == "audio"]
+    streams = data.get("streams", [])
+    video = next((s for s in streams if s.get("codec_type") == "video"), None)
+    audio_streams = [s for s in streams if s.get("codec_type") == "audio"]
+    sub_streams = [s for s in streams if s.get("codec_type") == "subtitle"]
+    audio = [s.get("codec_name") for s in audio_streams]
     fmt = data.get("format", {})
     total = int(fmt.get("bit_rate", 0) or 0)
     vbits = int((video or {}).get("bit_rate", 0) or 0)
@@ -293,6 +308,18 @@ def probe(path):
         # the container total minus a rough allowance is close enough to
         # judge whether a file is bloated.
         vbits = max(0, total - 192000 * max(1, len(audio)))
+
+    def frame_rate():
+        raw = (video or {}).get("r_frame_rate") or "0/1"
+        try:
+            n, d = raw.split("/")
+            d = int(d)
+            return round(int(n) / d, 3) if d else 0
+        except (ValueError, ZeroDivisionError):
+            return 0
+
+    transfer = (video or {}).get("color_transfer") or ""
+    hdr = transfer in {"smpte2084", "arib-std-b67", "smpte428", "bt2020-10", "bt2020-12"}
 
     return {
         "size": int(fmt.get("size", 0) or 0),
@@ -305,6 +332,27 @@ def probe(path):
         "width": video.get("width") if video else None,
         "height": video.get("height") if video else None,
         "audio_codecs": audio,
+        "detail": {
+            "container": fmt.get("format_name"),
+            "frame_rate": frame_rate(),
+            "profile": (video or {}).get("profile"),
+            "level": (video or {}).get("level"),
+            "hdr": hdr,
+            "color_transfer": transfer or None,
+            "color_primaries": (video or {}).get("color_primaries"),
+            "audio_tracks": [
+                {"codec": s.get("codec_name"),
+                 "language": (s.get("tags") or {}).get("language"),
+                 "channels": s.get("channels"),
+                 "channel_layout": s.get("channel_layout")}
+                for s in audio_streams
+            ],
+            "subtitle_tracks": [
+                {"codec": s.get("codec_name"),
+                 "language": (s.get("tags") or {}).get("language")}
+                for s in sub_streams
+            ],
+        },
     }
 
 
@@ -930,6 +978,81 @@ async def health():
         "problems": getattr(app.state, "module_problems", []),
         "routes": sorted({r.path for r in app.routes if hasattr(r, "path")}),
     }
+
+
+# Deep scan: walks every file in every library regardless of whether it's
+# already been probed, for the Stats tab's "as much detail as possible"
+# ask. Genuinely slow on a large library by design — this pushed progress
+# over the same websocket everything else uses, rather than adding a
+# second channel, so the frontend needs no new plumbing to watch it run.
+DEEP_SCAN_STATE = {"active": False, "library": None, "current": None,
+                   "done": 0, "total": 0}
+
+
+async def run_deep_scan(library_ids=None):
+    if DEEP_SCAN_STATE["active"]:
+        return
+    libraries = [l for l in db.list_libraries()
+                if library_ids is None or l["id"] in library_ids]
+    targets = []
+    for lib in libraries:
+        for path in Path(lib["watch_path"]).rglob("*"):
+            if path.is_file() and path.suffix.lower() in VIDEO_EXT:
+                targets.append((lib, path))
+
+    DEEP_SCAN_STATE.update(active=True, done=0, total=len(targets),
+                           library=None, current=None)
+    await broadcast()
+    try:
+        for i, (lib, path) in enumerate(targets):
+            DEEP_SCAN_STATE["library"] = lib["name"]
+            DEEP_SCAN_STATE["current"] = path.name
+            try:
+                info = await asyncio.to_thread(probe, str(path))
+                if info:
+                    db.cache_probe(str(path), info)
+            except Exception as exc:
+                print(f"deep scan: {path} ({exc})")
+            DEEP_SCAN_STATE["done"] = i + 1
+            # Every file, not just every few — a full library scan is
+            # exactly the case where "is this actually still moving"
+            # matters most, and a probe is cheap enough that broadcasting
+            # this often isn't a real cost.
+            await broadcast()
+    finally:
+        DEEP_SCAN_STATE.update(active=False, current=None)
+        await broadcast()
+
+
+@app.post("/api/scan/deep")
+async def scan_deep(req: Request):
+    """Start a full, forced reprobe of every file — see run_deep_scan."""
+    if DEEP_SCAN_STATE["active"]:
+        raise HTTPException(409, "A deep scan is already running.")
+    try:
+        body = await req.json()
+    except Exception:
+        body = {}
+    library_ids = (body or {}).get("library_ids")
+    asyncio.create_task(run_deep_scan(library_ids))
+    return {"started": True}
+
+
+@app.get("/api/stats/files")
+async def stats_files(attribute: str, value: str, library_id: int = None):
+    """The files behind one chart segment, for clicking into a chart."""
+    allowed = {"video_codec", "audio_codec", "container", "resolution", "bit_depth"}
+    if attribute not in allowed:
+        raise HTTPException(400, f"Can't drill into '{attribute}'.")
+    return {"files": db.files_matching(attribute, value, library_id)}
+
+
+@app.get("/api/stats/jobs")
+async def stats_jobs(attribute: str, value: str, library_id: int = None):
+    """The completed jobs behind one performance-chart segment."""
+    if attribute != "encoder_used":
+        raise HTTPException(400, f"Can't drill into '{attribute}'.")
+    return {"jobs": db.jobs_matching(value, library_id)}
 
 
 @app.post("/api/scan")

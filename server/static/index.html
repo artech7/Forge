@@ -179,6 +179,19 @@
   .perf-row{display:flex;gap:22px;flex-wrap:wrap;margin-bottom:22px}
   .perf-row .stat{flex:1;min-width:140px}
   .stats-empty{color:var(--muted);font-size:13px;padding:20px 0}
+  .legend-row.clickable{cursor:pointer;border-radius:6px;margin:0 -6px;padding:2px 6px}
+  .legend-row.clickable:hover{background:rgba(255,255,255,.06)}
+  .legend-row.clickable:hover span{color:var(--text)}
+  svg .clickable{cursor:pointer;transition:opacity .12s}
+  svg .clickable:hover{opacity:.75}
+  .drill-list{max-height:52vh;overflow-y:auto;margin-top:4px}
+  .drill-row{padding:10px 0;border-top:1px solid var(--edge)}
+  .drill-row:first-child{border-top:none}
+  .drill-name{font-size:13.5px;font-weight:600;margin-bottom:2px}
+  .drill-meta{font-family:'Chivo Mono',monospace;font-size:11.5px;color:var(--muted);
+              line-height:1.6}
+  .drill-path{font-family:'Chivo Mono',monospace;font-size:10.5px;color:var(--muted);
+              opacity:.6;margin-top:2px;word-break:break-all}
 
   h2{font-size:12px;font-family:'Chivo Mono',monospace;font-weight:600;
      letter-spacing:.16em;text-transform:uppercase;color:var(--muted);
@@ -508,6 +521,20 @@
       clearing the Completed list. In queue and Failed reflect right now.
     </div>
 
+    <div class="queue-head" style="margin-top:24px">
+      <h2 style="margin:0">Library detail</h2>
+      <div class="actions">
+        <button id="deepscan-btn" onclick="startDeepScan()">Scan EVERYTHING</button>
+      </div>
+    </div>
+    <div class="note" style="margin:-4px 0 14px;color:var(--muted);font-size:12.5px">
+      Reprobes every file in every library from scratch, even ones already
+      seen before — worth running once for the fullest picture, or after
+      adding a lot of files at once. Can take a long time on a large
+      library; everything else keeps working normally while it runs.
+    </div>
+    <div class="scanbar" id="deepscanbar"></div>
+
     <div class="stats-libpick" id="stats-libpick"></div>
     <div id="stats-detail"><div class="stats-empty">Loading…</div></div>
   </div>
@@ -515,6 +542,10 @@
 
 <div class="veil" id="veil">
   <div class="glass wiz" id="wiz"></div>
+</div>
+
+<div class="veil" id="drill-veil" onclick="if(event.target===this)closeDrilldown()">
+  <div class="glass wiz" id="drill-box"></div>
 </div>
 
 <script>
@@ -560,6 +591,8 @@ function render(state) {
   document.getElementById('s-done').textContent = st.done ?? 0;
   document.getElementById('s-queued').textContent = st.queued ?? 0;
   document.getElementById('s-failed').textContent = st.failed ?? 0;
+
+  renderDeepScanBar(state.deep_scan);
 
   const running = {};
   (state.jobs || []).forEach(j => {
@@ -1697,6 +1730,48 @@ function switchTopTab(name) {
 
 // ------------------------------------------------------------ Stats tab
 
+let deepScanWasActive = false;
+
+function renderDeepScanBar(scan) {
+  const bar = document.getElementById('deepscanbar');
+  const btn = document.getElementById('deepscan-btn');
+  if (!bar || !btn) return;
+
+  if (!scan || !scan.active) {
+    if (deepScanWasActive) {
+      bar.classList.add('on');
+      bar.innerHTML = `<div class="track"><div class="fill" style="width:100%"></div></div>
+                        <div class="label">Deep scan complete.</div>`;
+      setTimeout(() => bar.classList.remove('on'), 1400);
+      if (activeTopTab === 'stats') loadStats();
+    }
+    deepScanWasActive = false;
+    btn.disabled = false;
+    return;
+  }
+
+  deepScanWasActive = true;
+  btn.disabled = true;
+  const pct = scan.total ? Math.round((scan.done / scan.total) * 100) : 0;
+  bar.classList.add('on');
+  bar.innerHTML = `<div class="track"><div class="fill" style="width:${pct}%"></div></div>
+    <div class="label">Scanning "${scan.library || ''}" \u2014 ${scan.current || ''} `
+    + `(${scan.done} of ${scan.total})</div>`;
+}
+
+async function startDeepScan() {
+  if (!confirm('Reprobe every file in every library from scratch? This can '
+              + 'take a long time on a large library — everything else '
+              + 'keeps working normally while it runs.')) return;
+  try {
+    const r = await fetch('/api/scan/deep', {method: 'POST',
+      headers: {'Content-Type': 'application/json'}, body: '{}'});
+    if (r.status === 409) alert('A deep scan is already running.');
+  } catch (e) {
+    alert('Could not start the scan — check the server is reachable.');
+  }
+}
+
 let statsData = null;      // last fetch, so switching libraries redraws instantly
 let statsLibId = 'all';    // 'all' or a library id (string, from dataset)
 
@@ -1757,13 +1832,21 @@ function renderStatsDetail() {
       <div class="glass stat"><div class="k">Avg. size change</div><div class="v">${savedText}</div></div>
     </div>
     <div class="charts-grid">
-      ${chartCard('Video codec', comp.video_codec)}
-      ${chartCard('Audio codec', comp.audio_codec)}
-      ${chartCard('Container', comp.container)}
-      ${chartCard('Resolution', comp.resolution)}
-      ${chartCard('Bit depth', comp.bit_depth)}
-      ${perf && perf.jobs ? chartCard('Encoder used', perf.encoder_used) : ''}
+      ${chartCard('Video codec', comp.video_codec, 'video_codec', 'files')}
+      ${chartCard('Audio codec', comp.audio_codec, 'audio_codec', 'files')}
+      ${chartCard('Container', comp.container, 'container', 'files')}
+      ${chartCard('Resolution', comp.resolution, 'resolution', 'files')}
+      ${chartCard('Bit depth', comp.bit_depth, 'bit_depth', 'files')}
+      ${perf && perf.jobs ? chartCard('Encoder used', perf.encoder_used, 'encoder_used', 'jobs') : ''}
     </div>`;
+
+  // One listener for the whole panel rather than one per segment — the
+  // charts get rebuilt on every library switch, so this rewires itself
+  // each time for free.
+  box.querySelectorAll('[data-attr]').forEach(el => {
+    el.addEventListener('click', () =>
+      openDrilldown(el.dataset.source, el.dataset.attr, el.dataset.value));
+  });
 }
 
 function fmtDuration(seconds) {
@@ -1777,38 +1860,46 @@ function fmtDuration(seconds) {
 const CHART_COLORS = ['#4ade9b','#f2b03d','#ff6b6b','#5b6b85',
                       '#8a7fd6','#d67fc0','#7fd6c8','#c9a24d'];
 
-function chartCard(title, counts) {
+function chartCard(title, counts, attribute, source) {
   const entries = Object.entries(counts || {}).sort((a, b) => b[1] - a[1]);
   if (!entries.length) return '';
   // Fragmented data (a dozen near-one-off audio codec combinations) stops
   // being a chart and starts being a list — the long tail is grouped so
-  // the shape of the majority stays readable.
+  // the shape of the majority stays readable. "other" isn't a real value
+  // to filter by, so it's shown but not clickable.
   const top = entries.slice(0, 7);
   const restTotal = entries.slice(7).reduce((s, [, v]) => s + v, 0);
   if (restTotal) top.push(['other', restTotal]);
   const total = top.reduce((s, [, v]) => s + v, 0) || 1;
 
-  const legend = top.map(([label, val], i) => `
-    <div class="legend-row"><i style="background:${CHART_COLORS[i % CHART_COLORS.length]}"></i>
-      <span>${label}</span><b>${val} &middot; ${Math.round(val / total * 100)}%</b></div>`).join('');
+  const legend = top.map(([label, val], i) => {
+    const clickable = label !== 'other';
+    return `<div class="legend-row${clickable ? ' clickable' : ''}"
+        ${clickable ? `data-attr="${attribute}" data-value="${label}" data-source="${source}"` : ''}>
+      <i style="background:${CHART_COLORS[i % CHART_COLORS.length]}"></i>
+      <span>${label}</span><b>${val} &middot; ${Math.round(val / total * 100)}%</b></div>`;
+  }).join('');
 
   return `<div class="glass chart-card">
     <div class="title">${title}</div>
-    <div class="body">${donutSVG(top, total)}
+    <div class="body">${donutSVG(top, total, attribute, source)}
       <div class="legend">${legend}</div>
     </div>
   </div>`;
 }
 
-function donutSVG(entries, total, size = 108) {
+function donutSVG(entries, total, attribute, source, size = 108) {
   const r = size / 2 - 9, cx = size / 2, cy = size / 2, stroke = 15;
+  const attrs = (label) => label === 'other' ? ''
+    : `class="clickable" data-attr="${attribute}" data-value="${label}" data-source="${source}"`;
+
   if (entries.length === 1) {
     return `<svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}">
-      <circle cx="${cx}" cy="${cy}" r="${r}" fill="none"
+      <circle cx="${cx}" cy="${cy}" r="${r}" fill="none" ${attrs(entries[0][0])}
         stroke="${CHART_COLORS[0]}" stroke-width="${stroke}"/></svg>`;
   }
   let angle = -90;
-  const arcs = entries.map(([, val], i) => {
+  const arcs = entries.map(([label, val], i) => {
     const sweep = (val / total) * 359.999;   // just under a full turn — see note below
     const a1 = angle * Math.PI / 180, a2 = (angle + sweep) * Math.PI / 180;
     const x1 = cx + r * Math.cos(a1), y1 = cy + r * Math.sin(a1);
@@ -1816,10 +1907,70 @@ function donutSVG(entries, total, size = 108) {
     const large = sweep > 180 ? 1 : 0;
     angle += sweep;
     return `<path d="M ${x1.toFixed(2)} ${y1.toFixed(2)} A ${r} ${r} 0 ${large} 1 `
-         + `${x2.toFixed(2)} ${y2.toFixed(2)}" fill="none" `
+         + `${x2.toFixed(2)} ${y2.toFixed(2)}" fill="none" ${attrs(label)} `
          + `stroke="${CHART_COLORS[i % CHART_COLORS.length]}" stroke-width="${stroke}"/>`;
   }).join('');
   return `<svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}">${arcs}</svg>`;
+}
+
+async function openDrilldown(source, attribute, value) {
+  document.getElementById('drill-veil').classList.add('open');
+  const box = document.getElementById('drill-box');
+  box.innerHTML = '<div class="stats-empty">Loading…</div>';
+
+  const params = new URLSearchParams({attribute, value});
+  if (statsLibId !== 'all') params.set('library_id', statsLibId);
+  const url = (source === 'jobs' ? '/api/stats/jobs' : '/api/stats/files') + '?' + params;
+
+  let data;
+  try { data = await (await fetch(url)).json(); }
+  catch (e) {
+    box.innerHTML = '<div class="stats-empty">Could not load that list.</div>';
+    return;
+  }
+  const items = data.files || data.jobs || [];
+  box.innerHTML = `
+    <button onclick="closeDrilldown()" style="float:right">Close</button>
+    <h3>${value}</h3>
+    <p class="lead">${items.length} file${items.length === 1 ? '' : 's'}</p>
+    <div class="drill-list">${items.length
+      ? items.map(f => drillRow(f, source)).join('')
+      : '<div class="stats-empty">Nothing matched.</div>'}</div>`;
+}
+
+function closeDrilldown() {
+  document.getElementById('drill-veil').classList.remove('open');
+}
+
+function drillRow(f, source) {
+  if (source === 'jobs') {
+    const ratio = f.size_before ? f.size_after / f.size_before : null;
+    return `<div class="drill-row">
+      <div class="drill-name">${f.name}</div>
+      <div class="drill-meta">${fmtSize(f.size_before)} &rarr; ${fmtSize(f.size_after)}
+        ${ratio ? `&middot; ${ratio.toFixed(2)}&times;` : ''}
+        ${f.seconds ? `&middot; ${fmtDuration(f.seconds)}` : ''}</div>
+    </div>`;
+  }
+  const d = f.detail || {};
+  const audio = (d.audio_tracks || []).map(a =>
+    `${a.codec || '?'}${a.language ? ' (' + a.language + ')' : ''}`
+    + `${a.channels ? ' ' + a.channels + 'ch' : ''}`).join(', ');
+  const subs = (d.subtitle_tracks || []).map(s =>
+    `${s.codec || '?'}${s.language ? ' (' + s.language + ')' : ''}`).join(', ');
+  const bits = [
+    f.width && f.height ? `${f.width}&times;${f.height}` : null,
+    f.video_codec, f.bit_depth ? `${f.bit_depth}-bit` : null,
+    d.hdr ? 'HDR' : null, d.frame_rate ? `${d.frame_rate}fps` : null,
+    d.profile, fmtSize(f.size), f.duration ? fmtDuration(f.duration) : null,
+  ].filter(Boolean).join(' &middot; ');
+  return `<div class="drill-row">
+    <div class="drill-name">${f.name}</div>
+    <div class="drill-meta">${bits}</div>
+    ${audio ? `<div class="drill-meta">Audio: ${audio}</div>` : ''}
+    ${subs ? `<div class="drill-meta">Subtitles: ${subs}</div>` : ''}
+    <div class="drill-path">${f.path}</div>
+  </div>`;
 }
 
 function opt(list, key, extra = '') {
