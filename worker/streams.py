@@ -399,6 +399,19 @@ def _plan(info, spec):
             notes.append(f"dropped {len(droppable)} picture-based subtitle "
                          f"track{'s' if len(droppable) > 1 else ''} (MP4 can't hold them)")
 
+        # MP4 only holds text subtitles as mov_text, and FFmpeg only
+        # converts cleanly from a known-safe set of source formats —
+        # anything else fails the mov_text encoder in a way that takes
+        # the whole mux down rather than just that one track, the same
+        # class of problem IMAGE_SUB_CODECS already exists to avoid.
+        unconvertible = [s for s in kept_subs
+                         if s.get("codec_name") not in TEXT_SUB_CODECS]
+        if unconvertible:
+            kept_subs = [s for s in kept_subs if s not in unconvertible]
+            notes.append(f"dropped {len(unconvertible)} subtitle track"
+                         f"{'s' if len(unconvertible) > 1 else ''} FFmpeg can't "
+                         "convert to MP4's mov_text format")
+
     # ---- build the map in final order --------------------------------
     map_args, codec_args = [], []
     for stream in keep + audios + kept_subs:

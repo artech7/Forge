@@ -735,25 +735,29 @@ async def handle_audio_fail(job, error):
 
 @app.get("/api/jobs")
 async def list_jobs(view: str = "active", page: int = 1, per_page: int = 20,
-                     library_id: int = None):
+                     library_id: int = None, q: str = None):
     """One page of jobs from a view, with enough detail to render a pager.
 
     library_id narrows both the page of jobs and the counts to one library,
     so each library's queue tab can be paged independently of the others.
+    q does the same for a filename search — searched here rather than
+    client-side so it actually reaches every matching job, not just
+    whichever page happens to be loaded.
     """
     states = db.VIEWS.get(view)
     if not states:
         raise HTTPException(400, f"Unknown view: {view}")
     per_page = max(1, min(100, int(per_page)))
-    total = db.count_jobs(list(states), library_id)
+    q = (q or "").strip() or None
+    total = db.count_jobs(list(states), library_id, q)
     pages = max(1, -(-total // per_page))
     page = max(1, min(page, pages))
     return {
         "view": view, "page": page, "pages": pages, "total": total,
         "per_page": per_page,
         "jobs": db.list_jobs(list(states), per_page, (page - 1) * per_page,
-                             library_id),
-        "counts": db.job_counts(library_id),
+                             library_id, q),
+        "counts": db.job_counts(library_id, q),
     }
 
 

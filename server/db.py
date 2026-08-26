@@ -266,7 +266,7 @@ VIEWS = {
 }
 
 
-def list_jobs(states=None, limit=200, offset=0, library_id=None):
+def list_jobs(states=None, limit=200, offset=0, library_id=None, q=None):
     query = "SELECT * FROM jobs"
     clauses, params = [], []
     if states:
@@ -275,6 +275,11 @@ def list_jobs(states=None, limit=200, offset=0, library_id=None):
     if library_id is not None:
         clauses.append("library_id=?")
         params.append(library_id)
+    if q:
+        # SQLite's LIKE is case-insensitive for ASCII by default, which
+        # covers the common case (filenames) without extra handling.
+        clauses.append("path LIKE ?")
+        params.append(f"%{q}%")
     if clauses:
         query += " WHERE " + " AND ".join(clauses)
     # Active work reads best oldest-first (that's the running order);
@@ -287,7 +292,7 @@ def list_jobs(states=None, limit=200, offset=0, library_id=None):
         return [row_to_dict(r) for r in conn.execute(query, params).fetchall()]
 
 
-def count_jobs(states=None, library_id=None):
+def count_jobs(states=None, library_id=None, q=None):
     query = "SELECT COUNT(*) FROM jobs"
     clauses, params = [], []
     if states:
@@ -296,14 +301,17 @@ def count_jobs(states=None, library_id=None):
     if library_id is not None:
         clauses.append("library_id=?")
         params.append(library_id)
+    if q:
+        clauses.append("path LIKE ?")
+        params.append(f"%{q}%")
     if clauses:
         query += " WHERE " + " AND ".join(clauses)
     with connect() as conn:
         return conn.execute(query, params).fetchone()[0]
 
 
-def job_counts(library_id=None):
-    return {view: count_jobs(states, library_id) for view, states in VIEWS.items()}
+def job_counts(library_id=None, q=None):
+    return {view: count_jobs(states, library_id, q) for view, states in VIEWS.items()}
 
 
 def counts_by_library():

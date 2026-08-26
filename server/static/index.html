@@ -300,6 +300,10 @@
                           font-variant-numeric:tabular-nums}
   @keyframes scanshine{from{background-position:-60px 0}to{background-position:120px 0}}
   @media (prefers-reduced-motion:reduce){.scanbar .fill::after{animation:none}}
+  .queue-search{width:100%;max-width:320px;margin:2px 0 12px;padding:9px 13px;
+                font-size:13px;background:rgba(255,255,255,.05);
+                border:1px solid var(--edge);border-radius:11px;color:var(--text)}
+  .queue-search::placeholder{color:var(--muted)}
   .batchbar{display:flex;align-items:center;gap:9px;flex-wrap:wrap;
             padding:10px 13px;margin-bottom:9px;border-radius:11px;
             background:rgba(255,181,71,.08);border:1px solid rgba(255,181,71,.25)}
@@ -522,6 +526,8 @@
     </div>
     <div class="tabs" id="libtabs"></div>
     <div class="tabs" id="jobtabs"></div>
+    <input type="text" id="queue-search" class="queue-search"
+           placeholder="Search by filename…" oninput="onQueueSearch(this.value)">
     <div class="batchbar" id="batchbar"></div>
     <div class="queue" id="queue"></div>
     <div class="pager" id="pager"></div>
@@ -583,6 +589,8 @@
       — nothing already read gets redone.
     </div>
     <div id="loudness-progress"></div>
+    <input type="text" id="loudness-search" class="queue-search"
+           placeholder="Search by filename…" oninput="onLoudnessSearch(this.value)">
     <div id="loudness-detail"><div class="stats-empty">Not scanned yet.</div></div>
 
     <div class="queue-head" style="margin-top:34px">
@@ -801,9 +809,7 @@ function render(state) {
   view.counts = counts;
   renderTabs(counts);
   if (view.name === 'active') {
-    const jobs = (state.jobs || []).filter(j => id == null || j.library_id === id);
-    renderJobs(jobs, null);
-    renderActiveBar(jobs);
+    renderActiveFromState(state);
   } else if (!view.loaded) loadView();
 }
 
@@ -1019,14 +1025,7 @@ function switchLibrary(id) {
     // Active jobs already arrive live over the websocket, so filtering
     // that in place keeps progress updating instead of falling back to
     // polling — only the other (non-live) tabs need a fetch.
-    const state = window.__state || {};
-    const counts = id == null ? state.counts
-      : (state.counts_by_library || {})[id] || {active:0,failed:0,bloated:0,done:0};
-    view.counts = counts;
-    renderTabs(counts);
-    const jobs = (state.jobs || []).filter(j => id == null || j.library_id === id);
-    renderJobs(jobs, null);
-    renderActiveBar(jobs);
+    renderActiveFromState(window.__state || {});
   } else {
     loadView();
   }
@@ -1054,14 +1053,51 @@ function switchView(name) {
   view.loaded = false;
   renderTabs(view.counts);
   if (name === 'active') {
-    const id = view.library_id;
-    const jobs = (((window.__state || {}).jobs) || [])
-      .filter(j => id == null || j.library_id === id);
-    renderJobs(jobs, null);
-    renderActiveBar(jobs);
+    renderActiveFromState(window.__state || {});
   } else {
     loadView();
   }
+}
+
+let queueSearch = '';
+let queueSearchTimer = null;
+
+function onQueueSearch(value) {
+  clearTimeout(queueSearchTimer);
+  queueSearchTimer = setTimeout(() => {
+    queueSearch = value.trim();
+    view.page = 1;
+    if (view.name === 'active') {
+      renderActiveFromState(window.__state || {});
+    } else {
+      view.loaded = false;
+      loadView();
+    }
+  }, 250);   // debounced so a fast typist doesn't fire a request per keystroke
+}
+
+function matchesSearch(job) {
+  if (!queueSearch) return true;
+  return job.path.toLowerCase().includes(queueSearch.toLowerCase());
+}
+
+// Shared by every place that renders the live "active" tab (the initial
+// websocket push, switching tabs, switching libraries) so the search and
+// library filters stay applied consistently no matter how you got here.
+function renderActiveFromState(state) {
+  const id = view.library_id;
+  const jobs = (state.jobs || []).filter(j =>
+    (id == null || j.library_id === id) && matchesSearch(j));
+  let counts = id == null ? (state.counts || {})
+    : (state.counts_by_library || {})[id] || {active: 0, failed: 0, bloated: 0, done: 0};
+  // The other tabs get their badge counts from the server with the same
+  // search applied - matching that here means the number always reflects
+  // what's actually on screen, not the unfiltered live total.
+  if (queueSearch) counts = {...counts, active: jobs.length};
+  view.counts = counts;
+  renderTabs(counts);
+  renderJobs(jobs, null);
+  renderActiveBar(jobs);
 }
 
 async function loadView() {
@@ -1069,8 +1105,9 @@ async function loadView() {
   el.innerHTML = '<div class="glass empty">Loading…</div>';
   try {
     const libParam = view.library_id == null ? '' : `&library_id=${view.library_id}`;
+    const qParam = queueSearch ? `&q=${encodeURIComponent(queueSearch)}` : '';
     const r = await (await fetch(
-      `/api/jobs?view=${view.name}&page=${view.page}&per_page=${view.perPage}${libParam}`)).json();
+      `/api/jobs?view=${view.name}&page=${view.page}&per_page=${view.perPage}${libParam}${qParam}`)).json();
     view.loaded = true;
     view.page = r.page;
     renderTabs(r.counts || view.counts);
@@ -2114,27 +2151,44 @@ async function loadLoudness() {
   }
   currentLoudnessFiles = data.files || [];
   selectedLoudnessPaths.clear();
+  loudnessSearch = '';
+  const searchBox = document.getElementById('loudness-search');
+  if (searchBox) searchBox.value = '';
   renderLoudnessList();
+}
+
+let loudnessSearch = '';
+
+function onLoudnessSearch(value) {
+  loudnessSearch = value.trim();
+  renderLoudnessList();
+}
+
+function visibleLoudnessFiles() {
+  if (!loudnessSearch) return currentLoudnessFiles;
+  const q = loudnessSearch.toLowerCase();
+  return currentLoudnessFiles.filter(f => f.name.toLowerCase().includes(q));
 }
 
 function renderLoudnessList() {
   const box = document.getElementById('loudness-detail');
-  const files = currentLoudnessFiles;
-  if (!files.length) {
+  if (!currentLoudnessFiles.length) {
     box.innerHTML = '<div class="stats-empty">No files measured yet — run a scan above.</div>';
     return;
   }
+  const files = visibleLoudnessFiles();
   const wide = files.filter(f => (f.range || 0) >= LOUDNESS_RANGE_THRESHOLD);
   const codecOpts = (CAT.audio || [])
     .map(o => `<option value="${o.id}">${o.name}</option>`).join('');
 
   box.innerHTML = `
-    <p class="lead">${files.length} file${files.length === 1 ? '' : 's'} measured &middot;
-      ${wide.length} with a wide loudness range (&ge;${LOUDNESS_RANGE_THRESHOLD} LU)</p>
+    <p class="lead">${currentLoudnessFiles.length} file${currentLoudnessFiles.length === 1 ? '' : 's'} measured
+      ${loudnessSearch ? ` &middot; ${files.length} match${files.length === 1 ? '' : 'es'} your search` : ''}
+      &middot; ${wide.length} with a wide loudness range (&ge;${LOUDNESS_RANGE_THRESHOLD} LU)</p>
     <div class="glass drill-convert">
       <label class="drill-selectall">
         <input type="checkbox" id="loud-selectall" onclick="selectAllLoudness(this.checked)">
-        select all
+        select all${loudnessSearch ? ' (matching your search)' : ''}
         <span id="loud-selcount">0 selected</span>
       </label>
       <label class="drill-toggle">
@@ -2176,13 +2230,17 @@ function updateLoudnessSelCount() {
   const el = document.getElementById('loud-selcount');
   if (el) el.textContent = `${selectedLoudnessPaths.size} selected`;
   const all = document.getElementById('loud-selectall');
-  if (all) all.checked = currentLoudnessFiles.length > 0
-    && selectedLoudnessPaths.size === currentLoudnessFiles.length;
+  const visible = visibleLoudnessFiles();
+  if (all) all.checked = visible.length > 0
+    && visible.every(f => selectedLoudnessPaths.has(f.path));
 }
 
 function selectAllLoudness(checked) {
-  selectedLoudnessPaths.clear();
-  if (checked) currentLoudnessFiles.forEach(f => selectedLoudnessPaths.add(f.path));
+  const visible = visibleLoudnessFiles();
+  visible.forEach(f => {
+    if (checked) selectedLoudnessPaths.add(f.path);
+    else selectedLoudnessPaths.delete(f.path);
+  });
   document.querySelectorAll('#loudness-detail .drill-row input[type=checkbox]').forEach(cb => {
     cb.checked = checked;
   });
@@ -2289,11 +2347,43 @@ async function loadChapterCheck() {
     </div>`).join('')}</div>`;
 }
 
+let drillSearch = '';
+let drillSourceKind = 'files';
+
+function onDrillSearch(value) {
+  drillSearch = value.trim();
+  renderDrillItems();
+}
+
+function visibleDrillItems() {
+  if (!drillSearch) return currentDrillFiles;
+  const q = drillSearch.toLowerCase();
+  return currentDrillFiles.filter(f => f.name.toLowerCase().includes(q));
+}
+
+function renderDrillItems() {
+  const listBox = document.getElementById('drill-list-inner');
+  const countBox = document.getElementById('drill-count');
+  if (!listBox) return;
+  const items = visibleDrillItems();
+  if (countBox) {
+    countBox.textContent = drillSearch
+      ? `${items.length} of ${currentDrillFiles.length} match your search`
+      : `${currentDrillFiles.length} file${currentDrillFiles.length === 1 ? '' : 's'}`;
+  }
+  listBox.innerHTML = items.length
+    ? items.map(f => drillRow(f, drillSourceKind)).join('')
+    : '<div class="stats-empty">Nothing matched.</div>';
+  if (drillSourceKind !== 'jobs') wireDrillCheckboxes();
+}
+
 async function openDrilldown(source, attribute, value) {
   document.getElementById('drill-veil').classList.add('open');
   const box = document.getElementById('drill-box');
   box.innerHTML = '<div class="stats-empty">Loading…</div>';
   selectedDrillPaths.clear();
+  drillSearch = '';
+  drillSourceKind = source;
 
   // Needed for the convert-options dropdowns below — loaded once and
   // reused, same as the wizard does, so opening this repeatedly doesn't
@@ -2311,18 +2401,19 @@ async function openDrilldown(source, attribute, value) {
     return;
   }
   const items = data.files || data.jobs || [];
-  currentDrillFiles = source === 'jobs' ? [] : items;   // only files can be queued
+  currentDrillFiles = items;
 
   box.innerHTML = `
     <button onclick="closeDrilldown()" style="float:right">Close</button>
     <h3>${value}</h3>
-    <p class="lead">${items.length} file${items.length === 1 ? '' : 's'}</p>
+    <p class="lead" id="drill-count">${items.length} file${items.length === 1 ? '' : 's'}</p>
+    <input type="text" class="queue-search" placeholder="Search by filename…"
+           oninput="onDrillSearch(this.value)">
     ${source === 'jobs' ? '' : drillConvertBar()}
-    <div class="drill-list">${items.length
-      ? items.map(f => drillRow(f, source)).join('')
-      : '<div class="stats-empty">Nothing matched.</div>'}</div>`;
+    <div class="drill-list" id="drill-list-inner"></div>`;
 
-  if (source !== 'jobs') { wireDrillCheckboxes(); drawDrillConvert(); }
+  renderDrillItems();
+  if (source !== 'jobs') drawDrillConvert();
 }
 
 function drillConvertBar() {
@@ -2378,7 +2469,7 @@ function drawDrillConvert() {
 }
 
 function wireDrillCheckboxes() {
-  document.querySelectorAll('.drill-row input[type=checkbox]').forEach(cb => {
+  document.querySelectorAll('#drill-box .drill-row input[type=checkbox]').forEach(cb => {
     cb.addEventListener('change', () => {
       if (cb.checked) selectedDrillPaths.add(cb.dataset.path);
       else selectedDrillPaths.delete(cb.dataset.path);
@@ -2392,14 +2483,18 @@ function updateDrillSelCount() {
   const el = document.getElementById('drill-selcount');
   if (el) el.textContent = `${selectedDrillPaths.size} selected`;
   const all = document.getElementById('drill-selectall');
-  if (all) all.checked = currentDrillFiles.length > 0
-    && selectedDrillPaths.size === currentDrillFiles.length;
+  const visible = visibleDrillItems();
+  if (all) all.checked = visible.length > 0
+    && visible.every(f => selectedDrillPaths.has(f.path));
 }
 
 function selectAllDrill(checked) {
-  selectedDrillPaths.clear();
-  if (checked) currentDrillFiles.forEach(f => selectedDrillPaths.add(f.path));
-  document.querySelectorAll('.drill-row input[type=checkbox]').forEach(cb => {
+  const visible = visibleDrillItems();
+  visible.forEach(f => {
+    if (checked) selectedDrillPaths.add(f.path);
+    else selectedDrillPaths.delete(f.path);
+  });
+  document.querySelectorAll('#drill-box .drill-row input[type=checkbox]').forEach(cb => {
     cb.checked = checked;
   });
   updateDrillSelCount();
