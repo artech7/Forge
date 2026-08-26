@@ -91,7 +91,18 @@ def lease_job(node_id):
     if slots < 1 or active_job_count(node_id) >= slots:
         return None
 
-    for job in db.list_jobs(states=["queued"], limit=100):
+    # A measurement pass (loudness, and whatever else joins it later)
+    # exists to use capacity a real conversion would otherwise leave
+    # idle — it should never be able to sit in front of one. The queue
+    # is otherwise strictly oldest-first, so without this, queuing a big
+    # batch of checks would make every slot grab those first and leave
+    # real transcodes waiting behind the entire backlog: the opposite of
+    # "both happen at once."
+    queued = db.list_jobs(states=["queued"], limit=2000)
+    ordered = ([j for j in queued if not j["spec"].get("measure")]
+              + [j for j in queued if j["spec"].get("measure")])
+
+    for job in ordered:
         spec = job["spec"]
         if not node_can_encode(node, spec):
             continue
