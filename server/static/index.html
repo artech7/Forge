@@ -494,6 +494,7 @@
     <button class="toptab on" data-tab="nodes" onclick="switchTopTab('nodes')">Nodes &amp; Libraries</button>
     <button class="toptab" data-tab="queue" onclick="switchTopTab('queue')">Queue</button>
     <button class="toptab" data-tab="stats" onclick="switchTopTab('stats')">Stats</button>
+    <button class="toptab" data-tab="audio" onclick="switchTopTab('audio')">Audio Leveling</button>
     <button class="toptab" data-tab="settings" onclick="switchTopTab('settings')">Settings</button>
   </nav>
 
@@ -555,9 +556,11 @@
 
     <div class="stats-libpick" id="stats-libpick"></div>
     <div id="stats-detail"><div class="stats-empty">Loading…</div></div>
+  </div>
 
-    <div class="queue-head" style="margin-top:34px">
-      <h2 style="margin:0">Audio Leveling</h2>
+  <div class="tabpanel" data-panel="audio" id="panel-audio">
+    <div class="queue-head">
+      <h2>Audio Leveling</h2>
       <div class="actions">
         <button id="loudness-scan-btn" onclick="startLoudnessScan()">Scan for unleveled audio</button>
         <button id="loudness-cancel-btn" onclick="cancelLoudnessScan()" hidden>Cancel scan</button>
@@ -573,6 +576,7 @@
       Cancelling and rescanning later only measures what's still unmeasured
       — nothing already read gets redone.
     </div>
+    <div class="stats-libpick" id="audio-libpick"></div>
     <div id="loudness-progress"></div>
     <div id="loudness-detail"><div class="stats-empty">Not scanned yet.</div></div>
   </div>
@@ -1754,6 +1758,7 @@ function switchTopTab(name) {
   activeTopTab = name;
 
   if (name === 'stats') loadStats();
+  if (name === 'audio') { renderAudioLibPicker(); loadLoudness(); }
 
   // Timed rather than tied to animationend — with reduced-motion on, no
   // animation plays and that event never fires, which would otherwise
@@ -1821,6 +1826,8 @@ async function startDeepScan() {
 
 let statsData = null;      // last fetch, so switching libraries redraws instantly
 let statsLibId = 'all';    // 'all' or a library id (string, from dataset)
+let audioLibId = 'all';    // same idea, kept separate since Audio Leveling
+                            // is its own tab now, not a section of Stats
 
 async function loadStats() {
   const box = document.getElementById('stats-detail');
@@ -1833,7 +1840,6 @@ async function loadStats() {
   }
   renderStatsLibPicker();
   renderStatsDetail();
-  loadLoudness();
 }
 
 function renderStatsLibPicker() {
@@ -1843,7 +1849,7 @@ function renderStatsLibPicker() {
   const all = [{id: 'all', name: 'All libraries'}, ...libs];
   el.innerHTML = all.map(l => `<button data-libid="${l.id}"
     class="${String(l.id) === String(statsLibId) ? 'on' : ''}"
-    onclick="statsLibId='${l.id}';renderStatsDetail();loadLoudness();renderLoudnessProgress((window.__state||{}).jobs)">${l.name}</button>`).join('');
+    onclick="statsLibId='${l.id}';renderStatsDetail()">${l.name}</button>`).join('');
 }
 
 function pickStatsBucket(payload) {
@@ -1974,10 +1980,22 @@ const LOUDNESS_RANGE_THRESHOLD = 15;
 let currentLoudnessFiles = [];
 let selectedLoudnessPaths = new Set();
 
+function renderAudioLibPicker() {
+  const el = document.getElementById('audio-libpick');
+  if (!el) return;
+  const libs = ((window.__state || {}).libraries || []);
+  if (!libs.length) { el.innerHTML = ''; return; }
+  const all = [{id: 'all', name: 'All libraries'}, ...libs];
+  el.innerHTML = all.map(l => `<button data-libid="${l.id}"
+    class="${String(l.id) === String(audioLibId) ? 'on' : ''}"
+    onclick="audioLibId='${l.id}';renderAudioLibPicker();loadLoudness();
+             renderLoudnessProgress((window.__state||{}).jobs)">${l.name}</button>`).join('');
+}
+
 async function startLoudnessScan() {
   const btn = document.getElementById('loudness-scan-btn');
   btn.disabled = true;
-  const body = statsLibId === 'all' ? {} : {library_ids: [Number(statsLibId) || statsLibId]};
+  const body = audioLibId === 'all' ? {} : {library_ids: [Number(audioLibId) || audioLibId]};
   let r;
   try {
     r = await (await fetch('/api/scan/loudness', {method: 'POST',
@@ -1994,10 +2012,10 @@ async function startLoudnessScan() {
 }
 
 async function cancelLoudnessScan() {
-  const scope = statsLibId === 'all' ? 'every library' : 'this library';
+  const scope = audioLibId === 'all' ? 'every library' : 'this library';
   if (!confirm(`Cancel every queued or running loudness measurement job in ${scope}? `
               + 'Files already measured keep their reading — this only stops what\'s left.')) return;
-  const body = statsLibId === 'all' ? {} : {library_id: Number(statsLibId) || statsLibId};
+  const body = audioLibId === 'all' ? {} : {library_id: Number(audioLibId) || audioLibId};
   try {
     const r = await (await fetch('/api/jobs/loudness/cancel', {method: 'POST',
       headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)})).json();
@@ -2010,9 +2028,9 @@ async function cancelLoudnessScan() {
 function updateLoudnessScanLabel() {
   const btn = document.getElementById('loudness-scan-btn');
   if (!btn) return;
-  if (statsLibId === 'all') { btn.textContent = 'Scan for unleveled audio'; return; }
+  if (audioLibId === 'all') { btn.textContent = 'Scan for unleveled audio'; return; }
   const lib = ((window.__state || {}).libraries || [])
-    .find(l => String(l.id) === String(statsLibId));
+    .find(l => String(l.id) === String(audioLibId));
   btn.textContent = lib ? `Scan ${lib.name} for unleveled audio` : 'Scan for unleveled audio';
 }
 
@@ -2025,7 +2043,7 @@ function renderLoudnessProgress(jobs) {
   if (!box || !cancelBtn) return;
   updateLoudnessScanLabel();
 
-  const id = statsLibId === 'all' ? null : (Number(statsLibId) || statsLibId);
+  const id = audioLibId === 'all' ? null : (Number(audioLibId) || audioLibId);
   const mine = (jobs || []).filter(j => j.spec && j.spec.measure === 'loudness'
     && (id == null || j.library_id === id));
 
@@ -2043,12 +2061,12 @@ function renderLoudnessProgress(jobs) {
 
 async function loadLoudness() {
   const box = document.getElementById('loudness-detail');
-  if (!box) return;   // Stats tab not open yet
+  if (!box) return;   // Audio Leveling tab not open yet
   box.innerHTML = '<div class="stats-empty">Loading…</div>';
   if (!CAT) CAT = await (await fetch('/api/catalog')).json();
 
   const params = new URLSearchParams();
-  if (statsLibId !== 'all') params.set('library_id', statsLibId);
+  if (audioLibId !== 'all') params.set('library_id', audioLibId);
   let data;
   try { data = await (await fetch('/api/stats/loudness?' + params)).json(); }
   catch (e) {
