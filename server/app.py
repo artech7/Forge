@@ -1065,6 +1065,22 @@ async def stats_loudness(library_id: int = None):
     return {"files": db.files_with_loudness(library_id)}
 
 
+@app.post("/api/jobs/loudness/cancel")
+async def cancel_loudness(req: Request):
+    """Cancel just the queued/running measurement jobs — real conversions
+    sharing the same queue are left alone. Scoped to one library when
+    given, matching the same picker the scan button itself uses.
+    """
+    try:
+        body = await req.json()
+    except Exception:
+        body = {}
+    cancelled = db.cancel_loudness_jobs((body or {}).get("library_id"))
+    if cancelled:
+        await broadcast()
+    return {"cancelled": cancelled}
+
+
 @app.post("/api/scan/loudness")
 async def scan_loudness(req: Request):
     """Queue a measurement-only pass for every file that hasn't been
@@ -1109,6 +1125,13 @@ async def job_measured(job_id: int, req: Request):
     job = db.get_job(job_id)
     if not job:
         raise HTTPException(404, "No such job")
+    if job.get("state") == "cancelled":
+        # This job was cancelled while the worker was already mid-measurement
+        # — there's no way to interrupt that single blocking ffmpeg call, so
+        # it finished and reported back anyway. The cancellation still
+        # counts: don't flip it back to "done" out from under the person
+        # who cancelled it, and don't keep a reading they asked to discard.
+        return {"ok": True, "ignored": True}
 
     cached = db.get_cached_file(job["path"]) or {}
     try:

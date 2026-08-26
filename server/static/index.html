@@ -560,6 +560,7 @@
       <h2 style="margin:0">Audio Leveling</h2>
       <div class="actions">
         <button id="loudness-scan-btn" onclick="startLoudnessScan()">Scan for unleveled audio</button>
+        <button id="loudness-cancel-btn" onclick="cancelLoudnessScan()" hidden>Cancel scan</button>
         <button onclick="loadLoudness()">Refresh results</button>
       </div>
     </div>
@@ -569,7 +570,10 @@
       you'll see finish over time rather than a single progress bar.
       Nothing is changed automatically: review the results below and
       choose which files to level yourself, individually or in bulk.
+      Cancelling and rescanning later only measures what's still unmeasured
+      — nothing already read gets redone.
     </div>
+    <div id="loudness-progress"></div>
     <div id="loudness-detail"><div class="stats-empty">Not scanned yet.</div></div>
   </div>
 </div>
@@ -627,6 +631,7 @@ function render(state) {
   document.getElementById('s-failed').textContent = st.failed ?? 0;
 
   renderDeepScanBar(state.deep_scan);
+  renderLoudnessProgress(state.jobs);
 
   const running = {};
   (state.jobs || []).forEach(j => {
@@ -1838,7 +1843,7 @@ function renderStatsLibPicker() {
   const all = [{id: 'all', name: 'All libraries'}, ...libs];
   el.innerHTML = all.map(l => `<button data-libid="${l.id}"
     class="${String(l.id) === String(statsLibId) ? 'on' : ''}"
-    onclick="statsLibId='${l.id}';renderStatsDetail();loadLoudness()">${l.name}</button>`).join('');
+    onclick="statsLibId='${l.id}';renderStatsDetail();loadLoudness();renderLoudnessProgress((window.__state||{}).jobs)">${l.name}</button>`).join('');
 }
 
 function pickStatsBucket(payload) {
@@ -1985,8 +1990,55 @@ async function startLoudnessScan() {
   btn.disabled = false;
   alert(`Queued ${r.queued} file${r.queued === 1 ? '' : 's'} for measurement.`
       + (r.already_measured ? ` ${r.already_measured} already had a reading.` : '')
-      + (r.queued ? ' Track them in the Queue tab as "measuring loudness" — '
-                  + 'come back and hit Refresh once they finish.' : ''));
+      + (r.queued ? ' Watch them just below as they run, or hit Refresh once they finish.' : ''));
+}
+
+async function cancelLoudnessScan() {
+  const scope = statsLibId === 'all' ? 'every library' : 'this library';
+  if (!confirm(`Cancel every queued or running loudness measurement job in ${scope}? `
+              + 'Files already measured keep their reading — this only stops what\'s left.')) return;
+  const body = statsLibId === 'all' ? {} : {library_id: Number(statsLibId) || statsLibId};
+  try {
+    const r = await (await fetch('/api/jobs/loudness/cancel', {method: 'POST',
+      headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)})).json();
+    if (!r.cancelled) alert('Nothing to cancel — none are currently queued or running.');
+  } catch (e) {
+    alert('Could not reach the server to cancel those.');
+  }
+}
+
+function updateLoudnessScanLabel() {
+  const btn = document.getElementById('loudness-scan-btn');
+  if (!btn) return;
+  if (statsLibId === 'all') { btn.textContent = 'Scan for unleveled audio'; return; }
+  const lib = ((window.__state || {}).libraries || [])
+    .find(l => String(l.id) === String(statsLibId));
+  btn.textContent = lib ? `Scan ${lib.name} for unleveled audio` : 'Scan for unleveled audio';
+}
+
+// Fed straight from the same websocket everything else uses — these are
+// ordinary jobs with a marker in their spec, not a separate system, so
+// there's already a live feed of exactly this without a new endpoint.
+function renderLoudnessProgress(jobs) {
+  const box = document.getElementById('loudness-progress');
+  const cancelBtn = document.getElementById('loudness-cancel-btn');
+  if (!box || !cancelBtn) return;
+  updateLoudnessScanLabel();
+
+  const id = statsLibId === 'all' ? null : (Number(statsLibId) || statsLibId);
+  const mine = (jobs || []).filter(j => j.spec && j.spec.measure === 'loudness'
+    && (id == null || j.library_id === id));
+
+  cancelBtn.hidden = mine.length === 0;
+  if (!mine.length) { box.innerHTML = ''; return; }
+
+  box.innerHTML = `<div class="glass" style="padding:12px 16px;margin-bottom:14px">
+    <div style="font-size:12.5px;color:var(--muted);margin-bottom:8px">
+      ${mine.length} file${mine.length === 1 ? '' : 's'} queued or measuring right now</div>
+    ${mine.slice(0, 12).map(j => `<div class="drill-meta">
+        ${j.state === 'running' ? 'measuring' : 'queued'}: ${j.path.split('/').pop()}</div>`).join('')}
+    ${mine.length > 12 ? `<div class="drill-meta">…and ${mine.length - 12} more</div>` : ''}
+  </div>`;
 }
 
 async function loadLoudness() {

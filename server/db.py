@@ -366,6 +366,35 @@ def requeue_jobs(states, library_id=None):
     return moved, skipped
 
 
+def cancel_loudness_jobs(library_id=None):
+    """Cancel only measurement-only jobs, leaving real conversions in the
+    same queue untouched.
+
+    One real difference from cancel_active_jobs: a real encode job polls
+    for a stop signal on every progress report and can be interrupted
+    mid-file. A measurement job is one blocking ffmpeg call with no such
+    check — a queued one is cancelled instantly (it just never gets
+    leased), but one already running will finish that single file before
+    the worker notices anything changed. job_measured() checks for this
+    and won't un-cancel a job that's already been marked cancelled by the
+    time it reports back.
+    """
+    query = f"SELECT id, spec FROM jobs WHERE state IN ({','.join('?' * len(ACTIVE_STATES))})"
+    params = list(ACTIVE_STATES)
+    if library_id is not None:
+        query += " AND library_id=?"
+        params.append(library_id)
+    with connect() as conn:
+        rows = conn.execute(query, params).fetchall()
+        ids = [r["id"] for r in rows if parse_json(r["spec"], {}).get("measure") == "loudness"]
+        if ids:
+            conn.execute(
+                f"UPDATE jobs SET state='cancelled', finished_at=? "
+                f"WHERE id IN ({','.join('?' * len(ids))})",
+                [time.time(), *ids])
+    return len(ids)
+
+
 def cancel_active_jobs(library_id=None):
     """Cancel every currently active (queued/leased/running) job.
 
