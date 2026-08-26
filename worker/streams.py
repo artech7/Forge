@@ -138,7 +138,7 @@ def measure_loudness(path):
     """
     try:
         out = subprocess.run(
-            ["ffmpeg", "-hide_banner", "-i", path,
+            ["ffmpeg", "-hide_banner", "-i", path, "-vn", "-sn",
              "-af", "loudnorm=I=-16:TP=-1.5:LRA=11:print_format=json",
              "-f", "null", "-"],
             capture_output=True, text=True, encoding="utf-8", errors="replace",
@@ -151,7 +151,13 @@ def measure_loudness(path):
     stderr = out.stderr or ""
     start, end = stderr.rfind("{"), stderr.rfind("}")
     if start == -1 or end == -1 or end < start:
-        return None, "FFmpeg didn't report a measurement for this file"
+        # Whatever went wrong happened before loudnorm ever finished a
+        # pass over the file — the actual reason is in FFmpeg's own
+        # output, same as the encoder-detection dead end this used to
+        # copy. The genuinely useful line is usually the last one, not
+        # a generic "didn't report anything" that explains nothing.
+        lines = [l for l in stderr.strip().splitlines() if l.strip()]
+        return None, (lines[-1] if lines else f"exit code {out.returncode}")
     try:
         parsed = json.loads(stderr[start:end + 1])
         return {
