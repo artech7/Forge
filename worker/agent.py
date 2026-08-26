@@ -411,6 +411,13 @@ def report_measurement(job):
         report_fail(job_id, f"Mounted path not found: {src}")
         return
     print(f"[job {job_id}] measuring loudness: {Path(src).name}")
+    # This is one blocking FFmpeg call with no progress heartbeat during
+    # the run itself — without this, the job sits at "leased" for its
+    # entire runtime, since nothing ever tells the server it started.
+    # That's invisible to a person: the node card only counts a job as
+    # busy once it's "running", so a real measurement in progress would
+    # otherwise still show the node as idle.
+    post(f"/api/jobs/{job_id}/progress", {"progress": 1})
     values, error = streams.measure_loudness(src)
     if not values:
         report_fail(job_id, f"Could not measure loudness: {error}")

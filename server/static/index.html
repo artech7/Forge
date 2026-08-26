@@ -752,11 +752,18 @@ function render(state) {
       const note = notes.map(t => `<div class="note">${t}</div>`).join('');
       const mine = (state.jobs || []).filter(
         j => j.node_id === n.id && j.state === 'running');
-      const totalFps = mine.reduce((sum, j) => sum + (j.fps || 0), 0);
+      // A measurement job never reports fps — it's one blocking decode
+      // pass, not an encode — so it gets its own label instead of a
+      // slightly nonsensical "encoding · 0 fps".
+      const encoding = mine.filter(j => !(j.spec && j.spec.measure));
+      const measuring = mine.filter(j => j.spec && j.spec.measure);
+      const totalFps = encoding.reduce((sum, j) => sum + (j.fps || 0), 0);
       const label = !n.online ? 'offline'
-                  : mine.length > 1
-                    ? `encoding ${mine.length} · ${totalFps.toFixed(0)} fps`
-                    : mine.length ? `encoding · ${totalFps.toFixed(0)} fps`
+                  : encoding.length > 1
+                    ? `encoding ${encoding.length} · ${totalFps.toFixed(0)} fps`
+                    : encoding.length ? `encoding · ${totalFps.toFixed(0)} fps`
+                    : measuring.length > 1 ? `measuring loudness ×${measuring.length}`
+                    : measuring.length ? 'measuring loudness'
                     : 'idle';
       return `<div class="glass node ${job ? 'busy' : ''}">
         <div class="name">${n.name}<span class="state">${label}</span></div>
