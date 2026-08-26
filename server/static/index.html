@@ -1989,7 +1989,7 @@ async function startLoudnessScan() {
   }
   btn.disabled = false;
   alert(`Queued ${r.queued} file${r.queued === 1 ? '' : 's'} for measurement.`
-      + (r.already_measured ? ` ${r.already_measured} already had a reading.` : '')
+      + (r.already_queued ? ` ${r.already_queued} were already queued or in progress from an earlier scan.` : '')
       + (r.queued ? ' Watch them just below as they run, or hit Refresh once they finish.' : ''));
 }
 

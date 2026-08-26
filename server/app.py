@@ -1103,13 +1103,20 @@ async def scan_loudness(req: Request):
                 if library_ids is None or l["id"] in library_ids]
 
     targets = await asyncio.to_thread(_find_unmeasured, libraries)
-    queued = 0
+    queued, already_queued = 0, 0
     for lib, path in targets:
         if db.enqueue(str(path), {"measure": "loudness"}, None, lib["id"]):
             queued += 1
+        else:
+            # _find_unmeasured already excludes anything with a reading —
+            # the only reason enqueue can still refuse one of these is a
+            # job for that same path already sitting active from an
+            # earlier scan. That's not "already measured," and saying so
+            # was actively misleading about what actually happened.
+            already_queued += 1
     if queued:
         await broadcast()
-    return {"queued": queued, "already_measured": len(targets) - queued}
+    return {"queued": queued, "already_queued": already_queued}
 
 
 @app.post("/api/jobs/{job_id}/measured")
