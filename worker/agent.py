@@ -453,6 +453,39 @@ def runner(index, nid, caps):
         time.sleep(8)
 
 
+def pid_exists(pid):
+    """Is this still a live process — without relying on POSIX kill(pid, 0)
+    semantics, which os.kill() doesn't actually have on Windows.
+
+    On Linux/macOS, os.kill(pid, 0) sends nothing and just reports whether
+    the process exists. On Windows, signal 0 is CTRL_C_EVENT, and os.kill
+    there goes through GenerateConsoleCtrlEvent — a mechanism for sending
+    Ctrl+C to a console process group, not for checking existence, and it
+    can raise all sorts of unrelated errors (like WinError 11) depending
+    on what that PID happens to be doing, rather than a clean answer.
+    OpenProcess with a minimal, read-only access right is the actual
+    correct way to ask this question on Windows.
+    """
+    if pid <= 0:
+        return False
+    if os.name == "nt":
+        import ctypes
+        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+        handle = ctypes.windll.kernel32.OpenProcess(
+            PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+        if not handle:
+            return False
+        ctypes.windll.kernel32.CloseHandle(handle)
+        return True
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True   # exists, just not ours to signal
+    return True
+
+
 def claim_single_instance():
     """Refuse to start if another worker is already using this node id.
 
@@ -465,10 +498,9 @@ def claim_single_instance():
     if lock.exists():
         try:
             other = int(lock.read_text().strip())
-            os.kill(other, 0)          # signal 0 just tests existence
-        except (ValueError, ProcessLookupError, PermissionError):
-            pass                        # stale lock, safe to take over
-        else:
+        except ValueError:
+            other = None                # stale/corrupt lock, safe to take over
+        if other and pid_exists(other):
             print(f"Another worker is already running (pid {other}).")
             print("Stop it first, or delete", lock)
             sys.exit(1)
