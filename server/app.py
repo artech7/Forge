@@ -175,26 +175,59 @@ async def originals_loop():
             print(f"originals sweep: {exc}")
 
 
-async def broadcast():
-    """Push state to any open browsers.
+_broadcast_scheduled = False
+_background_tasks = set()   # keeps scheduled broadcasts alive until they finish —
+                            # an asyncio.Task with nothing else referencing it can
+                            # otherwise be garbage-collected mid-flight
 
-    Never allowed to raise: this is called from the middle of worker
-    endpoints, so a rendering problem here would fail the worker's request
-    and stall encoding. A broken dashboard is a nuisance; a stalled queue
-    is a real outage.
-    """
+
+async def _do_broadcast():
+    global _broadcast_scheduled
     try:
-        payload = json.dumps(await build_state())
-    except Exception as exc:
-        print(f"broadcast: could not build state ({exc})")
-        return
-    dead = set()
-    for ws in listeners:
+        # A burst of triggers (several jobs reporting progress within the
+        # same second, now including every measurement job's start
+        # heartbeat) collapses into one rebuild instead of one per call.
+        await asyncio.sleep(0.2)
         try:
-            await ws.send_text(payload)
-        except Exception:
-            dead.add(ws)
-    listeners.difference_update(dead)
+            payload = json.dumps(await build_state())
+        except Exception as exc:
+            print(f"broadcast: could not build state ({exc})")
+            return
+        dead = set()
+        for ws in listeners:
+            try:
+                await ws.send_text(payload)
+            except Exception:
+                dead.add(ws)
+        listeners.difference_update(dead)
+    finally:
+        _broadcast_scheduled = False
+
+
+async def broadcast():
+    """Ask for a fresh state push to every connected client.
+
+    Used to build that state and send it inline, which meant every
+    caller — including a worker's plain progress ping — sat waiting on
+    a full rebuild and a send to every open browser before it got its
+    own response back. Harmless with a small jobs table; with tens of
+    thousands of rows and several active jobs reporting every couple of
+    seconds, that rebuild stopped being free, and callers started
+    piling up behind each other until a worker's request timed out
+    waiting for a response that had nothing to do with its own job.
+
+    Scheduled as a background task instead, so this returns to its
+    caller almost immediately regardless of how long the actual rebuild
+    takes, and coalesced so a burst of calls in the same fraction of a
+    second only triggers one.
+    """
+    global _broadcast_scheduled
+    if _broadcast_scheduled:
+        return
+    _broadcast_scheduled = True
+    task = asyncio.create_task(_do_broadcast())
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
 
 
 def _text(module, name, *args, fallback=""):
