@@ -477,7 +477,7 @@
 <div class="wrap">
   <header>
     <h1><span class="rune" aria-hidden="true">ᚠ</span> Forge</h1>
-    <span class="tag">distributed transcoding</span>
+    <span class="tag">standardizing your media library</span>
     <select id="theme-picker" title="Theme" onchange="setTheme(this.value)">
       <option value="ironforge">Ironforge</option>
       <option value="emberforge">Emberforge</option>
@@ -494,7 +494,7 @@
     <button class="toptab on" data-tab="nodes" onclick="switchTopTab('nodes')">Nodes &amp; Libraries</button>
     <button class="toptab" data-tab="queue" onclick="switchTopTab('queue')">Queue</button>
     <button class="toptab" data-tab="stats" onclick="switchTopTab('stats')">Stats</button>
-    <button class="toptab" data-tab="audio" onclick="switchTopTab('audio')">Audio Leveling</button>
+    <button class="toptab" data-tab="audio" onclick="switchTopTab('audio')">Library Health</button>
     <button class="toptab" data-tab="settings" onclick="switchTopTab('settings')">Settings</button>
   </nav>
 
@@ -559,8 +559,14 @@
   </div>
 
   <div class="tabpanel" data-panel="audio" id="panel-audio">
-    <div class="queue-head">
-      <h2>Audio Leveling</h2>
+    <h2>Library Health</h2>
+    <p class="lead">Checks for things a transcode alone won't fix — the
+      gaps between what's in your library and what you'd consider a
+      consistent standard across all of it.</p>
+    <div class="stats-libpick" id="audio-libpick"></div>
+
+    <div class="queue-head" style="margin-top:10px">
+      <h2 style="margin:0">Audio Leveling</h2>
       <div class="actions">
         <button id="loudness-scan-btn" onclick="startLoudnessScan()">Scan for unleveled audio</button>
         <button id="loudness-cancel-btn" onclick="cancelLoudnessScan()" hidden>Cancel scan</button>
@@ -576,9 +582,36 @@
       Cancelling and rescanning later only measures what's still unmeasured
       — nothing already read gets redone.
     </div>
-    <div class="stats-libpick" id="audio-libpick"></div>
     <div id="loudness-progress"></div>
     <div id="loudness-detail"><div class="stats-empty">Not scanned yet.</div></div>
+
+    <div class="queue-head" style="margin-top:34px">
+      <h2 style="margin:0">Missing English Audio or Subtitles</h2>
+      <div class="actions">
+        <button onclick="loadLanguageChecks()">Refresh</button>
+      </div>
+    </div>
+    <div class="note" style="margin:-4px 0 14px;color:var(--muted);font-size:12.5px">
+      Read straight from your regular scans — nothing new to run or wait
+      on. Purely informational: Forge can't manufacture a subtitle track
+      that was never there, so this is a list to act on yourself (Bazarr,
+      a different release, etc.), not something with a fix-it button.
+    </div>
+    <div id="missing-audio-detail"><div class="stats-empty">Loading…</div></div>
+    <div id="missing-subs-detail" style="margin-top:14px"></div>
+
+    <div class="queue-head" style="margin-top:34px">
+      <h2 style="margin:0">Missing Chapters</h2>
+      <div class="actions">
+        <button onclick="loadChapterCheck()">Refresh</button>
+      </div>
+    </div>
+    <div class="note" style="margin:-4px 0 14px;color:var(--muted);font-size:12.5px">
+      Same idea — instant, informational, no fix-it button. A file
+      scanned before this check existed won't show up here until its next
+      regular or deep scan picks up chapter data for it.
+    </div>
+    <div id="chapters-detail"><div class="stats-empty">Loading…</div></div>
   </div>
 </div>
 
@@ -1758,7 +1791,12 @@ function switchTopTab(name) {
   activeTopTab = name;
 
   if (name === 'stats') loadStats();
-  if (name === 'audio') { renderAudioLibPicker(); loadLoudness(); }
+  if (name === 'audio') {
+    renderAudioLibPicker();
+    loadLoudness();
+    loadLanguageChecks();
+    loadChapterCheck();
+  }
 
   // Timed rather than tied to animationend — with reduced-motion on, no
   // animation plays and that event never fires, which would otherwise
@@ -1989,7 +2027,8 @@ function renderAudioLibPicker() {
   el.innerHTML = all.map(l => `<button data-libid="${l.id}"
     class="${String(l.id) === String(audioLibId) ? 'on' : ''}"
     onclick="audioLibId='${l.id}';renderAudioLibPicker();loadLoudness();
-             renderLoudnessProgress((window.__state||{}).jobs)">${l.name}</button>`).join('');
+             renderLoudnessProgress((window.__state||{}).jobs);
+             loadLanguageChecks();loadChapterCheck()">${l.name}</button>`).join('');
 }
 
 async function startLoudnessScan() {
@@ -2175,6 +2214,79 @@ async function queueLoudnessSelected() {
   }
   selectedLoudnessPaths.clear();
   loadLoudness();
+}
+
+// ------------------------------------ Missing language / chapter checks
+// Both read straight from the existing structural scan — no new job type,
+// no worker involvement, no waiting. Purely informational: there's no
+// "fix it" action, since Forge can't invent a subtitle or a chapter that
+// was never there.
+
+async function loadLanguageChecks() {
+  const audioBox = document.getElementById('missing-audio-detail');
+  const subsBox = document.getElementById('missing-subs-detail');
+  if (!audioBox || !subsBox) return;
+  audioBox.innerHTML = '<div class="stats-empty">Loading…</div>';
+  subsBox.innerHTML = '';
+
+  const scope = audioLibId === 'all' ? {} : {library_id: audioLibId};
+  const audioParams = new URLSearchParams({kind: 'audio', language: 'eng', ...scope});
+  const subParams = new URLSearchParams({kind: 'subtitle', language: 'eng', ...scope});
+
+  let audioData, subData;
+  try {
+    [audioData, subData] = await Promise.all([
+      (await fetch('/api/stats/language-check?' + audioParams)).json(),
+      (await fetch('/api/stats/language-check?' + subParams)).json(),
+    ]);
+  } catch (e) {
+    audioBox.innerHTML = '<div class="stats-empty">Could not load this.</div>';
+    return;
+  }
+  audioBox.innerHTML = languageSection('No English audio track', audioData.files || []);
+  subsBox.innerHTML = languageSection('No English subtitle track', subData.files || []);
+}
+
+function languageSection(title, files) {
+  if (!files.length) {
+    return `<div class="glass" style="padding:14px 16px">
+      <div style="font-size:13px;font-weight:600">${title}</div>
+      <div class="stats-empty" style="padding:6px 0 0">None found.</div>
+    </div>`;
+  }
+  return `<div class="glass" style="padding:14px 16px">
+    <div style="font-size:13px;font-weight:600;margin-bottom:8px">${title}
+      <span style="color:var(--muted);font-weight:400">(${files.length})</span></div>
+    <div class="drill-list" style="max-height:240px">
+      ${files.map(f => `<div class="drill-row">
+        <div class="drill-name">${f.name}</div>
+        <div class="drill-meta">${f.languages_present && f.languages_present.length
+          ? 'Has: ' + f.languages_present.join(', ') : 'No language tags at all'}</div>
+        <div class="drill-path">${f.path}</div>
+      </div>`).join('')}
+    </div>
+  </div>`;
+}
+
+async function loadChapterCheck() {
+  const box = document.getElementById('chapters-detail');
+  if (!box) return;
+  box.innerHTML = '<div class="stats-empty">Loading…</div>';
+  const params = new URLSearchParams(audioLibId === 'all' ? {} : {library_id: audioLibId});
+  let data;
+  try { data = await (await fetch('/api/stats/chapters?' + params)).json(); }
+  catch (e) { box.innerHTML = '<div class="stats-empty">Could not load this.</div>'; return; }
+
+  const files = data.files || [];
+  if (!files.length) {
+    box.innerHTML = '<div class="stats-empty">None found.</div>';
+    return;
+  }
+  box.innerHTML = `<div class="drill-list">${files.map(f => `<div class="drill-row">
+      <div class="drill-name">${f.name}</div>
+      <div class="drill-meta">${f.duration ? fmtDuration(f.duration) : ''}</div>
+      <div class="drill-path">${f.path}</div>
+    </div>`).join('')}</div>`;
 }
 
 async function openDrilldown(source, attribute, value) {

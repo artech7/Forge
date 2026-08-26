@@ -431,6 +431,79 @@ def update_job(job_id, **fields):
                      (*fields.values(), job_id))
 
 
+def files_missing_language(kind, language, library_id=None):
+    """Files with no audio or subtitle track in the given language.
+
+    Pulled straight from the same detail blob a regular scan already
+    produces — this isn't a new measurement pass like loudness, so
+    there's nothing to queue or wait on, and no worker involvement at
+    all. Purely informational: Forge can't manufacture a subtitle track
+    that doesn't exist, so this is a report to act on yourself (Bazarr,
+    a different release, etc.), not something with a "fix it" button.
+    """
+    if kind not in ("audio", "subtitle"):
+        raise ValueError("kind must be 'audio' or 'subtitle'")
+    key = "audio_tracks" if kind == "audio" else "subtitle_tracks"
+    language = language.lower()
+
+    with connect() as conn:
+        libraries = [row_to_dict(r) for r in conn.execute(
+            "SELECT id, watch_path FROM libraries").fetchall()]
+        rows = [dict(r) for r in conn.execute(
+            "SELECT path, detail FROM files WHERE detail IS NOT NULL").fetchall()]
+
+    library_for = library_matcher(libraries)
+    out = []
+    for f in rows:
+        if library_id is not None and (library_for(f["path"]) or {}).get("id") != library_id:
+            continue
+        try:
+            detail = json.loads(f.get("detail") or "{}")
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if key not in detail:
+            continue   # never scanned with the version that captures this
+        tracks = detail.get(key) or []
+        present = sorted({(t.get("language") or "").lower() for t in tracks} - {""})
+        if language not in present:
+            out.append({"path": f["path"], "name": Path(f["path"]).name,
+                       "languages_present": present})
+    out.sort(key=lambda f: f["name"].lower())
+    return out
+
+
+def files_missing_chapters(library_id=None):
+    """Files with no chapter markers at all.
+
+    Same as files_missing_language: read from the existing structural
+    scan, not a new pass. A file probed before chapter counting was
+    added simply won't have the key yet and is skipped rather than
+    guessed at — it'll show up correctly on its next regular scan.
+    """
+    with connect() as conn:
+        libraries = [row_to_dict(r) for r in conn.execute(
+            "SELECT id, watch_path FROM libraries").fetchall()]
+        rows = [dict(r) for r in conn.execute(
+            "SELECT path, detail, duration FROM files WHERE detail IS NOT NULL").fetchall()]
+
+    library_for = library_matcher(libraries)
+    out = []
+    for f in rows:
+        if library_id is not None and (library_for(f["path"]) or {}).get("id") != library_id:
+            continue
+        try:
+            detail = json.loads(f.get("detail") or "{}")
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if "chapters" not in detail:
+            continue
+        if detail["chapters"] == 0:
+            out.append({"path": f["path"], "name": Path(f["path"]).name,
+                       "duration": f.get("duration")})
+    out.sort(key=lambda f: f["name"].lower())
+    return out
+
+
 def files_with_loudness(library_id=None):
     """Every file with a loudness reading on record.
 

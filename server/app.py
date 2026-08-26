@@ -284,7 +284,7 @@ def probe(path):
     try:
         out = subprocess.run(
             ["ffprobe", "-v", "quiet", "-print_format", "json",
-             "-show_format", "-show_streams", path],
+             "-show_format", "-show_streams", "-show_chapters", path],
             capture_output=True, text=True, encoding="utf-8", errors="replace",
             timeout=60,
         )
@@ -352,6 +352,7 @@ def probe(path):
                  "language": (s.get("tags") or {}).get("language")}
                 for s in sub_streams
             ],
+            "chapters": len(data.get("chapters") or []),
         },
     }
 
@@ -1057,6 +1058,21 @@ def _find_unmeasured(libraries):
             if not detail.get("loudness"):
                 targets.append((lib, path))
     return targets
+
+
+@app.get("/api/stats/language-check")
+async def stats_language_check(kind: str, language: str = "eng", library_id: int = None):
+    """Files with no audio or subtitle track in the given language —
+    read from the existing structural scan, computed instantly."""
+    if kind not in ("audio", "subtitle"):
+        raise HTTPException(400, "kind must be 'audio' or 'subtitle'")
+    return {"files": db.files_missing_language(kind, language, library_id)}
+
+
+@app.get("/api/stats/chapters")
+async def stats_chapters(library_id: int = None):
+    """Files with no chapter markers — same idea, same instant source."""
+    return {"files": db.files_missing_chapters(library_id)}
 
 
 @app.get("/api/stats/loudness")
