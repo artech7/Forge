@@ -304,12 +304,44 @@
                 font-size:13px;background:rgba(255,255,255,.05);
                 border:1px solid var(--edge);border-radius:11px;color:var(--text)}
   .queue-search::placeholder{color:var(--muted)}
+
+  /* Full-screen triage window — deciding what to do about a list of files
+     means comparing them against each other, which needs them all on
+     screen at once rather than 20 at a time. */
+  .review-veil{padding:0}
+  .review-box{width:min(1400px,100%);height:94vh;max-height:none;padding:0;
+              display:flex;flex-direction:column;border-radius:var(--r)}
+  .review-head{padding:20px 24px 14px;border-bottom:1px solid var(--edge);flex:none}
+  .review-head h3{margin:0 0 3px;font-size:19px;font-weight:800;letter-spacing:-.02em}
+  .review-head .sub{color:var(--muted);font-size:13px}
+  .review-controls{display:flex;gap:9px;flex-wrap:wrap;align-items:center;
+                    padding:12px 24px;border-bottom:1px solid var(--edge);flex:none}
+  .review-controls select{width:auto;padding:7px 11px;font-size:12.5px}
+  .review-controls .queue-search{margin:0;max-width:240px;padding:7px 11px}
+  .review-actions{display:flex;gap:9px;flex-wrap:wrap;align-items:center;
+                   padding:11px 24px;flex:none;
+                   background:rgba(255,181,71,.07);border-bottom:1px solid var(--edge)}
+  .review-list{flex:1;overflow-y:auto;padding:14px 24px 24px}
+  .review-item{display:flex;gap:12px;align-items:flex-start;padding:11px 0;
+                border-top:1px solid var(--edge)}
+  .review-item:first-child{border-top:none}
+  .review-item input[type=checkbox]{margin-top:4px;flex:none}
+  .review-item .body{flex:1;min-width:0}
+  .review-item .nm{font-size:13.5px;font-weight:600;margin-bottom:3px;
+                    overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .review-item .facts{font-family:'Chivo Mono',monospace;font-size:11.5px;
+                       color:var(--muted);display:flex;gap:10px;flex-wrap:wrap}
+  .review-item .facts .grew{color:var(--amber)}
+  .review-item .facts .saved{color:var(--signal)}
+  .review-item .acts{flex:none;display:flex;gap:7px}
+  .review-item .acts button{padding:6px 11px;font-size:12px}
   .batchbar{display:flex;align-items:center;gap:9px;flex-wrap:wrap;
             padding:10px 13px;margin-bottom:9px;border-radius:11px;
             background:rgba(255,181,71,.08);border:1px solid rgba(255,181,71,.25)}
   .batchbar:empty{display:none;padding:0;margin:0;border:none}
   .job .select{margin-right:9px;vertical-align:middle}
   .pager .grow{flex:1}
+  .grow{flex:1}
   .pager .where{font-family:'Chivo Mono',monospace;font-size:11.5px;
                 color:var(--muted)}
   .pager select{width:auto;padding:6px 9px;font-size:12.5px}
@@ -629,6 +661,10 @@
 
 <div class="veil" id="drill-veil" onclick="if(event.target===this)closeDrilldown()">
   <div class="glass wiz" id="drill-box"></div>
+</div>
+
+<div class="veil review-veil" id="review-veil" onclick="if(event.target===this)closeReview()">
+  <div class="glass review-box" id="review-box"></div>
 </div>
 
 <script>
@@ -1200,7 +1236,8 @@ function renderJobs(jobs, meta) {
       : j.state === 'removed'
       ? `<button onclick="removeJob(${j.id})">Clear</button>`
       : j.state === 'bloated'
-      ? `<button onclick="acceptJob(${j.id})">Keep it anyway</button>
+      ? `<button class="primary" onclick="revertJob(${j.id})">Keep the smaller original</button>
+         <button onclick="acceptJob(${j.id})">Keep it anyway</button>
          <button onclick="removeJob(${j.id})">Remove</button>`
       : j.state === 'done'
       ? `<button onclick="removeJob(${j.id})">Remove</button>`
@@ -1266,6 +1303,7 @@ function renderBatchBar(jobs) {
         <option value="">Pick a quality\u2026</option>${scale}
       </select>
       <button onclick="doBatchRetranscode()">Convert selected again, smaller</button>
+      <button class="primary" onclick="doBatchRevert()">Keep smaller originals</button>
       <button onclick="doBatchAccept()">Keep selected anyway</button>
       <span class="grow"></span>
       <button onclick="selectedBloated.clear();renderBatchBar(currentBloatedJobs)">Clear selection</button>
@@ -1301,6 +1339,229 @@ async function doBatchAccept() {
     body: JSON.stringify({job_ids: ids})});
   selectedBloated.clear();
   loadView();
+}
+
+async function doBatchRevert() {
+  const ids = [...selectedBloated];
+  if (!confirm(`Throw away the larger converted file for ${ids.length} selected `
+             + 'file(s) and put the smaller originals back?')) return;
+  const r = await (await fetch('/api/jobs/bloated/bulk-revert', {method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({job_ids: ids})})).json();
+  if (r.failed && r.failed.length) {
+    alert(`${r.reverted} restored. ${r.failed.length} couldn't be: `
+        + r.failed.map(f => `#${f.id} (${f.reason})`).join('; '));
+  }
+  selectedBloated.clear();
+  loadView();
+}
+
+// ------------------------------------------------- full-screen triage
+// Paging 20 at a time is the wrong shape for deciding what to do about a
+// list of files — that means comparing them against each other, which
+// needs everything on screen at once and sortable.
+
+const REVIEW_TITLES = {
+  bloated: ['Files that got bigger', 'Converted but came out larger than the source.'],
+  failed: ['Failed conversions', 'Something went wrong; the original is untouched.'],
+  ignored: ['Ignored files', "Failed even with audio left alone — these need a decision."],
+  done: ['Completed conversions', 'Finished and filed away.'],
+  removed: ['Removed files', 'Handed to Radarr/Sonarr to fetch again.'],
+};
+
+let reviewState = {view: 'bloated', sort: 'growth', lib: '', q: '', jobs: [], sel: new Set()};
+let reviewSearchTimer = null;
+
+async function openReview(view) {
+  reviewState = {view, sort: view === 'bloated' ? 'growth' : 'newest',
+                 lib: '', q: '', jobs: [], sel: new Set()};
+  document.getElementById('review-veil').classList.add('open');
+  document.getElementById('review-box').innerHTML =
+    '<div class="stats-empty" style="padding:40px 24px">Loading…</div>';
+  await loadReview();
+}
+
+function closeReview() {
+  document.getElementById('review-veil').classList.remove('open');
+}
+
+async function loadReview() {
+  const p = new URLSearchParams({view: reviewState.view, sort: reviewState.sort});
+  if (reviewState.lib) p.set('library_id', reviewState.lib);
+  if (reviewState.q) p.set('q', reviewState.q);
+  try {
+    const r = await (await fetch('/api/jobs/all?' + p)).json();
+    reviewState.jobs = r.jobs || [];
+  } catch (e) {
+    document.getElementById('review-box').innerHTML =
+      '<div class="stats-empty" style="padding:40px 24px">Could not load that list.</div>';
+    return;
+  }
+  // Anything no longer in the list can't stay selected.
+  const present = new Set(reviewState.jobs.map(j => j.id));
+  reviewState.sel = new Set([...reviewState.sel].filter(id => present.has(id)));
+  renderReview();
+}
+
+function renderReview() {
+  const [title, sub] = REVIEW_TITLES[reviewState.view] || ['Review', ''];
+  const libs = ((window.__state || {}).libraries || []);
+  const n = reviewState.jobs.length;
+  const sel = reviewState.sel.size;
+  const isBloated = reviewState.view === 'bloated';
+  const canRetry = ['bloated', 'failed', 'ignored'].includes(reviewState.view);
+
+  const sortOpts = [
+    ['growth', 'Grew the most'], ['largest', 'Largest original'],
+    ['smallest', 'Smallest original'], ['newest', 'Newest first'],
+    ['oldest', 'Oldest first'], ['name', 'Name (A–Z)'],
+  ].map(([v, label]) =>
+    `<option value="${v}" ${reviewState.sort === v ? 'selected' : ''}>${label}</option>`).join('');
+
+  const libOpts = ['<option value="">All libraries</option>'].concat(
+    libs.map(l => `<option value="${l.id}" ${String(reviewState.lib) === String(l.id)
+      ? 'selected' : ''}>${l.name}</option>`)).join('');
+
+  const scale = (CAT_SCALE || []).map(q =>
+    `<option value="${q.value}">${q.name} \u2014 ${q.detail}</option>`).join('');
+
+  document.getElementById('review-box').innerHTML = `
+    <div class="review-head">
+      <button onclick="closeReview()" style="float:right">Close</button>
+      <h3>${title}</h3>
+      <div class="sub">${sub} Showing all ${n} at once.</div>
+    </div>
+    <div class="review-controls">
+      <label style="font-size:12.5px;color:var(--muted)">Sort</label>
+      <select onchange="reviewState.sort=this.value;loadReview()">${sortOpts}</select>
+      <label style="font-size:12.5px;color:var(--muted)">Library</label>
+      <select onchange="reviewState.lib=this.value;loadReview()">${libOpts}</select>
+      <input type="text" class="queue-search" placeholder="Search by filename…"
+             value="${reviewState.q}" oninput="onReviewSearch(this.value)">
+      <span class="grow"></span>
+      <label style="display:flex;align-items:center;gap:7px;font-size:12.5px">
+        <input type="checkbox" ${n && sel === n ? 'checked' : ''}
+               onclick="selectAllReview(this.checked)"> select all ${n}
+      </label>
+    </div>
+    ${sel ? `<div class="review-actions">
+      <span style="font-size:12.5px">${sel} selected</span>
+      ${isBloated ? `<select id="review-quality">
+          <option value="">Pick a quality…</option>${scale}
+        </select>
+        <button onclick="reviewBatch('retranscode')">Convert again, smaller</button>
+        <button class="primary" onclick="reviewBatch('revert')">Keep smaller originals</button>
+        <button onclick="reviewBatch('accept')">Keep new anyway</button>` : ''}
+      ${canRetry && !isBloated ? `<button onclick="reviewBatch('retry')">Try again</button>` : ''}
+      <button onclick="reviewBatch('remove')">Remove from list</button>
+      <span class="grow"></span>
+      <button onclick="reviewState.sel.clear();renderReview()">Clear selection</button>
+    </div>` : ''}
+    <div class="review-list">${n
+      ? reviewState.jobs.map(reviewRow).join('')
+      : '<div class="stats-empty">Nothing here.</div>'}</div>`;
+
+  document.querySelectorAll('#review-box .review-item input[type=checkbox]').forEach(cb => {
+    cb.addEventListener('change', () => {
+      const id = Number(cb.dataset.id);
+      if (cb.checked) reviewState.sel.add(id); else reviewState.sel.delete(id);
+      renderReview();
+    });
+  });
+}
+
+function reviewRow(j) {
+  const name = j.path.split('/').pop();
+  const facts = [];
+  if (j.size_before) {
+    const before = fmtSize(j.size_before);
+    if (j.size_after) {
+      const ratio = j.size_after / j.size_before;
+      const pct = (1 - ratio) * 100;
+      facts.push(`${before} &rarr; ${fmtSize(j.size_after)}`);
+      facts.push(`<b>${ratio.toFixed(2)}&times;</b>`);
+      facts.push(pct >= 0
+        ? `<span class="saved">saved ${pct.toFixed(0)}%</span>`
+        : `<span class="grew">+${fmtSize(j.size_after - j.size_before)} bigger</span>`);
+    } else {
+      facts.push(before);
+    }
+  }
+  if (j.finished_at) facts.push(new Date(j.finished_at * 1000).toLocaleDateString());
+  const lib = ((window.__state || {}).libraries || []).find(l => l.id === j.library_id);
+  if (lib) facts.push(lib.name);
+
+  const acts = j.state === 'bloated'
+    ? `<button class="primary" onclick="revertJob(${j.id});setTimeout(loadReview,300)">Keep original</button>
+       <button onclick="acceptJob(${j.id});setTimeout(loadReview,300)">Keep new</button>`
+    : ['failed', 'ignored'].includes(j.state)
+    ? `<button onclick="retryJob(${j.id});setTimeout(loadReview,300)">Try again</button>`
+    : '';
+
+  return `<div class="review-item">
+    <input type="checkbox" data-id="${j.id}" ${reviewState.sel.has(j.id) ? 'checked' : ''}>
+    <div class="body">
+      <div class="nm" title="${j.path}">${name}</div>
+      <div class="facts">${facts.join('<span style="opacity:.4">·</span>')}</div>
+      ${j.error ? `<div class="drill-meta" style="color:var(--fault)">${j.error}</div>` : ''}
+    </div>
+    <div class="acts">${acts}
+      <button onclick="removeJob(${j.id});setTimeout(loadReview,300)">Remove</button>
+    </div>
+  </div>`;
+}
+
+function onReviewSearch(value) {
+  clearTimeout(reviewSearchTimer);
+  reviewSearchTimer = setTimeout(() => {
+    reviewState.q = value.trim();
+    loadReview();
+  }, 250);
+}
+
+function selectAllReview(checked) {
+  reviewState.sel = checked ? new Set(reviewState.jobs.map(j => j.id)) : new Set();
+  renderReview();
+}
+
+async function reviewBatch(action) {
+  const ids = [...reviewState.sel];
+  if (!ids.length) return;
+
+  if (action === 'retranscode') {
+    const quality = +(document.getElementById('review-quality') || {}).value;
+    if (!quality) return alert('Pick a quality first.');
+    const r = await (await fetch('/api/jobs/bloated/bulk-retranscode', {method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({job_ids: ids, quality})})).json();
+    if (r.failed && r.failed.length) {
+      alert(`${r.queued} queued. ${r.failed.length} couldn't be: `
+          + r.failed.map(f => `#${f.id} (${f.reason})`).join('; '));
+    }
+  } else if (action === 'revert') {
+    if (!confirm(`Throw away the larger converted file for ${ids.length} selected `
+                + 'item(s) and put the smaller originals back?')) return;
+    const r = await (await fetch('/api/jobs/bloated/bulk-revert', {method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({job_ids: ids})})).json();
+    if (r.failed && r.failed.length) {
+      alert(`${r.reverted} restored. ${r.failed.length} couldn't be: `
+          + r.failed.map(f => `#${f.id} (${f.reason})`).join('; '));
+    }
+  } else if (action === 'accept') {
+    if (!confirm(`Keep all ${ids.length} selected file(s) even though they got bigger?`)) return;
+    await fetch('/api/jobs/bloated/bulk-accept', {method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({job_ids: ids})});
+  } else if (action === 'retry') {
+    for (const id of ids) await fetch(`/api/jobs/${id}/retry`, {method: 'POST'});
+  } else if (action === 'remove') {
+    if (!confirm(`Remove ${ids.length} entr${ids.length === 1 ? 'y' : 'ies'} from this list? `
+                + 'Video files are not touched.')) return;
+    for (const id of ids) await fetch(`/api/jobs/${id}`, {method: 'DELETE'});
+  }
+  reviewState.sel.clear();
+  loadReview();
 }
 
 const fmtSize = b => !b ? '0 MB'
@@ -1355,6 +1616,12 @@ async function acceptJob(jobId) {
   if (await callJob(jobId, 'accept')) loadView();
 }
 
+async function revertJob(jobId) {
+  if (!confirm('Throw away the larger converted file and put the smaller '
+             + 'original back? Only works if this library archived originals.')) return;
+  if (await callJob(jobId, 'revert')) loadView();
+}
+
 function renderPager(meta) {
   const el = document.getElementById('pager');
   if (!meta) { el.innerHTML = ''; return; }
@@ -1366,6 +1633,11 @@ function renderPager(meta) {
     : (view.name === 'done' || view.name === 'removed')
     ? `<button onclick="bulkJobs('clear')">Clear history</button>` : '';
 
+  // Any history view is worth opening full-screen — that's where sorting
+  // and seeing everything at once actually matters.
+  const reviewBtn = view.name === 'active' ? ''
+    : `<button class="primary" onclick="openReview('${view.name}')">Review all ${meta.total}</button>`;
+
   el.innerHTML = `
     <span class="where">${meta.total ? `${first}–${last} of ${meta.total}` : '0'}</span>
     <select onchange="view.perPage=parseInt(this.value);view.page=1;loadView()">
@@ -1375,6 +1647,7 @@ function renderPager(meta) {
     </select>
     <button onclick="view.page--;loadView()" ${meta.page <= 1 ? 'disabled' : ''}>Back</button>
     <button onclick="view.page++;loadView()" ${meta.page >= meta.pages ? 'disabled' : ''}>Next</button>
+    ${reviewBtn}
     <span class="grow"></span>${bulk}`;
 }
 
@@ -1746,6 +2019,8 @@ function blankDraft() {
     downmix:'', normalise_loudness:false,
     original_action:'archive', originals_path:'',
     min_saving_percent:'', auto_retry:true, salvage_when_stuck:true,
+    auto_measure_loudness:true, auto_level_loudness:true,
+    loudness_range_threshold:15,
     on_unhealthy_video:'ignore', arr_kind:'radarr', arr_url:'',
     arr_api_key:'', arr_path_from:'', arr_path_to:'',
     auto_retry_steps:['small','smaller'], auto_retry_custom:'',
@@ -3122,6 +3397,31 @@ async function drawStep() {
         Nothing to choose here.</em>
 
       <div style="font-size:13px;font-weight:600;margin:20px 0 3px">
+        Audio that's all over the place</div>
+      <em style="display:block;font-style:normal;font-size:12px;color:var(--muted);
+        margin-bottom:9px;line-height:1.5">The "quiet dialogue, deafening
+        explosions" problem. Measuring means decoding each file's audio, so
+        it's real work — it trickles through in the background using spare
+        capacity, never ahead of an actual conversion.</em>
+      <div class="toggle ${draft.auto_measure_loudness ? 'on' : ''}"
+           onclick="draft.auto_measure_loudness=!draft.auto_measure_loudness;drawStep()">
+        <div class="sw"></div>
+        <div><div class="tt">Measure loudness on its own, in the background</div>
+          <div class="td">New files get checked automatically instead of
+            waiting for you to run a scan by hand.</div></div>
+      </div>
+      ${draft.auto_measure_loudness ? `
+      <div class="toggle ${draft.auto_level_loudness ? 'on' : ''}"
+           onclick="draft.auto_level_loudness=!draft.auto_level_loudness;drawStep()">
+        <div class="sw"></div>
+        <div><div class="tt">And fix the bad ones without asking</div>
+          <div class="td">Anything measuring wider than
+            ${draft.loudness_range_threshold} LU gets levelled straight away.
+            With this off, they're listed under Library Health for you to
+            pick through yourself.</div></div>
+      </div>` : ''}
+
+      <div style="font-size:13px;font-weight:600;margin:20px 0 3px">
         The video itself won't decode</div>
       <em style="display:block;font-style:normal;font-size:12px;color:var(--muted);
         margin-bottom:9px;line-height:1.5">This is different — no retry or
@@ -3418,6 +3718,9 @@ async function saveLibrary() {
       downmix: draft.downmix, normalise_loudness: draft.normalise_loudness,
       min_saving_percent: draft.min_saving_percent,
       salvage_when_stuck: draft.salvage_when_stuck,
+      auto_measure_loudness: draft.auto_measure_loudness,
+      auto_level_loudness: draft.auto_level_loudness,
+      loudness_range_threshold: draft.loudness_range_threshold,
       auto_retry: draft.auto_retry,
       auto_retry_steps: draft.auto_retry_steps,
       auto_retry_custom: draft.auto_retry_custom,

@@ -85,6 +85,7 @@ async def startup():
     asyncio.create_task(reaper())
     asyncio.create_task(watch_loop())
     asyncio.create_task(originals_loop())
+    asyncio.create_task(loudness_loop())
 
 
 async def reaper():
@@ -148,6 +149,43 @@ async def watch_loop():
             print(f"watcher: {exc}")
         interval = db.get_settings().get("scan_seconds") or watcher.SCAN_SECONDS
         await asyncio.sleep(max(10, int(interval)))
+
+
+async def loudness_loop():
+    """Keep loudness measurements topped up on their own.
+
+    Without this, a library only ever gets measured when someone
+    remembers to press the button — which means new files silently never
+    get checked. Runs a small batch at a time rather than queueing an
+    entire library at once: the point is to trickle through in the
+    background using whatever capacity is spare, not to bury real
+    conversions under thousands of measurement jobs.
+    """
+    BATCH = 25
+    while True:
+        await asyncio.sleep(900)
+        try:
+            libraries = [l for l in db.list_libraries()
+                        if (l.get("profile") or {}).get("auto_measure_loudness")]
+            if not libraries:
+                continue
+            # Don't pile more on if a backlog is already working through.
+            pending = [j for j in db.list_jobs(states=list(db.ACTIVE_STATES), limit=500)
+                      if (j.get("spec") or {}).get("measure") == "loudness"]
+            if len(pending) >= BATCH:
+                continue
+            targets = await asyncio.to_thread(_find_unmeasured, libraries)
+            queued = 0
+            for lib, path in targets:
+                if queued >= BATCH:
+                    break
+                if db.enqueue(str(path), {"measure": "loudness"}, None, lib["id"]):
+                    queued += 1
+            if queued:
+                print(f"loudness: queued {queued} file(s) for measurement")
+                await broadcast()
+        except Exception as exc:   # a loop crash must not take the server down
+            print(f"loudness loop: {exc}")
 
 
 async def originals_loop():
@@ -694,10 +732,52 @@ async def fail(job_id: int, req: Request):
     # audio alone" attempt, and it didn't work, so there's nothing left to
     # try automatically.
     already_left_alone = bool(body.get("audio_related")) and spec.get("audio") == "copy"
-    state = "ignored" if already_left_alone else "failed"
-    db.update_job(job_id, state=state, error=error, finished_at=time.time())
+    if already_left_alone:
+        db.update_job(job_id, state="ignored", error=error, finished_at=time.time())
+        await broadcast()
+        return {"ok": True}
+
+    # Not a known-permanent problem, so it might just have been a bad
+    # moment — a worker restarting mid-encode, a share dropping out, a
+    # transient FFmpeg hiccup. Those resolve on their own and shouldn't
+    # need a person to notice and press a button. A genuinely broken
+    # file will burn through its attempts quickly and land in Failed
+    # with the reason intact either way, so this costs nothing but a
+    # little wasted work in the bad case.
+    if job and not spec.get("measure"):
+        attempt = int(job.get("attempt") or 1)
+        if attempt < AUTO_RETRY_ATTEMPTS:
+            retried = await auto_retry_failed(job, error, attempt)
+            if retried:
+                return retried
+
+    db.update_job(job_id, state="failed", error=error, finished_at=time.time())
     await broadcast()
     return {"ok": True}
+
+
+# How many times a failure is retried before it's treated as real and
+# parked in Failed. Deliberately small: this exists to absorb transient
+# problems, not to grind away at a file that is genuinely broken.
+AUTO_RETRY_ATTEMPTS = 3
+
+
+async def auto_retry_failed(job, error, attempt):
+    """Re-queue a failed job unchanged, up to AUTO_RETRY_ATTEMPTS times."""
+    # The old row has to leave the active set before the replacement can
+    # be enqueued — the database won't allow two active rows for one
+    # path, and doing this the other way round silently fails (the same
+    # trap handle_audio_fail fell into).
+    db.update_job(job["id"], state="cancelled")
+    new_id = db.enqueue(job["path"], job.get("spec") or {}, job.get("size_before"),
+                        job.get("library_id"), attempt=attempt + 1)
+    if not new_id:
+        db.update_job(job["id"], state="running")   # put it back for normal handling
+        return None
+    db.delete_job(job["id"])
+    db.update_job(new_id, error=f"Attempt {attempt} failed, retrying: {error}"[:400])
+    await broadcast()
+    return {"ok": True, "auto_retrying": attempt + 1}
 
 
 async def handle_unhealthy_video(job, error):
@@ -800,6 +880,25 @@ async def remove_job(job_id: int):
     db.delete_job(job_id)
     await broadcast()
     return {"ok": True}
+
+
+@app.get("/api/jobs/all")
+async def list_jobs_all(view: str = "bloated", library_id: int = None,
+                        q: str = None, sort: str = "growth"):
+    """A whole view at once, unpaginated, for the full-screen review window.
+
+    Paging through 20 at a time is the wrong shape for triage — deciding
+    what to do about files that got bigger means comparing them against
+    each other, which needs them all on screen and sortable. Capped high
+    rather than unlimited so a pathological queue can't build a response
+    big enough to stall the server.
+    """
+    states = db.VIEWS.get(view)
+    if not states:
+        raise HTTPException(400, f"Unknown view: {view}")
+    q = (q or "").strip() or None
+    jobs = db.list_jobs(list(states), 5000, 0, library_id, q, sort)
+    return {"view": view, "sort": sort, "total": len(jobs), "jobs": jobs}
 
 
 @app.get("/api/jobs/{job_id}/retry-options")
@@ -964,6 +1063,59 @@ async def accept_job(job_id: int):
                   outcome=(job.get("outcome") or "") + " — kept anyway")
     await broadcast()
     return {"ok": True}
+
+
+@app.post("/api/jobs/{job_id}/revert")
+async def revert_job(job_id: int):
+    """Throw away the bigger conversion and put the original back.
+
+    The other half of "keep it anyway" — when a conversion came out
+    larger, the sensible default is usually to keep whichever file is
+    actually smaller, and that's the source. Only possible when the
+    library archived the original; with 'delete' or 'keep' there's
+    nothing to restore from, so this says so plainly rather than
+    silently doing nothing.
+    """
+    ok, message = await _revert_one(job_id)
+    if not ok:
+        raise HTTPException(400, message)
+    await broadcast()
+    return {"ok": True, "message": message}
+
+
+async def _revert_one(job_id):
+    """Shared by the single-job and batch revert endpoints."""
+    job = db.get_job(job_id)
+    if not job:
+        return False, "No such job."
+    library = db.get_library(job["library_id"]) if job.get("library_id") else None
+    ok, message = await asyncio.to_thread(watcher.restore_original, job, library)
+    if not ok:
+        return False, f"Can't put the original back: {message}."
+    # The original is what's on disk now, so the lifetime totals should
+    # reflect no change rather than a saving that got undone.
+    db.update_job(job_id, state="done", size_after=job.get("size_before"),
+                  final_path=job.get("path"), finished_at=time.time(),
+                  outcome="Conversion came out bigger — original kept instead")
+    return True, "Original restored."
+
+
+@app.post("/api/jobs/bloated/bulk-revert")
+async def bulk_revert(req: Request):
+    """Put the originals back for a whole batch at once."""
+    body = await req.json()
+    job_ids = body.get("job_ids") or []
+    if not job_ids:
+        raise HTTPException(400, "No jobs selected.")
+    reverted, failed = 0, []
+    for job_id in job_ids:
+        ok, message = await _revert_one(job_id)
+        if ok:
+            reverted += 1
+        else:
+            failed.append({"id": job_id, "reason": message})
+    await broadcast()
+    return {"reverted": reverted, "failed": failed}
 
 
 @app.post("/api/jobs/bulk")
@@ -1205,6 +1357,24 @@ async def job_measured(job_id: int, req: Request):
               f"range {loudness.get('range', '?')} LU")
     db.update_job(job_id, state="done", progress=100,
                   outcome=f"Measured: {summary}", finished_at=time.time())
+
+    # A wide loudness range is the "constantly reaching for the volume"
+    # case, and it's the only thing this measurement is really for — so
+    # when the library asks for it, queue the fix straight away rather
+    # than parking a to-do item for someone to come back and approve.
+    library = db.get_library(job["library_id"]) if job.get("library_id") else None
+    profile = (library or {}).get("profile") or {}
+    threshold = float(profile.get("loudness_range_threshold") or 15)
+    lra = loudness.get("range")
+    if (profile.get("auto_level_loudness") and library
+            and isinstance(lra, (int, float)) and lra >= threshold):
+        spec = {**profiles.resolve(profile),
+                "normalise_loudness": True, "auto_levelled": True}
+        new_id = db.enqueue(job["path"], spec, (cached or {}).get("size"),
+                            library["id"])
+        if new_id:
+            db.update_job(job_id, outcome=f"Measured: {summary} — queued for leveling")
+
     await broadcast()
     return {"ok": True}
 

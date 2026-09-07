@@ -266,7 +266,8 @@ VIEWS = {
 }
 
 
-def list_jobs(states=None, limit=200, offset=0, library_id=None, q=None):
+def list_jobs(states=None, limit=200, offset=0, library_id=None, q=None,
+              sort=None):
     query = "SELECT * FROM jobs"
     clauses, params = [], []
     if states:
@@ -282,10 +283,26 @@ def list_jobs(states=None, limit=200, offset=0, library_id=None, q=None):
         params.append(f"%{q}%")
     if clauses:
         query += " WHERE " + " AND ".join(clauses)
-    # Active work reads best oldest-first (that's the running order);
-    # history reads best newest-first.
-    ascending = states and set(states) <= set(ACTIVE_STATES)
-    query += " ORDER BY id ASC" if ascending else " ORDER BY id DESC"
+
+    # Whitelisted rather than interpolated, since this lands directly in
+    # SQL. "growth" is how much bigger the result got than the source —
+    # the thing you'd actually triage the Got Bigger list by, and not a
+    # stored column, so it's computed here.
+    SORTS = {
+        "newest": "id DESC",
+        "oldest": "id ASC",
+        "largest": "size_before DESC",
+        "smallest": "size_before ASC",
+        "growth": "(COALESCE(size_after,0) - COALESCE(size_before,0)) DESC",
+        "name": "path ASC",
+    }
+    if sort in SORTS:
+        query += f" ORDER BY {SORTS[sort]}"
+    else:
+        # Active work reads best oldest-first (that's the running order);
+        # history reads best newest-first.
+        ascending = states and set(states) <= set(ACTIVE_STATES)
+        query += " ORDER BY id ASC" if ascending else " ORDER BY id DESC"
     query += " LIMIT ? OFFSET ?"
     params.extend([limit, offset])
     with connect() as conn:
