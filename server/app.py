@@ -1084,16 +1084,36 @@ async def revert_job(job_id: int):
 
 
 async def _revert_one(job_id):
-    """Shared by the single-job and batch revert endpoints."""
+    """Shared by the single-job and batch revert endpoints.
+
+    Usually there's nothing to move: handle_bloated() already restores
+    the original the moment a conversion comes out bigger, well before
+    the job reaches the Got Bigger list. So the common case here is
+    confirming that's already happened and closing the entry, not
+    performing a restore. An actual restore only runs for the minority
+    of jobs where that automatic one failed and the larger file was
+    kept instead.
+    """
     job = db.get_job(job_id)
     if not job:
         return False, "No such job."
     library = db.get_library(job["library_id"]) if job.get("library_id") else None
+
+    # Already restored automatically? Then the original is what's on disk
+    # and this is just an acknowledgement.
+    source = Path(job["path"])
+    already_back = source.is_file() and (
+        job.get("size_before") is None
+        or abs(source.stat().st_size - (job.get("size_before") or 0)) < 1024)
+    if already_back:
+        db.update_job(job_id, state="done", size_after=job.get("size_before"),
+                      final_path=job.get("path"), finished_at=time.time(),
+                      outcome="Conversion wasn't worth keeping — original in place")
+        return True, "Original was already back in place."
+
     ok, message = await asyncio.to_thread(watcher.restore_original, job, library)
     if not ok:
         return False, f"Can't put the original back: {message}."
-    # The original is what's on disk now, so the lifetime totals should
-    # reflect no change rather than a saving that got undone.
     db.update_job(job_id, state="done", size_after=job.get("size_before"),
                   final_path=job.get("path"), finished_at=time.time(),
                   outcome="Conversion came out bigger — original kept instead")

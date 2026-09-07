@@ -1236,7 +1236,7 @@ function renderJobs(jobs, meta) {
       : j.state === 'removed'
       ? `<button onclick="removeJob(${j.id})">Clear</button>`
       : j.state === 'bloated'
-      ? `<button class="primary" onclick="revertJob(${j.id})">Keep the smaller original</button>
+      ? `<button class="primary" onclick="revertJob(${j.id})">Settle: keep original</button>
          <button onclick="acceptJob(${j.id})">Keep it anyway</button>
          <button onclick="removeJob(${j.id})">Remove</button>`
       : j.state === 'done'
@@ -1303,7 +1303,7 @@ function renderBatchBar(jobs) {
         <option value="">Pick a quality\u2026</option>${scale}
       </select>
       <button onclick="doBatchRetranscode()">Convert selected again, smaller</button>
-      <button class="primary" onclick="doBatchRevert()">Keep smaller originals</button>
+      <button class="primary" onclick="doBatchRevert()">Settle: keep originals</button>
       <button onclick="doBatchAccept()">Keep selected anyway</button>
       <span class="grow"></span>
       <button onclick="selectedBloated.clear();renderBatchBar(currentBloatedJobs)">Clear selection</button>
@@ -1343,13 +1343,15 @@ async function doBatchAccept() {
 
 async function doBatchRevert() {
   const ids = [...selectedBloated];
-  if (!confirm(`Throw away the larger converted file for ${ids.length} selected `
-             + 'file(s) and put the smaller originals back?')) return;
+  if (!confirm(`Settle ${ids.length} selected entr${ids.length === 1 ? 'y' : 'ies'} as `
+             + '"keeping the original"? Forge already restores the original '
+             + 'automatically when a conversion grows, so this usually just '
+             + 'closes them out.')) return;
   const r = await (await fetch('/api/jobs/bloated/bulk-revert', {method:'POST',
     headers:{'Content-Type':'application/json'},
     body: JSON.stringify({job_ids: ids})})).json();
   if (r.failed && r.failed.length) {
-    alert(`${r.reverted} restored. ${r.failed.length} couldn't be: `
+    alert(`${r.reverted} settled. ${r.failed.length} couldn't be: `
         + r.failed.map(f => `#${f.id} (${f.reason})`).join('; '));
   }
   selectedBloated.clear();
@@ -1450,7 +1452,7 @@ function renderReview() {
           <option value="">Pick a quality…</option>${scale}
         </select>
         <button onclick="reviewBatch('retranscode')">Convert again, smaller</button>
-        <button class="primary" onclick="reviewBatch('revert')">Keep smaller originals</button>
+        <button class="primary" onclick="reviewBatch('revert')">Settle: keep originals</button>
         <button onclick="reviewBatch('accept')">Keep new anyway</button>` : ''}
       ${canRetry && !isBloated ? `<button onclick="reviewBatch('retry')">Try again</button>` : ''}
       <button onclick="reviewBatch('remove')">Remove from list</button>
@@ -1492,7 +1494,7 @@ function reviewRow(j) {
   if (lib) facts.push(lib.name);
 
   const acts = j.state === 'bloated'
-    ? `<button class="primary" onclick="revertJob(${j.id});setTimeout(loadReview,300)">Keep original</button>
+    ? `<button class="primary" onclick="revertJob(${j.id});setTimeout(loadReview,300)">Settle</button>
        <button onclick="acceptJob(${j.id});setTimeout(loadReview,300)">Keep new</button>`
     : ['failed', 'ignored'].includes(j.state)
     ? `<button onclick="retryJob(${j.id});setTimeout(loadReview,300)">Try again</button>`
@@ -1539,13 +1541,15 @@ async function reviewBatch(action) {
           + r.failed.map(f => `#${f.id} (${f.reason})`).join('; '));
     }
   } else if (action === 'revert') {
-    if (!confirm(`Throw away the larger converted file for ${ids.length} selected `
-                + 'item(s) and put the smaller originals back?')) return;
+    if (!confirm(`Settle ${ids.length} selected entr${ids.length === 1 ? 'y' : 'ies'} as `
+                + '"keeping the original"? Forge already restores the original '
+                + 'automatically when a conversion grows, so this usually just '
+                + 'closes them out.')) return;
     const r = await (await fetch('/api/jobs/bloated/bulk-revert', {method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({job_ids: ids})})).json();
     if (r.failed && r.failed.length) {
-      alert(`${r.reverted} restored. ${r.failed.length} couldn't be: `
+      alert(`${r.reverted} settled. ${r.failed.length} couldn't be: `
           + r.failed.map(f => `#${f.id} (${f.reason})`).join('; '));
     }
   } else if (action === 'accept') {
@@ -1617,8 +1621,10 @@ async function acceptJob(jobId) {
 }
 
 async function revertJob(jobId) {
-  if (!confirm('Throw away the larger converted file and put the smaller '
-             + 'original back? Only works if this library archived originals.')) return;
+  if (!confirm('Settle this entry as "keeping the original"? In most cases the '
+             + 'original is already back in place — Forge restores it '
+             + 'automatically when a conversion comes out bigger — so this '
+             + 'usually just closes the entry.')) return;
   if (await callJob(jobId, 'revert')) loadView();
 }
 
