@@ -1438,8 +1438,14 @@ async def job_measured(job_id: int, req: Request):
     lra = loudness.get("range")
     if (profile.get("auto_level_loudness") and library
             and isinstance(lra, (int, float)) and lra >= threshold):
-        spec = {**profiles.resolve(profile),
-                "normalise_loudness": True, "auto_levelled": True}
+        # Same isolated spec the manual path uses: loudness only.
+        spec = {
+            "level_only": True, "codec": "copy", "auto_levelled": True,
+            "container": Path(job["path"]).suffix.lstrip(".").lower() or "mkv",
+            "loudness_target_i": float(profile.get("loudness_target_i") or -16),
+            "loudness_target_tp": float(profile.get("loudness_target_tp") or -1.5),
+            "loudness_target_lra": float(profile.get("loudness_target_lra") or 11),
+        }
         new_id = db.enqueue(job["path"], spec, (cached or {}).get("size"),
                             library["id"])
         if new_id:
@@ -1482,6 +1488,43 @@ async def stats_queue(req: Request):
     paths = body.get("paths") or []
     if not paths:
         raise HTTPException(400, "No files selected.")
+
+    # Leveling is deliberately not built on the library's conversion
+    # profile. It re-encodes audio because a filter demands it, and
+    # that's all — inheriting the profile meant "just fix the loudness"
+    # could also swap the codec, add a stereo companion and change the
+    # container, none of which was asked for.
+    if body.get("level_only"):
+        libraries = db.list_libraries()
+        library_for = db.library_matcher(libraries)
+        queued, skipped = 0, []
+        for path in paths:
+            lib = library_for(path)
+            if not lib:
+                skipped.append({"path": path,
+                                "reason": "not part of any configured library"})
+                continue
+            if not Path(path).is_file():
+                skipped.append({"path": path, "reason": "file no longer exists"})
+                continue
+            profile = lib.get("profile") or {}
+            spec = {
+                "level_only": True,
+                "codec": "copy",
+                "container": Path(path).suffix.lstrip(".").lower() or "mkv",
+                "loudness_target_i": float(profile.get("loudness_target_i") or -16),
+                "loudness_target_tp": float(profile.get("loudness_target_tp") or -1.5),
+                "loudness_target_lra": float(profile.get("loudness_target_lra") or 11),
+            }
+            cached = db.get_cached_file(path)
+            if db.enqueue(path, spec, (cached or {}).get("size"), lib["id"]):
+                queued += 1
+            else:
+                skipped.append({"path": path,
+                                "reason": "already queued or in progress"})
+        if queued:
+            await broadcast()
+        return {"queued": queued, "skipped": skipped}
 
     overrides = {}
     if body.get("convert_audio") and body.get("audio_codec"):

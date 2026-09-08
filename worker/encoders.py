@@ -414,6 +414,69 @@ def _cap_audio_bitrate(wanted, info, spec):
     capped = max(floor, min(want, ceiling))
     return f"{capped}k" if capped != want else wanted
 
+
+def build_level_command(src, dst, spec, info=None):
+    """Level loudness and change nothing else.
+
+    Built separately from build_command on purpose. Leveling has to
+    re-encode audio — a filter can't be applied to a copied stream — but
+    that's the only thing it should do: same codec, same channel count,
+    same bitrate, same container, same tracks, video copied. Routing it
+    through the normal path meant it inherited the library's own audio
+    target, so asking for "just fix the loudness" could re-encode 5.1
+    EAC3 into AAC, add a companion stereo track, and change the
+    container, all as side effects.
+    """
+    audio_streams = [st for st in (info or {}).get("streams", [])
+                     if st.get("codec_type") == "audio"]
+
+    cmd = ["ffmpeg", "-hide_banner", "-nostdin", "-y", "-i", str(src),
+           # Everything comes across untouched apart from the audio
+           # encoding below — including subtitles, chapters, attachments
+           # and every tag, since none of it is this job's business.
+           "-map", "0", "-c", "copy", "-map_metadata", "0", "-map_chapters", "0"]
+
+    target_i = spec.get("loudness_target_i", -16)
+    target_tp = spec.get("loudness_target_tp", -1.5)
+    target_lra = spec.get("loudness_target_lra", 11)
+    loudnorm = f"loudnorm=I={target_i}:TP={target_tp}:LRA={target_lra}"
+
+    if not audio_streams:
+        # Nothing to level; the copy above still produces a valid file.
+        return cmd + [str(dst)]
+
+    for position, stream in enumerate(audio_streams):
+        codec = stream.get("codec_name") or "aac"
+        # A few decoders have no matching encoder of the same name, and
+        # some formats can't be re-encoded at all. AAC is the safe
+        # landing place, and only for those.
+        if codec in NO_ENCODER_FOR:
+            codec = "aac"
+        cmd += [f"-c:a:{position}", codec]
+
+        channels = stream.get("channels")
+        if channels:
+            cmd += [f"-ac:a:{position}", str(channels)]
+
+        source_bits = stream.get("bit_rate")
+        if source_bits:
+            cmd += [f"-b:a:{position}", f"{int(int(source_bits) / 1000)}k"]
+        elif channels and channels > 2:
+            cmd += [f"-b:a:{position}", "640k"]
+
+        cmd += [f"-filter:a:{position}", loudnorm]
+
+    return cmd + [str(dst)]
+
+
+# Audio formats FFmpeg can read but not write, or shouldn't re-encode to
+# themselves. Levelling one of these has to land somewhere, and AAC is
+# the widely-playable choice.
+NO_ENCODER_FOR = {
+    "dts", "truehd", "mlp", "pcm_bluray", "pcm_dvd",
+    "atrac3", "cook", "sipr", "wmapro", "wmav1", "wmav2",
+}
+
 def build_command(src, dst, encoder, spec, info=None):
     """Turn an intent spec into an FFmpeg invocation for this encoder.
 
@@ -421,6 +484,9 @@ def build_command(src, dst, encoder, spec, info=None):
     final order. Without it this falls back to a simple map, which still
     works but can't reorder tracks or spot embedded cover art.
     """
+    if spec.get("level_only"):
+        return build_level_command(src, dst, spec, info)
+
     quality = int(spec.get("quality", 22))
     container = spec.get("container", "mkv")
     video_copy = spec.get("codec") == "copy" or encoder is None

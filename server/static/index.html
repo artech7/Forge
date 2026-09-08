@@ -2614,9 +2614,6 @@ function renderLoudnessList() {
   }
   const files = visibleLoudnessFiles();
   const wide = files.filter(f => (f.range || 0) >= LOUDNESS_RANGE_THRESHOLD);
-  const codecOpts = (CAT.audio || [])
-    .map(o => `<option value="${o.id}">${o.name}</option>`).join('');
-
   box.innerHTML = `
     <p class="lead">${currentLoudnessFiles.length} file${currentLoudnessFiles.length === 1 ? '' : 's'} measured
       ${loudnessSearch ? ` &middot; ${files.length} match${files.length === 1 ? '' : 'es'} your search` : ''}
@@ -2627,14 +2624,12 @@ function renderLoudnessList() {
         select all${loudnessSearch ? ' (matching your search)' : ''}
         <span id="loud-selcount">0 selected</span>
       </label>
-      <label class="drill-toggle">
-        Re-encode audio to
-        <select id="loud-audio-codec">
-          <option value="">this library's usual codec</option>
-          ${codecOpts}
-        </select>
-      </label>
-      <button class="primary" onclick="queueLoudnessSelected()">Queue selected for leveling</button>
+      <div style="font-size:12.5px;color:var(--muted);line-height:1.5">
+        Leveling only adjusts loudness. Codec, channels, bitrate, container
+        and every other track are left exactly as they are — audio codec
+        choices live on the library's Audio step.
+      </div>
+      <button class="primary" onclick="queueLoudnessSelected()">Level selected</button>
     </div>
     <div class="drill-list">${files.map(loudnessRow).join('')}</div>`;
 
@@ -2686,13 +2681,10 @@ function selectAllLoudness(checked) {
 
 async function queueLoudnessSelected() {
   if (!selectedLoudnessPaths.size) return alert('Select at least one file first.');
-  const body = {
-    paths: [...selectedLoudnessPaths],
-    convert_audio: true,
-    audio_codec: document.getElementById('loud-audio-codec').value,
-    convert_video: false,
-    normalise_loudness: true,
-  };
+  // level_only: loudness and nothing else. No codec change, no added
+  // tracks, no container change — see the endpoint for why that's built
+  // separately from the library's conversion profile.
+  const body = {paths: [...selectedLoudnessPaths], level_only: true};
   let r;
   try {
     r = await (await fetch('/api/stats/queue', {method: 'POST',
