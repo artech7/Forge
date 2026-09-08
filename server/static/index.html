@@ -337,10 +337,11 @@
   .review-item .acts button{padding:6px 11px;font-size:12px}
 
   /* file details popup */
-  .job .file .clickable,.review-item .nm.clickable{cursor:pointer;
+  .job .file .clickable,.review-item .nm.clickable,.drill-name .clickable{cursor:pointer;
       text-decoration:underline;text-decoration-color:transparent;
       transition:color .15s,text-decoration-color .15s}
-  .job .file .clickable:hover,.review-item .nm.clickable:hover{color:var(--signal);
+  .job .file .clickable:hover,.review-item .nm.clickable:hover,
+  .drill-name .clickable:hover{color:var(--signal);
       text-decoration-color:var(--signal)}
   .fi-grid{display:grid;grid-template-columns:auto 1fr;gap:6px 16px;
            font-size:13px;align-items:baseline}
@@ -1283,7 +1284,7 @@ function renderJobs(jobs, meta) {
         ? `<input class="select" type="checkbox" ${selectedBloated.has(j.id) ? 'checked' : ''}
             onclick="toggleBloatedSelect(${j.id},this.checked)">` : ''}<span
           class="clickable" title="Show file details"
-          onclick="openFileInfo(${JSON.stringify(j.path)})">${name}</span></div>
+          data-fileinfo="${attr(j.path)}">${name}</span></div>
       <div class="pct">${pct}</div>
       <div class="meta">${bits.filter(Boolean).join(' · ')}</div>
       ${sizes ? `<div class="sizes">${sizes}</div>` : ''}
@@ -1393,6 +1394,19 @@ async function doBatchRevert() {
   selectedBloated.clear();
   loadView();
 }
+
+// Paths contain quotes, ampersands and apostrophes. Building an inline
+// onclick out of one breaks the attribute, so the path rides in a data
+// attribute and a single delegated listener reads it back.
+function attr(text) {
+  return String(text).replace(/&/g, '&amp;').replace(/"/g, '&quot;')
+                     .replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+document.addEventListener('click', e => {
+  const el = e.target.closest('[data-fileinfo]');
+  if (el) { e.stopPropagation(); openFileInfo(el.dataset.fileinfo); }
+});
 
 // ----------------------------------------------------- file details
 // Reachable from any filename in the queue or the triage window.
@@ -1623,7 +1637,7 @@ function reviewRow(j) {
     <input type="checkbox" data-id="${j.id}" ${reviewState.sel.has(j.id) ? 'checked' : ''}>
     <div class="body">
       <div class="nm clickable" title="Show file details"
-           onclick="openFileInfo(${JSON.stringify(j.path)})">${name}</div>
+           data-fileinfo="${attr(j.path)}">${name}</div>
       <div class="facts">${facts.join('<span style="opacity:.4">·</span>')}</div>
       ${j.error ? `<div class="drill-meta" style="color:var(--fault)">${j.error}</div>` : ''}
     </div>
@@ -2640,7 +2654,8 @@ function loudnessRow(f) {
   return `<div class="drill-row with-checkbox">
     <input type="checkbox" data-path="${f.path}">
     <div class="drill-row-body">
-      <div class="drill-name">${f.name}${wide ? ' <span class="badge-wide">wide range</span>' : ''}</div>
+      <div class="drill-name"><span class="clickable" title="Show file details"
+        data-fileinfo="${attr(f.path)}">${f.name}</span>${wide ? ' <span class="badge-wide">wide range</span>' : ''}</div>
       <div class="drill-meta">${num(f.integrated)} LUFS &middot; range ${num(f.range)} LU
         &middot; peak ${num(f.true_peak)} dBTP</div>
       <div class="drill-path">${f.path}</div>
@@ -2996,7 +3011,8 @@ function drillRow(f, source) {
   return `<div class="drill-row with-checkbox">
     <input type="checkbox" data-path="${f.path}">
     <div class="drill-row-body">
-      <div class="drill-name">${f.name}</div>
+      <div class="drill-name"><span class="clickable" title="Show file details"
+        data-fileinfo="${attr(f.path)}">${f.name}</span></div>
       <div class="drill-meta">${bits}</div>
       ${audio ? `<div class="drill-meta">Audio: ${audio}</div>` : ''}
       ${subs ? `<div class="drill-meta">Subtitles: ${subs}</div>` : ''}
