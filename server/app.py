@@ -605,6 +605,8 @@ async def complete(job_id: int, result: UploadFile = File(None),
             try:
                 st = final.stat()
                 db.mark_processed(str(final), st.st_mtime, st.st_size, library["id"])
+                await asyncio.to_thread(refresh_cache_after_conversion,
+                                        final, job.get("path"))
             except OSError:
                 pass
         await broadcast()
@@ -626,10 +628,38 @@ async def complete(job_id: int, result: UploadFile = File(None),
         try:
             st = final.stat()
             db.mark_processed(str(final), st.st_mtime, st.st_size, library["id"])
+            await asyncio.to_thread(refresh_cache_after_conversion,
+                                    final, job.get("path"))
         except OSError:
             pass
     await broadcast()
     return {"ok": True, "path": str(final)}
+
+
+def refresh_cache_after_conversion(final, old_path=None):
+    """Re-probe a just-converted file and forget the version it replaced.
+
+    Marking a file processed used to be the only bookkeeping here, which
+    left the probe cache holding the file's *pre*-conversion codecs
+    forever — scans skip anything already processed, so nothing ever
+    corrected it. Everything built on that cache then disagreed with
+    reality: Stats charts showing codecs that had already been converted
+    away, and Standardize listing files as needing work that a fresh
+    probe immediately called fine.
+    """
+    try:
+        info = probe(str(final))
+        if info:
+            db.cache_probe(str(final), info)
+    except Exception as exc:
+        print(f"cache refresh: could not re-probe {final} ({exc})")
+    # A conversion that changed container or name leaves the old path
+    # behind in the cache, counted as a second file that no longer exists.
+    if old_path and str(old_path) != str(final):
+        try:
+            db.forget_cached_file(str(old_path))
+        except Exception:
+            pass
 
 
 async def handle_bloated(job, library, percent, reason):

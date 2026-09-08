@@ -2704,6 +2704,14 @@ function renderStandardize() {
   box.innerHTML = `
     <p class="lead">${files.length} file${files.length === 1 ? '' : 's'}
       don't match this library's settings</p>
+    <div class="note" style="margin:-8px 0 12px;color:var(--muted);font-size:12px;
+         line-height:1.5">
+      Judged from the last scan of each file. Anything converted before
+      Forge started re-reading files after conversion may still be listed
+      from its old details — those come back as "already matches this
+      library" when queued, which is harmless. A deep scan on the Stats tab
+      brings the records up to date.
+    </div>
     <div class="glass drill-convert">
       <label class="drill-selectall">
         <input type="checkbox" ${sel === files.length ? 'checked' : ''}

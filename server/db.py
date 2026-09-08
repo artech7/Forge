@@ -721,6 +721,12 @@ def purge_work_file_jobs():
         return cur.rowcount
 
 
+def forget_cached_file(path):
+    """Drop one probe-cache row, for a file that has been replaced."""
+    with connect() as conn:
+        conn.execute("DELETE FROM files WHERE path=?", (path,))
+
+
 def forget_missing_files(watch_path):
     """Drop probe-cache rows under watch_path whose file is gone.
 
