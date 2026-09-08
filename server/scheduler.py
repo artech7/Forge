@@ -91,16 +91,49 @@ def lease_job(node_id):
     if slots < 1 or active_job_count(node_id) >= slots:
         return None
 
-    # A measurement pass (loudness, and whatever else joins it later)
-    # exists to use capacity a real conversion would otherwise leave
-    # idle — it should never be able to sit in front of one. The queue
-    # is otherwise strictly oldest-first, so without this, queuing a big
-    # batch of checks would make every slot grab those first and leave
-    # real transcodes waiting behind the entire backlog: the opposite of
-    # "both happen at once."
+    # Housekeeping work exists to use capacity a real conversion would
+    # otherwise leave idle, and should never sit in front of one. The
+    # queue is otherwise strictly oldest-first, so without this a batch
+    # of loudness work would make every slot grab it first and leave
+    # real transcodes waiting behind the whole backlog.
+    #
+    # Both loudness passes count: measuring (which only reads) and
+    # levelling (which rewrites audio). Levelling is real encoding work,
+    # but it's still tidying an already-correct file — a file that hasn't
+    # been converted at all is the more useful thing to spend a slot on.
     queued = db.list_jobs(states=["queued"], limit=2000)
-    ordered = ([j for j in queued if not j["spec"].get("measure")]
-              + [j for j in queued if j["spec"].get("measure")])
+
+    def is_housekeeping(job):
+        spec = job["spec"] or {}
+        return bool(spec.get("measure") or spec.get("level_only"))
+
+    real_work = [j for j in queued if not is_housekeeping(j)]
+    housekeeping = [j for j in queued if is_housekeeping(j)]
+
+    # What this node has been set up to do at all.
+    role = node.get("role") or "both"
+    if role == "transcode":
+        housekeeping = []          # never does loudness work
+    elif role == "housekeeping":
+        real_work = []             # never does conversions
+
+    # For a node doing both, priority alone still lets housekeeping fill
+    # a second slot while a conversion runs in the first. Holding it back
+    # entirely until nothing real is queued or running anywhere makes it
+    # genuinely use only time nothing else wants.
+    #
+    # A node dedicated to housekeeping is exempt: waiting on conversions
+    # happening on other machines would leave it idle for no reason,
+    # which is the opposite of why someone would dedicate it.
+    if (housekeeping and role == "both"
+            and db.get_settings().get("housekeeping_when_idle", True)):
+        busy_elsewhere = real_work or [
+            j for j in db.list_jobs(states=["leased", "running"], limit=200)
+            if not is_housekeeping(j)]
+        if busy_elsewhere:
+            housekeeping = []
+
+    ordered = real_work + housekeeping
 
     for job in ordered:
         spec = job["spec"]

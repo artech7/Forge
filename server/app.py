@@ -474,6 +474,18 @@ async def set_slots(node_id: str, req: Request):
     return {"slots": value}
 
 
+@app.post("/api/nodes/{node_id}/role")
+async def set_node_role(node_id: str, req: Request):
+    """What kind of work this node takes on."""
+    body = await req.json()
+    try:
+        db.set_node_role(node_id, body.get("role", "both"))
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    await broadcast()
+    return {"role": body.get("role")}
+
+
 @app.post("/api/jobs/{job_id}/progress")
 async def progress(job_id: int, req: Request):
     body = await req.json()
@@ -1689,6 +1701,41 @@ async def lookup_test(req: Request):
     key = body.get("key") or (db.get_settings().get("tmdb") or {}).get("key")
     ok, message = await asyncio.to_thread(lookup.TMDB(key).test)
     return {"ok": ok, "message": message, "attribution": lookup.ATTRIBUTION}
+
+
+@app.post("/api/bazarr/test")
+async def bazarr_test(req: Request):
+    body = await req.json()
+    conf = db.get_settings().get("bazarr") or {}
+    url = body.get("url") or conf.get("url") or ""
+    key = body.get("api_key") or conf.get("api_key") or ""
+    if not url or not key:
+        return {"ok": False, "message": "Enter an address and API key first."}
+    ok, message = await asyncio.to_thread(arr.test_bazarr, url, key)
+    return {"ok": ok, "message": message}
+
+
+@app.post("/api/bazarr/search")
+async def bazarr_search(req: Request):
+    """Ask Bazarr to look for subtitles for the selected files."""
+    body = await req.json()
+    paths = body.get("paths") or []
+    if not paths:
+        raise HTTPException(400, "No files selected.")
+    conf = db.get_settings().get("bazarr") or {}
+    if not conf.get("url") or not conf.get("api_key"):
+        raise HTTPException(400, "Bazarr isn't connected yet — add it in Settings.")
+
+    asked, failed = 0, []
+    for path in paths:
+        ok, message = await asyncio.to_thread(
+            arr.search_subtitles, conf["url"], conf["api_key"], path,
+            conf.get("path_from", ""), conf.get("path_to", ""))
+        if ok:
+            asked += 1
+        else:
+            failed.append({"path": path, "reason": message})
+    return {"asked": asked, "failed": failed}
 
 
 @app.post("/api/arr/test")

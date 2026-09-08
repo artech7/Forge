@@ -24,7 +24,8 @@ CREATE TABLE IF NOT EXISTS nodes (
     benchmarks   TEXT NOT NULL DEFAULT '{}',
     benchmarks_10bit TEXT NOT NULL DEFAULT '{}',
     last_seen    REAL NOT NULL,
-    enabled      INTEGER NOT NULL DEFAULT 1
+    enabled      INTEGER NOT NULL DEFAULT 1,
+    role         TEXT NOT NULL DEFAULT 'both'   -- both|transcode|housekeeping
 );
 
 CREATE TABLE IF NOT EXISTS libraries (
@@ -616,6 +617,13 @@ def files_with_loudness(library_id=None):
     return measured
 
 
+def set_node_role(node_id, role):
+    if role not in ("both", "transcode", "housekeeping"):
+        raise ValueError("role must be both, transcode or housekeeping")
+    with connect() as conn:
+        conn.execute("UPDATE nodes SET role=? WHERE id=?", (role, node_id))
+
+
 def library_matcher(libraries):
     """A path -> library_id lookup, longest watch_path wins.
 
@@ -792,7 +800,8 @@ def migrate():
         "nodes": [("recipes", "TEXT NOT NULL DEFAULT '{}'"),
                   ("benchmarks", "TEXT NOT NULL DEFAULT '{}'"),
                   ("slots", "INTEGER"), ("cpus", "INTEGER"),
-                  ("benchmarks_10bit", "TEXT NOT NULL DEFAULT '{}'")],
+                  ("benchmarks_10bit", "TEXT NOT NULL DEFAULT '{}'"),
+                  ("role", "TEXT NOT NULL DEFAULT 'both'")],
         "files": [("video_bitrate", "INTEGER"), ("bit_depth", "INTEGER"),
                   ("detail", "TEXT")],
     }
@@ -898,6 +907,14 @@ def clear_pending(path):
 # --------------------------------------------------------------- settings
 
 DEFAULT_SETTINGS = {
+    # Loudness measuring and levelling only run when no real conversion
+    # is queued or running anywhere. Off means they merely go last,
+    # which still lets them fill a spare slot alongside a transcode.
+    "housekeeping_when_idle": True,
+    # Bazarr owns finding subtitles; Forge only points it at files whose
+    # tracks are missing. Stored globally rather than per library since
+    # one Bazarr instance normally covers everything.
+    "bazarr": {"url": "", "api_key": "", "path_from": "", "path_to": ""},
     "schedule": {
         "enabled": False,
         # Each window: days 0=Monday .. 6=Sunday, 24-hour clock.

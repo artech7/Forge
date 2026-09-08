@@ -360,6 +360,7 @@
             background:rgba(255,181,71,.08);border:1px solid rgba(255,181,71,.25)}
   .batchbar:empty{display:none;padding:0;margin:0;border:none}
   .job .select{margin-right:9px;vertical-align:middle}
+  select.node-role{width:100%;padding:7px 10px;font-size:12.5px;margin-top:5px}
   .pager .grow{flex:1}
   .grow{flex:1}
   .pager .where{font-family:'Chivo Mono',monospace;font-size:11.5px;
@@ -997,7 +998,37 @@ function slotControl(n) {
       <button onclick="setSlots('${n.id}',${slots + 1})"
         ${slots >= 16 ? 'disabled' : ''} aria-label="More at once">+</button>
     </div>
+    <div class="lbl" style="margin-top:10px">Takes on
+      <div class="tip">${NODE_ROLE_TIP[n.role || 'both']}</div></div>
+    <select class="node-role" onchange="setNodeRole('${n.id}',this.value)">
+      ${NODE_ROLES.map(([id, label]) =>
+        `<option value="${id}" ${(n.role || 'both') === id ? 'selected' : ''}>${label}</option>`
+      ).join('')}
+    </select>
   </div>`;
+}
+
+const NODE_ROLES = [
+  ['both', 'Anything'],
+  ['transcode', 'Conversions only'],
+  ['housekeeping', 'Audio loudness only'],
+];
+
+const NODE_ROLE_TIP = {
+  both: 'Conversions first; loudness work only when nothing else is waiting.',
+  transcode: 'Never picks up loudness measuring or levelling.',
+  housekeeping: 'Only loudness work, and it starts straight away rather than '
+              + 'waiting on conversions running elsewhere.',
+};
+
+async function setNodeRole(id, role) {
+  try {
+    await fetch(`/api/nodes/${id}/role`, {method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({role})});
+  } catch (e) {
+    alert('Could not reach the server.');
+  }
 }
 
 async function setSlots(id, value) {
@@ -2003,6 +2034,37 @@ function drawSettings() {
               color:var(--muted)"></span>
       </div>` : ''}
 
+    <h3 style="font-size:15px;margin:26px 0 4px">Bazarr</h3>
+    <div class="note" style="margin:0 0 12px;color:var(--muted);font-size:12.5px">
+      Optional. Library Health lists files with no subtitle track in your
+      preferred languages, but Forge can't find subtitles itself. Connect
+      Bazarr and that list gets a button to hand the search over to it.
+    </div>
+    <label class="fld"><span>Address</span>
+      <em>Wherever Bazarr's web page loads, without a trailing slash.</em>
+      <input type="text" value="${attr((SET.bazarr||{}).url || '')}"
+        placeholder="http://192.168.1.10:6767"
+        oninput="SET.bazarr=SET.bazarr||{};SET.bazarr.url=this.value"></label>
+    <label class="fld"><span>API key</span>
+      <em>Settings &rarr; General in Bazarr.</em>
+      <input type="text" value="${attr((SET.bazarr||{}).api_key || '')}"
+        oninput="SET.bazarr=SET.bazarr||{};SET.bazarr.api_key=this.value"></label>
+    <label class="fld"><span>Path mapping (only if needed)</span>
+      <em>Leave blank unless Bazarr sees your library at a different path
+          than Forge does — for example Forge at /media/Movies while
+          Bazarr sees /movies.</em>
+      <input type="text" value="${attr((SET.bazarr||{}).path_from || '')}"
+        placeholder="What Forge sees, e.g. /media/Movies" style="margin-bottom:8px"
+        oninput="SET.bazarr=SET.bazarr||{};SET.bazarr.path_from=this.value">
+      <input type="text" value="${attr((SET.bazarr||{}).path_to || '')}"
+        placeholder="What Bazarr sees, e.g. /movies"
+        oninput="SET.bazarr=SET.bazarr||{};SET.bazarr.path_to=this.value"></label>
+    <div class="actions" style="margin:-6px 0 16px">
+      <button onclick="testBazarr()">Test connection</button>
+      <span id="bazarrresult" style="align-self:center;font-size:12.5px;
+            color:var(--muted)"></span>
+    </div>
+
     <div class="toggle ${og.enabled ? 'on' : ''}" onclick="toggleOrig()"
          style="margin-top:22px">
       <div class="sw"></div>
@@ -2085,6 +2147,26 @@ function toggleTmdb() {
   SET.tmdb = SET.tmdb || {key:'', enabled:false};
   SET.tmdb.enabled = !SET.tmdb.enabled;
   drawSettings();
+}
+
+async function testBazarr() {
+  const out = document.getElementById('bazarrresult');
+  const conf = SET.bazarr || {};
+  if (!conf.url || !conf.api_key) {
+    out.textContent = 'Enter an address and API key first.';
+    out.style.color = 'var(--muted)'; return;
+  }
+  out.textContent = 'Testing…'; out.style.color = 'var(--muted)';
+  try {
+    const r = await (await fetch('/api/bazarr/test', {method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({url: conf.url, api_key: conf.api_key})})).json();
+    out.textContent = r.message || (r.ok ? 'Connected.' : 'Could not connect.');
+    out.style.color = r.ok ? 'var(--signal)' : 'var(--fault)';
+  } catch (e) {
+    out.textContent = 'Could not reach the server to test this.';
+    out.style.color = 'var(--fault)';
+  }
 }
 
 async function testTmdb() {
@@ -2988,10 +3070,41 @@ async function loadLanguageChecks() {
     return;
   }
   audioBox.innerHTML = languageSection('audio track', audioData.files || []);
-  subsBox.innerHTML = languageSection('subtitle track', subData.files || []);
+  subsBox.innerHTML = languageSection('subtitle track', subData.files || [], true);
+  missingSubFiles = (subData.files || []).map(f => f.path);
 }
 
-function languageSection(kindLabel, files) {
+let missingSubFiles = [];
+
+// Forge knows which files are missing which language; Bazarr knows how
+// to go and find subtitles. Handing the list over is the whole
+// integration — Forge never touches a subtitle file itself.
+async function askBazarr() {
+  if (!missingSubFiles.length) return;
+  if (!confirm(`Ask Bazarr to search for subtitles for all `
+             + `${missingSubFiles.length} of these files?`)) return;
+  const out = document.getElementById('bazarr-result');
+  out.textContent = 'Asking Bazarr…'; out.style.color = 'var(--muted)';
+  try {
+    const r = await fetch('/api/bazarr/search', {method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({paths: missingSubFiles})});
+    if (!r.ok) {
+      const d = (await r.json().catch(() => ({}))).detail || 'Bazarr refused that.';
+      out.textContent = d; out.style.color = 'var(--fault)';
+      return;
+    }
+    const data = await r.json();
+    out.textContent = `Asked Bazarr about ${data.asked} file(s).`
+      + (data.failed.length ? ` ${data.failed.length} it didn't recognise.` : '');
+    out.style.color = data.failed.length ? 'var(--amber)' : 'var(--signal)';
+  } catch (e) {
+    out.textContent = 'Could not reach the server.';
+    out.style.color = 'var(--fault)';
+  }
+}
+
+function languageSection(kindLabel, files, offerBazarr) {
   // The wanted languages come back with the results rather than being
   // assumed here, so a library set up for German or Japanese reads
   // correctly instead of everything being reported as "missing English".
@@ -3004,9 +3117,15 @@ function languageSection(kindLabel, files) {
       <div class="stats-empty" style="padding:6px 0 0">None missing.</div>
     </div>`;
   }
+  const bazarr = offerBazarr ? `
+    <div style="margin:2px 0 10px">
+      <button onclick="askBazarr()">Ask Bazarr to search for these</button>
+      <span id="bazarr-result" style="margin-left:10px;font-size:12.5px"></span>
+    </div>` : '';
   return `<div class="glass" style="padding:14px 16px">
     <div style="font-size:13px;font-weight:600;margin-bottom:8px">${title}
       <span style="color:var(--muted);font-weight:400">(${files.length})</span></div>
+    ${bazarr}
     <div class="drill-list" style="max-height:240px">
       ${files.map(f => `<div class="drill-row">
         <div class="drill-name">${f.name}</div>
