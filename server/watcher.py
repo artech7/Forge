@@ -30,12 +30,22 @@ def is_video(path: Path):
     return path.suffix.lower() in VIDEO_EXT and not path.name.startswith(".")
 
 
+# Forge's own work-in-progress output, written beside the source so the
+# final move stays on one filesystem. Never a candidate for conversion:
+# picking one up queues a job against a half-written file, which then
+# occupies a worker slot doing nothing useful and races the job that is
+# actually writing it.
+WORK_PREFIX = ".forge-"
+
+
 def walk_library(watch_path: str):
     root = Path(watch_path)
     if not root.is_dir():
         return
     for path in root.rglob("*"):
         if any(part.lower() in SKIP_DIRS for part in path.parts):
+            continue
+        if path.name.startswith(WORK_PREFIX) or ".forge-part" in path.name:
             continue
         if path.is_file() and is_video(path):
             yield path
@@ -219,6 +229,15 @@ def scan_library(library, probe_fn):
             if dropped:
                 print(f"scan: forgot {dropped} file(s) no longer on disk "
                       f"in {library['name']}")
+            # Scratch files from jobs that died hard, which can be many
+            # gigabytes each. Anything still being written by a live job
+            # is protected by both guards inside the sweep.
+            active = {j["id"] for j in db.list_jobs(
+                states=list(db.ACTIVE_STATES), limit=500)}
+            gone, freed = sweep_work_files(library["watch_path"], active)
+            if gone:
+                print(f"scan: removed {gone} leftover work file(s), "
+                      f"{freed // (1024*1024)} MB reclaimed")
     except OSError as exc:
         print(f"scan: could not check for missing files ({exc})")
     queued, waiting, skipped, filtered = 0, 0, 0, 0
@@ -403,6 +422,44 @@ def sweep_originals(settings):
 
     prune_empty_dirs()
     return {"deleted": deleted, "kept": kept, "freed": freed}
+
+
+def sweep_work_files(watch_path, active_job_ids, older_than=3600):
+    """Delete leftover scratch files from jobs that died hard.
+
+    The normal failure path removes its own scratch file, but a worker
+    killed mid-encode, a rebooted machine or a restarted container skips
+    that — leaving a partial file that can be many gigabytes. Guarded two
+    ways: the job id must not be running, and the file must be older than
+    an hour, so a job that is genuinely mid-write is never touched.
+    """
+    root = Path(watch_path)
+    if not root.is_dir():
+        return 0, 0
+    now = time.time()
+    removed, freed = 0, 0
+    for path in root.rglob(".forge-*"):
+        if not path.is_file():
+            continue
+        # ".forge-1234.mkv" -> 1234
+        stem = path.stem[len(WORK_PREFIX):]      # ".forge-1234" -> "1234"
+        try:
+            job_id = int(stem)
+        except ValueError:
+            job_id = None
+        if job_id is not None and job_id in active_job_ids:
+            continue
+        try:
+            stat = path.stat()
+            if now - stat.st_mtime < older_than:
+                continue
+            size = stat.st_size
+            path.unlink()
+        except OSError:
+            continue
+        removed += 1
+        freed += size
+    return removed, freed
 
 
 def prune_empty_dirs():

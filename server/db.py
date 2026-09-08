@@ -619,6 +619,20 @@ def set_file_detail(path, detail):
             (path, json.dumps(detail), time.time(), json.dumps(detail), time.time()))
 
 
+def purge_work_file_jobs():
+    """Drop jobs that were queued against Forge's own scratch files.
+
+    These only exist because the scanner used to pick up its own
+    in-progress output. Each one occupies a worker slot converting a
+    half-written file, so they're cleared out rather than left to run.
+    """
+    with connect() as conn:
+        cur = conn.execute(
+            "DELETE FROM jobs WHERE path LIKE '%/.forge-%' "
+            "OR path LIKE '%\\.forge-%' OR path LIKE '%.forge-part%'")
+        return cur.rowcount
+
+
 def forget_missing_files(watch_path):
     """Drop probe-cache rows under watch_path whose file is gone.
 

@@ -79,6 +79,11 @@ async def startup():
     app.state.module_problems = check_modules()
     db.init()
     db.migrate()
+    # Left over from when the scanner could pick up its own scratch
+    # files. Cleared at startup so they stop taking worker slots.
+    purged = db.purge_work_file_jobs()
+    if purged:
+        print(f"Removed {purged} job(s) queued against Forge's own scratch files.")
     repaired = db.repair_profiles()
     if repaired:
         print(f"Corrected {repaired} library profile(s) with missing settings.")
