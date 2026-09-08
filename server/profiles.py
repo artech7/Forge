@@ -346,6 +346,9 @@ def warnings_for(profile):
     if profile.get("normalise_loudness") and profile.get("audio_codec") == "copy":
         out.append("Evening out the volume means re-encoding the audio, so "
                    "'Leave audio alone' can't be used with it.")
+    if profile.get("downmix") == "stereo" and profile.get("add_stereo_track"):
+        out.append("Downmixing to stereo removes the surround track, so there "
+                   "is nothing left to add a stereo companion to. Pick one.")
     if profile.get("downmix") == "stereo":
         out.append("Downmixing to stereo removes surround sound permanently. "
                    "Good for phones and laptops, not for a home theatre.")
@@ -375,8 +378,15 @@ def resolve(profile):
         "tidy_track_names": profile.get("tidy_track_names", True),
         "min_saving_percent": float(profile.get("min_saving_percent") or 0),
         "salvage_when_stuck": profile.get("salvage_when_stuck", True),
+        "keep_existing_container": profile.get("keep_existing_container", False),
+        "loudness_target_i": float(profile.get("loudness_target_i") or -16),
+        "loudness_target_tp": float(profile.get("loudness_target_tp") or -1.5),
+        "loudness_target_lra": float(profile.get("loudness_target_lra") or 11),
         "clean_metadata": profile.get("clean_metadata", False),
         "downmix": profile.get("downmix"),
+        "add_stereo_track": profile.get("add_stereo_track", False),
+        "stereo_track_codec": profile.get("stereo_track_codec") or "aac",
+        "stereo_track_bitrate": profile.get("stereo_track_bitrate") or "160k",
         "normalise_loudness": profile.get("normalise_loudness", False),
         "default_first_subtitle": profile.get("default_first_subtitle", False),
         "quality": profile.get("crf_override") or crf,

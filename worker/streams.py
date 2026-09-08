@@ -285,13 +285,23 @@ def kept_tracks(info, spec):
     Shares plan_streams' logic deliberately: two implementations of "which
     tracks are kept" would drift, and titles would end up on wrong tracks.
     """
-    _maps, _disp, _notes, audios, subs = _plan(info, spec)
+    _maps, _disp, _notes, audios, subs, _stereo = _plan(info, spec)
     return audios, subs
 
 
 def plan_streams(info, spec):
-    maps, disp, notes, _a, _s = _plan(info, spec)
+    maps, disp, notes, _a, _s, _stereo = _plan(info, spec)
     return maps, disp, notes
+
+
+def stereo_companion_position(info, spec):
+    """Output index of the added stereo track, or None if there isn't one.
+
+    build_command needs this to encode that one track differently from
+    the rest — everything else can be copied while this one is downmixed.
+    """
+    _m, _d, _n, audios, _s, stereo = _plan(info, spec)
+    return len(audios) if stereo else None
 
 
 def _plan(info, spec):
@@ -418,15 +428,50 @@ def _plan(info, spec):
                          f"{'s' if len(unconvertible) > 1 else ''} FFmpeg can't "
                          "convert to MP4's mov_text format")
 
+    # ---- companion stereo track --------------------------------------
+    # A surround track that a client can't play gets downmixed on the fly
+    # by the media server, which means a live transcode for something
+    # that could have been prepared once. Carrying a stereo copy
+    # alongside the surround lets those clients direct-play instead —
+    # costs a little disk, saves the server doing the work on every play.
+    stereo_source = None
+    if spec.get("add_stereo_track"):
+        surround = [a for a in audios if (a.get("channels") or 0) > 2]
+        already_stereo = any((a.get("channels") or 0) <= 2 for a in audios)
+        if surround and not already_stereo:
+            stereo_source = surround[0]
+            notes.append(
+                f"adding a stereo version of the "
+                f"{stereo_source.get('channels')}-channel track so players "
+                "without surround don't have to downmix while streaming")
+        elif surround and already_stereo:
+            notes.append("stereo track already present — not adding another")
+
     # ---- build the map in final order --------------------------------
     map_args, codec_args = [], []
     for stream in keep + audios + kept_subs:
         map_args += ["-map", f"0:{stream['index']}"]
 
+    # The stereo companion is the same source stream mapped a second
+    # time, so it sits after the real audio tracks and before subtitles.
+    if stereo_source:
+        insert_at = len(keep) * 2 + len(audios) * 2   # each map is two args
+        map_args = (map_args[:insert_at]
+                    + ["-map", f"0:{stereo_source['index']}"]
+                    + map_args[insert_at:])
+
     # Default flags: first audio and first subtitle, nothing else.
     for position, _stream in enumerate(audios):
         codec_args += [f"-disposition:a:{position}",
                        "default" if position == 0 else "0"]
+    if stereo_source:
+        position = len(audios)
+        codec_args += [f"-disposition:a:{position}", "0"]
+        # Named so it's obvious which is which in a player's track list.
+        codec_args += [f"-metadata:s:a:{position}", "title=Stereo"]
+        lang = (stereo_source.get("tags") or {}).get("language")
+        if lang:
+            codec_args += [f"-metadata:s:a:{position}", f"language={lang}"]
     for position, stream in enumerate(kept_subs):
         flags = []
         if looks_forced(stream):
@@ -435,7 +480,7 @@ def _plan(info, spec):
             flags.append("default")
         codec_args += [f"-disposition:s:{position}", "+".join(flags) or "0"]
 
-    return map_args, codec_args, notes, audios, kept_subs
+    return map_args, codec_args, notes, audios, kept_subs, stereo_source
 
 
 # ------------------------------------------------------------ colour

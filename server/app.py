@@ -1270,9 +1270,12 @@ def _find_unmeasured(libraries):
 
 
 @app.get("/api/stats/language-check")
-async def stats_language_check(kind: str, language: str = "eng", library_id: int = None):
-    """Files with no audio or subtitle track in the given language —
-    read from the existing structural scan, computed instantly."""
+async def stats_language_check(kind: str, language: str = None, library_id: int = None):
+    """Files with no audio or subtitle track in a wanted language.
+
+    With no language given, each library is judged against the languages
+    it was configured to want, rather than one hardcoded choice.
+    """
     if kind not in ("audio", "subtitle"):
         raise HTTPException(400, "kind must be 'audio' or 'subtitle'")
     return {"files": db.files_missing_language(kind, language, library_id)}
@@ -1442,6 +1445,13 @@ async def stats_queue(req: Request):
         overrides["codec"] = body["video_codec"]
         if body.get("quality"):
             overrides["quality"] = int(body["quality"])
+    else:
+        # Not asked to touch the video, so don't. Without this the spec
+        # falls through to the library's own video codec and re-encodes
+        # the whole film to fix its audio — hours of work, and a
+        # generation of quality loss, for something that should be a
+        # stream copy taking minutes.
+        overrides["codec"] = "copy"
     if body.get("container"):
         overrides["container"] = body["container"]
     if body.get("normalise_loudness"):

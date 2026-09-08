@@ -456,8 +456,8 @@ def update_job(job_id, **fields):
                      (*fields.values(), job_id))
 
 
-def files_missing_language(kind, language, library_id=None):
-    """Files with no audio or subtitle track in the given language.
+def files_missing_language(kind, language=None, library_id=None):
+    """Files with no audio or subtitle track in a wanted language.
 
     Pulled straight from the same detail blob a regular scan already
     produces — this isn't a new measurement pass like loudness, so
@@ -465,22 +465,35 @@ def files_missing_language(kind, language, library_id=None):
     all. Purely informational: Forge can't manufacture a subtitle track
     that doesn't exist, so this is a report to act on yourself (Bazarr,
     a different release, etc.), not something with a "fix it" button.
+
+    With no language given, each library is judged against the languages
+    it was actually set up to want, rather than one hardcoded choice —
+    a library configured for German or Japanese should be reported on in
+    those terms, not told everything is "missing English".
     """
     if kind not in ("audio", "subtitle"):
         raise ValueError("kind must be 'audio' or 'subtitle'")
     key = "audio_tracks" if kind == "audio" else "subtitle_tracks"
-    language = language.lower()
+    profile_key = "audio_languages_list" if kind == "audio" else "subtitle_languages"
+    wanted_override = [language.lower()] if language else None
 
     with connect() as conn:
         libraries = [row_to_dict(r) for r in conn.execute(
-            "SELECT id, watch_path FROM libraries").fetchall()]
+            "SELECT id, watch_path, profile FROM libraries").fetchall()]
         rows = [dict(r) for r in conn.execute(
             "SELECT path, detail FROM files WHERE detail IS NOT NULL").fetchall()]
+
+    def wanted_for(lib):
+        if wanted_override:
+            return wanted_override
+        langs = ((lib or {}).get("profile") or {}).get(profile_key) or []
+        return [str(l).lower() for l in langs] or ["eng"]
 
     library_for = library_matcher(libraries)
     out = []
     for f in rows:
-        if library_id is not None and (library_for(f["path"]) or {}).get("id") != library_id:
+        lib = library_for(f["path"])
+        if library_id is not None and (lib or {}).get("id") != library_id:
             continue
         try:
             detail = json.loads(f.get("detail") or "{}")
@@ -490,9 +503,13 @@ def files_missing_language(kind, language, library_id=None):
             continue   # never scanned with the version that captures this
         tracks = detail.get(key) or []
         present = sorted({(t.get("language") or "").lower() for t in tracks} - {""})
-        if language not in present:
+        wanted = wanted_for(lib)
+        # Any one of the wanted languages being present is enough — a
+        # library that accepts English or Japanese isn't missing anything
+        # just because it only has one of them.
+        if not any(w in present for w in wanted):
             out.append({"path": f["path"], "name": Path(f["path"]).name,
-                       "languages_present": present})
+                       "languages_present": present, "wanted": wanted})
     out.sort(key=lambda f: f["name"].lower())
     return out
 

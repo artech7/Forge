@@ -468,7 +468,14 @@ def build_command(src, dst, encoder, spec, info=None):
         audio_filters.append("pan=stereo|FL=0.5*FC+0.707*FL+0.707*BL"
                              "|FR=0.5*FC+0.707*FR+0.707*BR")
     if spec.get("normalise_loudness"):
-        audio_filters.append("loudnorm=I=-16:TP=-1.5:LRA=11")
+        # Target comes from the library rather than a fixed value: -16
+        # LUFS suits streaming/desktop, broadcast work wants -23 (EBU
+        # R128), and other setups differ again.
+        audio_filters.append(
+            "loudnorm=I={}:TP={}:LRA={}".format(
+                spec.get("loudness_target_i", -16),
+                spec.get("loudness_target_tp", -1.5),
+                spec.get("loudness_target_lra", 11)))
 
     if audio == "copy" and not audio_filters:
         cmd += ["-c:a", "copy"]
@@ -484,6 +491,23 @@ def build_command(src, dst, encoder, spec, info=None):
         cmd += ["-b:a", bitrate or "160k"]
     if audio_filters:
         cmd += ["-af", ",".join(audio_filters)]
+
+    # The companion stereo track is the same source stream mapped twice,
+    # so it needs its own codec, channel count and downmix — the settings
+    # above apply to every audio output, and this one has to differ.
+    # Per-stream flags override the global ones for just that index.
+    stereo_at = streams.stereo_companion_position(info, spec) if info else None
+    if stereo_at is not None:
+        stereo_codec = spec.get("stereo_track_codec") or "aac"
+        cmd += [f"-c:a:{stereo_at}", stereo_codec,
+                f"-ac:a:{stereo_at}", "2",
+                f"-b:a:{stereo_at}", spec.get("stereo_track_bitrate") or "160k",
+                # Same dialogue-forward fold as the destructive downmix —
+                # a plain -ac 2 buries the centre channel, which is where
+                # the dialogue lives.
+                f"-filter:a:{stereo_at}",
+                "pan=stereo|FL=0.5*FC+0.707*FL+0.707*BL"
+                "|FR=0.5*FC+0.707*FR+0.707*BR"]
 
     # ---- subtitles ------------------------------------------------------
     if spec.get("subtitle_mode") == "strip" and not spec.get("keep_forced_subs"):

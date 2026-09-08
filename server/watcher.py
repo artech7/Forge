@@ -165,7 +165,18 @@ def plan_conversion(path, info, spec, filters):
                 or (bool(have_audio) and all(c == want_audio for c in have_audio)))
 
     want_container = spec.get("container", "mkv")
-    container_ok = path.suffix.lower().lstrip(".") == want_container.lower()
+    source_ext = path.suffix.lower().lstrip(".")
+    if spec.get("keep_existing_container") and source_ext:
+        # Honour whatever the file already is. Without this, a library
+        # already converted to one container gets every file rewritten
+        # just to change its wrapper — lossless, but a full read/write
+        # pass over thousands of files to change nothing you can see or
+        # hear. Applied here rather than only to the pure-remux branch so
+        # a file that does need work still comes out in its own container
+        # instead of quietly switching.
+        want_container = source_ext
+        adjusted["container"] = source_ext
+    container_ok = source_ext == want_container.lower()
 
     if video_ok:
         adjusted["codec"] = "copy"

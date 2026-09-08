@@ -2025,8 +2025,11 @@ function blankDraft() {
     downmix:'', normalise_loudness:false,
     original_action:'archive', originals_path:'',
     min_saving_percent:'', auto_retry:true, salvage_when_stuck:true,
+    add_stereo_track:false, stereo_track_codec:'aac', stereo_track_bitrate:'160k',
+    keep_existing_container:false,
     auto_measure_loudness:true, auto_level_loudness:true,
     loudness_range_threshold:15,
+    loudness_target_i:-16, loudness_target_tp:-1.5, loudness_target_lra:11,
     on_unhealthy_video:'ignore', arr_kind:'radarr', arr_url:'',
     arr_api_key:'', arr_path_from:'', arr_path_to:'',
     auto_retry_steps:['small','smaller'], auto_retry_custom:'',
@@ -2338,7 +2341,17 @@ let currentDrillFiles = [];   // last fetch, so select-all/queue don't need to r
 // Loudness range (LU) above which a file usually shows up as "turn it up
 // for dialogue, down for action." A judgment call, not a spec — the raw
 // numbers are always shown alongside it so it's never a hidden cutoff.
-const LOUDNESS_RANGE_THRESHOLD = 15;
+let LOUDNESS_RANGE_THRESHOLD = 15;
+
+// Follows whichever library is selected, so the "wide range" mark in the
+// list matches the threshold that library will actually act on rather
+// than one fixed number for everyone.
+function currentLoudnessThreshold() {
+  if (audioLibId === 'all') return 15;
+  const lib = ((window.__state || {}).libraries || [])
+    .find(l => String(l.id) === String(audioLibId));
+  return Number((lib && lib.profile && lib.profile.loudness_range_threshold) || 15);
+}
 
 let currentLoudnessFiles = [];
 let selectedLoudnessPaths = new Set();
@@ -2437,6 +2450,7 @@ async function loadLoudness() {
     box.innerHTML = '<div class="stats-empty">Could not load this.</div>';
     return;
   }
+  LOUDNESS_RANGE_THRESHOLD = currentLoudnessThreshold();
   currentLoudnessFiles = data.files || [];
   selectedLoudnessPaths.clear();
   loudnessSearch = '';
@@ -2576,8 +2590,10 @@ async function loadLanguageChecks() {
   subsBox.innerHTML = '';
 
   const scope = audioLibId === 'all' ? {} : {library_id: audioLibId};
-  const audioParams = new URLSearchParams({kind: 'audio', language: 'eng', ...scope});
-  const subParams = new URLSearchParams({kind: 'subtitle', language: 'eng', ...scope});
+  // No language forced — the server judges each library against the
+  // languages it was actually configured to want.
+  const audioParams = new URLSearchParams({kind: 'audio', ...scope});
+  const subParams = new URLSearchParams({kind: 'subtitle', ...scope});
 
   let audioData, subData;
   try {
@@ -2589,15 +2605,21 @@ async function loadLanguageChecks() {
     audioBox.innerHTML = '<div class="stats-empty">Could not load this.</div>';
     return;
   }
-  audioBox.innerHTML = languageSection('No English audio track', audioData.files || []);
-  subsBox.innerHTML = languageSection('No English subtitle track', subData.files || []);
+  audioBox.innerHTML = languageSection('audio track', audioData.files || []);
+  subsBox.innerHTML = languageSection('subtitle track', subData.files || []);
 }
 
-function languageSection(title, files) {
+function languageSection(kindLabel, files) {
+  // The wanted languages come back with the results rather than being
+  // assumed here, so a library set up for German or Japanese reads
+  // correctly instead of everything being reported as "missing English".
+  const wanted = (files[0] && files[0].wanted) || [];
+  const wantedText = wanted.length ? wanted.join(' or ') : 'a preferred language';
+  const title = `No ${wantedText} ${kindLabel}`;
   if (!files.length) {
     return `<div class="glass" style="padding:14px 16px">
-      <div style="font-size:13px;font-weight:600">${title}</div>
-      <div class="stats-empty" style="padding:6px 0 0">None found.</div>
+      <div style="font-size:13px;font-weight:600">Every file has a wanted ${kindLabel}</div>
+      <div class="stats-empty" style="padding:6px 0 0">None missing.</div>
     </div>`;
   }
   return `<div class="glass" style="padding:14px 16px">
@@ -2991,7 +3013,17 @@ async function drawStep() {
       <em style="display:block;font-style:normal;font-size:12px;color:var(--muted);
         margin-bottom:9px;line-height:1.5">The wrapper around the video — this is the
         file extension you'll see.</em>
-      ${opt(CAT.containers,'container')}</div>`;
+      ${opt(CAT.containers,'container')}
+      <div class="toggle ${draft.keep_existing_container ? 'on' : ''}"
+           onclick="draft.keep_existing_container=!draft.keep_existing_container;drawStep()">
+        <div class="sw"></div>
+        <div><div class="tt">Leave existing files in the container they're in</div>
+          <div class="td">For a library you've already converted. A file
+            that's otherwise correct won't be rewritten just to change its
+            wrapper — repackaging is lossless, but it still reads and
+            writes every byte, which is a lot of work to change nothing you
+            can see or hear. New files still get the type chosen above.</div></div>
+      </div></div>`;
     body = opt(CAT.video, 'video_codec') + q;
   }
 
@@ -3029,7 +3061,37 @@ async function drawStep() {
         <select onchange="setField('audio_bitrate',this.value)">
           ${a.bitrates.map(b => `<option ${draft.audio_bitrate===b?'selected':''}>${b}</option>`).join('')}
         </select></label>` : '';
-    body = opt(CAT.audio, 'audio_codec') + rates;
+    const stereoCodecs = (CAT.audio || [])
+      .filter(c => c.id !== 'copy')
+      .map(c => `<option value="${c.id}" ${draft.stereo_track_codec===c.id?'selected':''}>${c.name}</option>`)
+      .join('');
+    const companion = `
+      <div style="font-size:13px;font-weight:600;margin:22px 0 3px">
+        Players without surround</div>
+      <em style="display:block;font-style:normal;font-size:12px;color:var(--muted);
+        margin-bottom:9px;line-height:1.5">A phone or laptop that can't play a
+        5.1 or 7.1 track makes the media server fold it down live — a transcode
+        every time it's played. Carrying a stereo version alongside the surround
+        lets those players use it directly instead.</em>
+      <div class="toggle ${draft.add_stereo_track ? 'on' : ''}"
+           onclick="draft.add_stereo_track=!draft.add_stereo_track;drawStep()">
+        <div class="sw"></div>
+        <div><div class="tt">Add a stereo track next to the surround one</div>
+          <div class="td">The surround track is kept exactly as it is and stays
+            the default. Only files that have surround and no stereo already
+            get one added.</div></div>
+      </div>
+      ${draft.add_stereo_track ? `
+        <label class="fld"><span>Stereo track format</span>
+          <em>AAC is the safest for wide client support.</em>
+          <select onchange="draft.stereo_track_codec=this.value">${stereoCodecs}</select></label>
+        <label class="fld"><span>Stereo track quality</span>
+          <em>160k is plenty for a stereo compatibility track.</em>
+          <select onchange="draft.stereo_track_bitrate=this.value">
+            ${['96k','128k','160k','192k','256k'].map(b =>
+              `<option ${draft.stereo_track_bitrate===b?'selected':''}>${b}</option>`).join('')}
+          </select></label>` : ''}`;
+    body = opt(CAT.audio, 'audio_codec') + rates + companion;
   }
 
   if (step === 4) {
@@ -3417,6 +3479,20 @@ async function drawStep() {
             waiting for you to run a scan by hand.</div></div>
       </div>
       ${draft.auto_measure_loudness ? `
+      <label class="fld"><span>Count as "too wide" above</span>
+        <em>Loudness range, in LU. Lower catches more files. 15 suits most
+            home setups; a quiet room or good speakers can take more
+            variation, a TV in a busy room less.</em>
+        <input type="number" step="1" min="1" max="40"
+               value="${draft.loudness_range_threshold}"
+               oninput="draft.loudness_range_threshold=parseFloat(this.value)||15"></label>
+      <label class="fld"><span>Level everything to</span>
+        <em>Target loudness in LUFS. -16 suits streaming and most home
+            viewing; broadcast work uses -23 (EBU R128). Leave it alone
+            unless you have a reason.</em>
+        <input type="number" step="0.5" min="-31" max="-5"
+               value="${draft.loudness_target_i}"
+               oninput="draft.loudness_target_i=parseFloat(this.value)||-16"></label>
       <div class="toggle ${draft.auto_level_loudness ? 'on' : ''}"
            onclick="draft.auto_level_loudness=!draft.auto_level_loudness;drawStep()">
         <div class="sw"></div>
@@ -3724,9 +3800,16 @@ async function saveLibrary() {
       downmix: draft.downmix, normalise_loudness: draft.normalise_loudness,
       min_saving_percent: draft.min_saving_percent,
       salvage_when_stuck: draft.salvage_when_stuck,
+      add_stereo_track: draft.add_stereo_track,
+      stereo_track_codec: draft.stereo_track_codec,
+      stereo_track_bitrate: draft.stereo_track_bitrate,
+      keep_existing_container: draft.keep_existing_container,
       auto_measure_loudness: draft.auto_measure_loudness,
       auto_level_loudness: draft.auto_level_loudness,
       loudness_range_threshold: draft.loudness_range_threshold,
+      loudness_target_i: draft.loudness_target_i,
+      loudness_target_tp: draft.loudness_target_tp,
+      loudness_target_lra: draft.loudness_target_lra,
       auto_retry: draft.auto_retry,
       auto_retry_steps: draft.auto_retry_steps,
       auto_retry_custom: draft.auto_retry_custom,
