@@ -1119,24 +1119,56 @@ function renderLibTabs(libs) {
    right now — but it still gets a bar in the same spot, for Cancel All. */
 function renderActiveBar(jobs) {
   const el = document.getElementById('pager');
-  const n = jobs.length;
-  if (!n) { el.innerHTML = ''; return; }
-  const label = view.library_id == null ? `Cancel all ${n}` : `Cancel all ${n} here`;
-  el.innerHTML = `<span class="grow"></span><button onclick="cancelAllJobs()">${label}</button>`;
+  const id = view.library_id;
+  // Counted server-side: the live job list is capped at 50, so sizing
+  // these buttons from it would understate a big queue badly.
+  const kinds = (window.__state || {}).active_kinds
+    || {conversions: 0, housekeeping: 0, total: 0};
+  // Per-library totals aren't split by kind, so fall back to the whole
+  // count there rather than showing a number that's wrong.
+  const scoped = id == null;
+  const total = scoped ? kinds.total
+    : ((((window.__state || {}).counts_by_library || {})[id] || {}).active || 0);
+  if (!total) { el.innerHTML = ''; return; }
+
+  const where = scoped ? '' : ' here';
+  let buttons = `<button onclick="cancelQueue('all')">Cancel all ${total}${where}</button>`;
+  // Only worth splitting when there's actually a mix to split.
+  if (scoped && kinds.conversions && kinds.housekeeping) {
+    buttons += `
+      <button onclick="cancelQueue('housekeeping')">Cancel ${kinds.housekeeping} loudness</button>
+      <button onclick="cancelQueue('conversions')">Cancel ${kinds.conversions} conversions</button>`;
+  }
+  el.innerHTML = `<span class="grow"></span>${buttons}`;
 }
 
-async function cancelAllJobs() {
+const CANCEL_BLURB = {
+  all: 'Everything queued or running',
+  housekeeping: 'Loudness measuring and levelling only — conversions keep going',
+  conversions: 'Conversions only — loudness work keeps going',
+};
+
+async function cancelQueue(kind) {
   const id = view.library_id;
-  const jobs = ((window.__state || {}).jobs || [])
-    .filter(j => id == null || j.library_id === id);
-  if (!jobs.length) return;
-  const scope = id == null ? 'every library' : 'this library only';
-  if (!confirm(`Cancel all ${jobs.length} in-progress job(s) in ${scope}? `
-              + 'Video files are left untouched.')) return;
-  await fetch('/api/jobs/bulk', {method:'POST',
-    headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({action:'cancel', library_id: id})});
-  // The next websocket broadcast reflects the change; nothing else to do.
+  const scope = id == null ? 'every library' : 'this library';
+  const resumable = kind === 'conversions'
+    ? 'Cancelled conversions are picked up again by the next folder scan.'
+    : kind === 'housekeeping'
+    ? 'Measuring resumes on its own; any file already measured keeps its '
+      + 'reading. Files you had queued for levelling need selecting again '
+      + 'from Library Health.'
+    : 'Conversions come back on the next folder scan. Measuring resumes on '
+      + 'its own. Files queued for levelling need selecting again.';
+  if (!confirm(`${CANCEL_BLURB[kind]} in ${scope}.\n\n${resumable}`
+             + '\n\nNo video files are changed or deleted.')) return;
+  try {
+    const r = await (await fetch('/api/jobs/bulk', {method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({action: 'cancel', kind, library_id: id})})).json();
+    if (!r.cancelled) alert('Nothing was queued or running.');
+  } catch (e) {
+    alert('Could not reach the server.');
+  }
 }
 
 function switchLibrary(id) {

@@ -421,7 +421,34 @@ def cancel_loudness_jobs(library_id=None):
     return len(ids)
 
 
-def cancel_active_jobs(library_id=None):
+def count_active_by_kind(library_id=None):
+    """How much active work there is, split into conversions and loudness.
+
+    Counted in the database rather than from the live job list the
+    interface holds: that list is capped at 50 for the sake of the
+    websocket, so anything reading its length badly understates a large
+    queue — and a "cancel everything" button that says 50 when there are
+    three thousand is worse than no button.
+    """
+    query = (f"SELECT spec FROM jobs WHERE state IN "
+            f"({','.join('?' * len(ACTIVE_STATES))})")
+    params = list(ACTIVE_STATES)
+    if library_id is not None:
+        query += " AND library_id=?"
+        params.append(library_id)
+    conversions = housekeeping = 0
+    with connect() as conn:
+        for row in conn.execute(query, params):
+            spec = parse_json(row["spec"], {}) or {}
+            if spec.get("measure") or spec.get("level_only"):
+                housekeeping += 1
+            else:
+                conversions += 1
+    return {"conversions": conversions, "housekeeping": housekeeping,
+            "total": conversions + housekeeping}
+
+
+def cancel_active_jobs(library_id=None, kind="all"):
     """Cancel every currently active (queued/leased/running) job.
 
     A worker mid-encode finds out on its next progress report — the
@@ -430,15 +457,39 @@ def cancel_active_jobs(library_id=None):
     library when given, so cancelling doesn't reach into other libraries'
     queues.
     """
-    query = (f"UPDATE jobs SET state='cancelled', finished_at=? "
-            f"WHERE state IN ({','.join('?' * len(ACTIVE_STATES))})")
-    params = [time.time(), *ACTIVE_STATES]
+    if kind == "all":
+        query = (f"UPDATE jobs SET state='cancelled', finished_at=? "
+                f"WHERE state IN ({','.join('?' * len(ACTIVE_STATES))})")
+        params = [time.time(), *ACTIVE_STATES]
+        if library_id is not None:
+            query += " AND library_id=?"
+            params.append(library_id)
+        with connect() as conn:
+            return conn.execute(query, params).rowcount
+
+    # Telling conversions from loudness work means reading each spec, so
+    # these are selected first and cancelled by id.
+    select = (f"SELECT id, spec FROM jobs WHERE state IN "
+             f"({','.join('?' * len(ACTIVE_STATES))})")
+    params = list(ACTIVE_STATES)
     if library_id is not None:
-        query += " AND library_id=?"
+        select += " AND library_id=?"
         params.append(library_id)
     with connect() as conn:
-        cur = conn.execute(query, params)
-        return cur.rowcount
+        rows = conn.execute(select, params).fetchall()
+        ids = []
+        for row in rows:
+            spec = parse_json(row["spec"], {}) or {}
+            is_housekeeping = bool(spec.get("measure") or spec.get("level_only"))
+            if (kind == "housekeeping") == is_housekeeping:
+                ids.append(row["id"])
+        if not ids:
+            return 0
+        conn.execute(
+            f"UPDATE jobs SET state='cancelled', finished_at=? "
+            f"WHERE id IN ({','.join('?' * len(ids))})",
+            [time.time(), *ids])
+        return len(ids)
 
 
 def get_job(job_id):

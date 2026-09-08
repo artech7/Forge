@@ -306,6 +306,10 @@ async def build_state():
         # show accurate tab badges the instant a library is selected,
         # without a round trip. Cheap: one GROUP BY, not 4 queries per lib.
         "counts_by_library": db.counts_by_library(),
+        # Real active totals, split by kind. The jobs list above is
+        # capped, so anything sizing a bulk action from it understates a
+        # large queue.
+        "active_kinds": db.count_active_by_kind(),
         "stats": db.stats(),
         "deep_scan": DEEP_SCAN_STATE,
         "libraries": db.list_libraries(),
@@ -1167,7 +1171,7 @@ async def bulk_jobs(req: Request):
         # since "in progress" isn't a single fixed set of rows the way
         # failed/done/ignored are — it's whichever jobs happen to be
         # queued/leased/running right now.
-        cancelled = db.cancel_active_jobs(library_id)
+        cancelled = db.cancel_active_jobs(library_id, body.get("kind", "all"))
         await broadcast()
         return {"cancelled": cancelled}
 
