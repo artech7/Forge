@@ -1072,7 +1072,7 @@ async def _retranscode_one(job_id, quality):
                         job.get("library_id"),
                         attempt=job.get("attempt", 1) + 1)
     if not new_id:
-        return False, "That file is already queued."
+        return False, ("Something else is already working on that file — wait for it to finish, then try again.")
     db.delete_job(job_id)
     return True, None
 
@@ -1170,20 +1170,43 @@ async def _revert_one(job_id):
         return False, "No such job."
     library = db.get_library(job["library_id"]) if job.get("library_id") else None
 
-    # Already restored automatically? Then the original is what's on disk
-    # and this is just an acknowledgement.
-    source = Path(job["path"])
-    already_back = source.is_file() and (
-        job.get("size_before") is None
-        or abs(source.stat().st_size - (job.get("size_before") or 0)) < 1024)
-    if already_back:
-        db.update_job(job_id, state="done", size_after=job.get("size_before"),
-                      final_path=job.get("path"), finished_at=time.time(),
-                      outcome="Conversion wasn't worth keeping — original in place")
-        return True, "Original was already back in place."
+    # Is the original already what's on disk? Both paths have to be
+    # checked: renaming means the file often isn't at the path the job
+    # started from, and a container change means that path may not exist
+    # at all. Either one matching the recorded original size means the
+    # automatic restore already happened.
+    size_before = job.get("size_before")
+    candidates = [job.get("path"), job.get("final_path")]
+    for candidate in candidates:
+        if not candidate:
+            continue
+        path = Path(candidate)
+        if not path.is_file():
+            continue
+        if size_before is None or abs(path.stat().st_size - size_before) < 1024:
+            db.update_job(job_id, state="done", size_after=size_before,
+                          final_path=str(path), finished_at=time.time(),
+                          outcome="Conversion wasn't worth keeping — original in place")
+            return True, "Original was already back in place."
 
     ok, message = await asyncio.to_thread(watcher.restore_original, job, library)
     if not ok:
+        # Nothing to restore and nothing on disk matching the original
+        # size, so the larger conversion is what's there. Say what the
+        # real choices are rather than only what failed — "settle" can't
+        # invent a file that no longer exists.
+        on_disk = next((Path(c) for c in candidates if c and Path(c).is_file()), None)
+        if on_disk:
+            grew = ""
+            if size_before:
+                now = on_disk.stat().st_size
+                grew = (f" What's there is {now / 1e9:.2f} GB against an original "
+                        f"of {size_before / 1e9:.2f} GB.")
+            return False, (
+                "The original is gone — most likely cleared by the Originals "
+                f"cleanup — so there's nothing to put back.{grew} Use 'Keep "
+                "new' to accept the file that's there, or 'Remove' to drop the "
+                "entry.")
         return False, f"Can't put the original back: {message}."
     db.update_job(job_id, state="done", size_after=job.get("size_before"),
                   final_path=job.get("path"), finished_at=time.time(),

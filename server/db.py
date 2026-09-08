@@ -235,17 +235,61 @@ def list_nodes():
 
 
 def enqueue(path, spec, size_before=None, library_id=None, attempt=1):
-    """Returns job id, or None if this path already has an active job."""
+    """Returns job id, or None if this path already has an active job.
+
+    Only one active job is allowed per path, which is what stops the
+    scanner queueing the same file twice. But that also meant a queued
+    loudness measurement could block a real conversion for the same
+    file — and with a measuring backlog thousands deep, that blocked a
+    lot of them. Loudness work is housekeeping by design, so real work
+    displaces it rather than being turned away: the measurement is
+    cancelled and comes back on the next pass, since a measurement is
+    cheap to redo and a conversion is what the person actually asked
+    for.
+    """
+    def insert(conn):
+        cur = conn.execute(
+            """INSERT INTO jobs
+               (path, library_id, spec, state, size_before, attempt, created_at)
+               VALUES (?, ?, ?, 'queued', ?, ?, ?)""",
+            (path, library_id, json.dumps(spec), size_before, attempt,
+             time.time()),
+        )
+        return cur.lastrowid
+
     with connect() as conn:
         try:
-            cur = conn.execute(
-                """INSERT INTO jobs
-                   (path, library_id, spec, state, size_before, attempt, created_at)
-                   VALUES (?, ?, ?, 'queued', ?, ?, ?)""",
-                (path, library_id, json.dumps(spec), size_before, attempt,
-                 time.time()),
-            )
-            return cur.lastrowid
+            return insert(conn)
+        except sqlite3.IntegrityError:
+            pass
+
+        # Real work only: one housekeeping job never displaces another.
+        if job_kind(spec) != "convert":
+            return None
+
+        blocking = conn.execute(
+            f"""SELECT id, spec, state FROM jobs WHERE path=? AND state IN
+               ({','.join('?' * len(ACTIVE_STATES))})""",
+            (path, *ACTIVE_STATES)).fetchall()
+        if not blocking:
+            return None
+        # Only a job still sitting in the queue can be set aside. One
+        # already leased or running is mid-flight on a worker, and
+        # cancelling that to queue something else wastes the work
+        # already done and leaves a scratch file behind — waiting the
+        # few minutes for it to finish is strictly better.
+        if any(r["state"] != "queued"
+               or job_kind(parse_json(r["spec"], {})) == "convert"
+               for r in blocking):
+            return None
+        ids = [r["id"] for r in blocking]
+        conn.execute(
+            f"UPDATE jobs SET state='cancelled', finished_at=?, "
+            f"outcome='Set aside so a conversion could be queued' "
+            f"WHERE id IN ({','.join('?' * len(ids))})",
+            [time.time(), *ids])
+        try:
+            return insert(conn)
         except sqlite3.IntegrityError:
             return None
 
