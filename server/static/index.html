@@ -1179,10 +1179,21 @@ function renderJobs(jobs, meta) {
 
   el.innerHTML = jobs.map(j => {
     const name = j.path.split('/').pop();
+    // Jobs queued by hand (from a chart drill-down or Audio Leveling)
+    // have no spec.action, so this used to fall through to the raw codec
+    // name — "COPY" — plus a quality number that means nothing when the
+    // video isn't being re-encoded. Describe the work instead.
+    const copyingVideo = (j.spec.codec || '') === 'copy';
     const bits = j.spec.measure === 'loudness' ? ['measuring loudness']
-      : [ACTION_LABEL[j.spec.action] || (j.spec.codec || '').toUpperCase()];
-    if (j.spec.measure !== 'loudness' && !['audio_only','remux'].includes(j.spec.action))
-      bits.push('q' + j.spec.quality);
+      : ACTION_LABEL[j.spec.action] ? [ACTION_LABEL[j.spec.action]]
+      : copyingVideo
+        ? [j.spec.normalise_loudness ? 'leveling audio'
+           : (j.spec.audio || 'copy') === 'copy' ? 'repackaging' : 'audio only']
+      : [(j.spec.codec || '').toUpperCase()];
+    // Quality only describes a video re-encode, so it's noise otherwise.
+    const reEncodingVideo = !copyingVideo && j.spec.measure !== 'loudness'
+      && !['audio_only','remux'].includes(j.spec.action);
+    if (reEncodingVideo && j.spec.quality) bits.push('q' + j.spec.quality);
     if (j.transport) bits.push(j.transport === 'stream' ? 'streamed' : 'mounted');
     if (j.encoder_used) bits.push(j.encoder_used);
     if (j.speed) bits.push(j.speed.toFixed(1) + '×');

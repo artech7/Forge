@@ -371,6 +371,49 @@ def ranking():
     return sorted(BENCHMARKS.items(), key=lambda kv: -kv[1])
 
 
+
+def _cap_audio_bitrate(wanted, info, spec):
+    """Never spend more bits on audio than the source actually had.
+
+    The per-codec defaults assume a fresh encode from a good master —
+    EAC3 defaults to 640k, which is right for a Blu-ray rip and badly
+    wrong for a file whose audio was already 192k. Re-encoding lossy
+    audio upward can't recover detail that was thrown away; it just
+    stores the same sound in a larger file, and on an already-compact
+    release the audio can end up bigger than the video.
+
+    Channel count is respected, so a 5.1 track still gets a surround-
+    appropriate share rather than being squeezed to a stereo figure.
+    """
+    def to_kbps(value):
+        text = str(value).strip().lower().rstrip("k")
+        try:
+            return int(float(text))
+        except ValueError:
+            return None
+
+    want = to_kbps(wanted)
+    if want is None or not info:
+        return wanted
+
+    audio_streams = [s for s in (info.get("streams") or [])
+                     if s.get("codec_type") == "audio"]
+    if not audio_streams:
+        return wanted
+    source = audio_streams[0]
+    source_kbps = to_kbps((int(source.get("bit_rate") or 0)) // 1000) \
+        if source.get("bit_rate") else None
+    if not source_kbps:
+        return wanted        # nothing reliable to compare against
+
+    # A little headroom: re-encoding lossy to lossy at exactly the source
+    # rate loses more than it needs to, and going up a step is cheap.
+    ceiling = int(source_kbps * 1.25)
+    channels = int(source.get("channels") or 2)
+    floor = 160 if channels <= 2 else 320   # don't strangle surround
+    capped = max(floor, min(want, ceiling))
+    return f"{capped}k" if capped != want else wanted
+
 def build_command(src, dst, encoder, spec, info=None):
     """Turn an intent spec into an FFmpeg invocation for this encoder.
 
@@ -487,8 +530,9 @@ def build_command(src, dst, encoder, spec, info=None):
         # An empty bitrate would become -b:a "" and FFmpeg refuses to open
         # the output at all, so a blank value falls back rather than passing
         # through. Jobs queued before this was fixed still carry one.
-        bitrate = (spec.get("audio_bitrate") or "").strip()
-        cmd += ["-b:a", bitrate or "160k"]
+        bitrate = (spec.get("audio_bitrate") or "").strip() or "160k"
+        bitrate = _cap_audio_bitrate(bitrate, info, spec)
+        cmd += ["-b:a", bitrate]
     if audio_filters:
         cmd += ["-af", ",".join(audio_filters)]
 
