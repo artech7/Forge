@@ -207,6 +207,20 @@ def scan_library(library, probe_fn):
     spec = profiles.resolve(library["profile"])
     filters = library.get("filters") or {}
     now = time.time()
+
+    # Clear out cache rows for files that have since been renamed or
+    # deleted, so lists built from the cache (Library Health especially)
+    # don't offer work on files that aren't there. Guarded on the folder
+    # being readable: an unmounted share looks identical to "everything
+    # was deleted", and acting on that would discard every measurement.
+    try:
+        if Path(library["watch_path"]).is_dir():
+            dropped = db.forget_missing_files(library["watch_path"])
+            if dropped:
+                print(f"scan: forgot {dropped} file(s) no longer on disk "
+                      f"in {library['name']}")
+    except OSError as exc:
+        print(f"scan: could not check for missing files ({exc})")
     queued, waiting, skipped, filtered = 0, 0, 0, 0
     reasons = {}
     filed = []          # (source, destination, size) for files moved untouched

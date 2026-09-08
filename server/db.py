@@ -573,6 +573,11 @@ def files_with_loudness(library_id=None):
         loud = detail.get("loudness")
         if not loud:
             continue
+        # A reading is only actionable if the file is still there. Stale
+        # rows are pruned on the next scan, but not listing them in the
+        # meantime avoids offering work that can only fail.
+        if not Path(f["path"]).exists():
+            continue
         measured.append({
             "path": f["path"], "name": Path(f["path"]).name,
             "integrated": loud.get("integrated"), "range": loud.get("range"),
@@ -612,6 +617,31 @@ def set_file_detail(path, detail):
             """INSERT INTO files (path, detail, probed_at) VALUES (?,?,?)
                ON CONFLICT(path) DO UPDATE SET detail=?, probed_at=?""",
             (path, json.dumps(detail), time.time(), json.dumps(detail), time.time()))
+
+
+def forget_missing_files(watch_path):
+    """Drop probe-cache rows under watch_path whose file is gone.
+
+    Forge renames files as part of converting them, so the pre-rename
+    path stays in the cache forever and anything attached to it — a
+    loudness reading especially — points at a file that no longer
+    exists. That's what produces a Library Health list offering work on
+    files it can't actually touch.
+
+    Deliberately scoped to one library and only called when that
+    library's folder is readable: an unmounted share looks exactly like
+    "every file was deleted", and wiping the cache on that basis would
+    throw away every measurement in it.
+    """
+    prefix = str(watch_path)
+    with connect() as conn:
+        rows = [r["path"] for r in conn.execute(
+            "SELECT path FROM files WHERE path LIKE ?", (prefix + "%",)).fetchall()]
+        gone = [p for p in rows if not Path(p).exists()]
+        if gone:
+            conn.executemany("DELETE FROM files WHERE path=?",
+                             [(p,) for p in gone])
+    return len(gone)
 
 
 def get_cached_file(path):
