@@ -1953,19 +1953,34 @@ let SET = null;
 
 async function openSettings() {
   SET = await (await fetch('/api/settings')).json();
+  settingsSection = 'work';   // always open on the first tab
   document.getElementById('veil').classList.add('open');
   drawSettings();
 }
+
+const SETTINGS_TABS = [
+  ['work', 'When Forge works'],
+  ['naming', 'Naming & lookup'],
+  ['subtitles', 'Subtitles'],
+  ['originals', 'Originals'],
+];
+let settingsSection = 'work';
 
 function drawSettings() {
   const sc = SET.schedule || {}, og = SET.originals || {};
   const w = (sc.windows && sc.windows[0]) || {days:[0,1,2,3,4,5,6],start:'22:00',end:'06:00'};
   document.getElementById('wiz').innerHTML = `
     <h3>Settings</h3>
-    <p class="lead">Forge checks your watch folders on its own. These control
-      when it's allowed to do the heavy work, and when it tidies up.</p>
+    <p class="lead">Settings that apply everywhere. Anything specific to one
+      library lives in that library's own setup instead.</p>
+    <div class="tabs" id="settings-tabs">
+      ${SETTINGS_TABS.map(([id, label]) =>
+        `<button class="${settingsSection === id ? 'on' : ''}"
+          onclick="settingsSection='${id}';drawSettings()">${label}</button>`).join('')}
+    </div>
 
-    <div class="toggle ${sc.enabled ? 'on' : ''}" onclick="toggleSched()">
+    <div ${settingsSection === 'work' ? '' : 'hidden'}>
+<div class="toggle ${sc.enabled ? 'on' : ''}" onclick="toggleSched()">
       <div class="sw"></div>
       <div><div class="tt">Only transcode at certain times</div>
         <div class="td">Files still get found and queued around the clock — they
@@ -2042,7 +2057,10 @@ function drawSettings() {
            line-height:1.6;margin-bottom:14px">${SET.auto_fail_text || ''}</div>
     ` : ''}
 
-    <div class="toggle ${(SET.tmdb||{}).enabled ? 'on' : ''}"
+        </div>
+
+    <div ${settingsSection === 'naming' ? '' : 'hidden'}>
+<div class="toggle ${(SET.tmdb||{}).enabled ? 'on' : ''}"
          onclick="toggleTmdb()" style="margin-top:22px">
       <div class="sw"></div>
       <div><div class="tt">Look up film and show names online</div>
@@ -2066,7 +2084,10 @@ function drawSettings() {
               color:var(--muted)"></span>
       </div>` : ''}
 
-    <h3 style="font-size:15px;margin:26px 0 4px">Bazarr</h3>
+        </div>
+
+    <div ${settingsSection === 'subtitles' ? '' : 'hidden'}>
+<h3 style="font-size:15px;margin:26px 0 4px">Bazarr</h3>
     <div class="note" style="margin:0 0 12px;color:var(--muted);font-size:12.5px">
       Optional. Library Health lists files with no subtitle track in your
       preferred languages, but Forge can't find subtitles itself. Connect
@@ -2097,7 +2118,10 @@ function drawSettings() {
             color:var(--muted)"></span>
     </div>
 
-    <div class="toggle ${og.enabled ? 'on' : ''}" onclick="toggleOrig()"
+        </div>
+
+    <div ${settingsSection === 'originals' ? '' : 'hidden'}>
+<div class="toggle ${og.enabled ? 'on' : ''}" onclick="toggleOrig()"
          style="margin-top:22px">
       <div class="sw"></div>
       <div><div class="tt">Automatically empty the Originals folder</div>
@@ -2153,6 +2177,8 @@ function drawSettings() {
         ${SET.originals_text || ''}${SET.originals_next
           ? ` \u00b7 ${SET.originals_next}` : ''}
       </div>` : ''}
+
+        </div>
 
     <div class="wiz-nav">
       <button onclick="closeWizard()">Cancel</button>
