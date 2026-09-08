@@ -300,7 +300,10 @@ async def build_state():
         # Only live work goes over the websocket. History is fetched on
         # demand, so a library with thousands of finished jobs doesn't make
         # every update enormous.
-        "jobs": db.list_jobs(states=list(db.ACTIVE_STATES), limit=50),
+        # Only what's actually being worked on. Waiting jobs are fetched
+        # on demand and paged, so a queue thousands deep no longer makes
+        # every push enormous.
+        "jobs": db.list_jobs(states=["leased", "running"], limit=100),
         "counts": db.job_counts(),
         # Per-library breakdown of the same counts, so the interface can
         # show accurate tab badges the instant a library is selected,
@@ -899,7 +902,7 @@ async def handle_audio_fail(job, error):
 
 @app.get("/api/jobs")
 async def list_jobs(view: str = "active", page: int = 1, per_page: int = 20,
-                     library_id: int = None, q: str = None):
+                     library_id: int = None, q: str = None, kind: str = None):
     """One page of jobs from a view, with enough detail to render a pager.
 
     library_id narrows both the page of jobs and the counts to one library,
@@ -913,15 +916,32 @@ async def list_jobs(view: str = "active", page: int = 1, per_page: int = 20,
         raise HTTPException(400, f"Unknown view: {view}")
     per_page = max(1, min(100, int(per_page)))
     q = (q or "").strip() or None
-    total = db.count_jobs(list(states), library_id, q)
-    pages = max(1, -(-total // per_page))
-    page = max(1, min(page, pages))
+    kind = kind if kind in db.JOB_KINDS else None
+
+    if kind:
+        # Kind lives in the spec, not a column, so it can't be filtered in
+        # SQL. Fetched and filtered first so the page and the total agree —
+        # paging in SQL then filtering in Python would give short pages and
+        # a count that doesn't match what's shown.
+        matching = db._filter_kind(
+            db.list_jobs(list(states), 20000, 0, library_id, q, None), kind)
+        total = len(matching)
+        pages = max(1, -(-total // per_page))
+        page = max(1, min(page, pages))
+        start = (page - 1) * per_page
+        jobs = matching[start:start + per_page]
+    else:
+        total = db.count_jobs(list(states), library_id, q)
+        pages = max(1, -(-total // per_page))
+        page = max(1, min(page, pages))
+        jobs = db.list_jobs(list(states), per_page, (page - 1) * per_page,
+                            library_id, q)
+
     return {
         "view": view, "page": page, "pages": pages, "total": total,
-        "per_page": per_page,
-        "jobs": db.list_jobs(list(states), per_page, (page - 1) * per_page,
-                             library_id, q),
+        "per_page": per_page, "kind": kind, "jobs": jobs,
         "counts": db.job_counts(library_id, q),
+        "kinds": db.queued_by_kind(library_id) if view == "waiting" else None,
     }
 
 

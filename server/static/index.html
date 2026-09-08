@@ -579,6 +579,7 @@
     </div>
     <div class="tabs" id="libtabs"></div>
     <div class="tabs" id="jobtabs"></div>
+    <div class="tabs" id="kindfilter"></div>
     <input type="text" id="queue-search" class="queue-search"
            placeholder="Search by filename…" oninput="onQueueSearch(this.value)">
     <div class="batchbar" id="batchbar"></div>
@@ -902,7 +903,7 @@ function render(state) {
     : (state.counts_by_library || {})[id] || {active:0,failed:0,bloated:0,done:0};
   view.counts = counts;
   renderTabs(counts);
-  if (view.name === 'active') {
+  if (view.name === 'working') {
     renderActiveFromState(state);
   } else if (!view.loaded) loadView();
 }
@@ -1089,17 +1090,18 @@ async function requeueJob(id, state) {
   if (!confirm(warning)) return;
   const result = await callJob(id, 'retry');
   if (result && result.message) alert(result.message);
-  if (result && view.name !== 'active') loadView();
+  if (result && view.name !== 'working') loadView();
 }
 
 async function cancelJob(id) {
   if (!confirm('Cancel this job? The original file is left untouched.')) return;
   const result = await callJob(id, 'cancel');
-  if (result && view.name !== 'active') loadView();
+  if (result && view.name !== 'working') loadView();
 }
 
 /* --------------------------------------------------------- job views */
-const view = {name:'active', page:1, perPage:20, loaded:false, counts:{},
+const view = {name:'working', page:1, perPage:20, loaded:false, counts:{},
+              kind:'all',
               library_id:null};
 
 /* Each library gets its own queue: this draws the picker (All + one tab
@@ -1117,6 +1119,35 @@ function renderLibTabs(libs) {
 
 /* The "active" tab has no pages to click through — it's whatever's running
    right now — but it still gets a bar in the same spot, for Cancel All. */
+const KIND_LABELS = {
+  all: 'Everything',
+  convert: 'Conversions',
+  measure: 'Loudness measuring',
+  level: 'Loudness levelling',
+};
+
+// A waiting list thousands deep is mostly one kind of work. Splitting it
+// makes "what is Forge actually about to do" answerable at a glance.
+function renderKindFilter(kinds) {
+  const el = document.getElementById('kindfilter');
+  if (!el) return;
+  if (view.name !== 'waiting' || !kinds) { el.innerHTML = ''; return; }
+  const shown = ['all', 'convert', 'measure', 'level']
+    .filter(k => k === 'all' || kinds[k]);
+  // Nothing to split when it's all one kind.
+  if (shown.length <= 2) { el.innerHTML = ''; return; }
+  el.innerHTML = shown.map(k =>
+    `<button class="${view.kind === k ? 'on' : ''}" onclick="switchKind('${k}')">
+      ${KIND_LABELS[k]} <span class="badge">${kinds[k] || 0}</span></button>`).join('');
+}
+
+function switchKind(kind) {
+  if (view.kind === kind) return;
+  view.kind = kind;
+  view.page = 1;
+  loadView();
+}
+
 function renderActiveBar(jobs) {
   const el = document.getElementById('pager');
   const id = view.library_id;
@@ -1177,7 +1208,7 @@ function switchLibrary(id) {
   view.page = 1;
   view.loaded = false;
   renderLibTabs((window.__state || {}).libraries || []);
-  if (view.name === 'active') {
+  if (view.name === 'working') {
     // Active jobs already arrive live over the websocket, so filtering
     // that in place keeps progress updating instead of falling back to
     // polling — only the other (non-live) tabs need a fetch.
@@ -1190,7 +1221,8 @@ function switchLibrary(id) {
 function renderTabs(counts) {
   view.counts = counts;
   const defs = [
-    ['active', 'In progress', counts.active || 0, ''],
+    ['working', 'Working', counts.working || 0, ''],
+    ['waiting', 'Waiting', counts.waiting || 0, ''],
     ['failed', 'Failed', counts.failed || 0, 'bad'],
     ['bloated', 'Got bigger', counts.bloated || 0, 'warn-badge'],
     ['ignored', 'Ignored', counts.ignored || 0, ''],
@@ -1206,9 +1238,10 @@ function renderTabs(counts) {
 function switchView(name) {
   view.name = name;
   view.page = 1;
+  view.kind = 'all';
   view.loaded = false;
   renderTabs(view.counts);
-  if (name === 'active') {
+  if (name === 'working') {
     renderActiveFromState(window.__state || {});
   } else {
     loadView();
@@ -1223,7 +1256,7 @@ function onQueueSearch(value) {
   queueSearchTimer = setTimeout(() => {
     queueSearch = value.trim();
     view.page = 1;
-    if (view.name === 'active') {
+    if (view.name === 'working') {
       renderActiveFromState(window.__state || {});
     } else {
       view.loaded = false;
@@ -1254,6 +1287,7 @@ function renderActiveFromState(state) {
   renderTabs(counts);
   renderJobs(jobs, null);
   renderActiveBar(jobs);
+  renderKindFilter(null);      // Working has nothing to split
 }
 
 async function loadView() {
@@ -1262,11 +1296,14 @@ async function loadView() {
   try {
     const libParam = view.library_id == null ? '' : `&library_id=${view.library_id}`;
     const qParam = queueSearch ? `&q=${encodeURIComponent(queueSearch)}` : '';
+    const kindParam = (view.name === 'waiting' && view.kind !== 'all')
+      ? `&kind=${view.kind}` : '';
     const r = await (await fetch(
-      `/api/jobs?view=${view.name}&page=${view.page}&per_page=${view.perPage}${libParam}${qParam}`)).json();
+      `/api/jobs?view=${view.name}&page=${view.page}&per_page=${view.perPage}${libParam}${qParam}${kindParam}`)).json();
     view.loaded = true;
     view.page = r.page;
     renderTabs(r.counts || view.counts);
+    renderKindFilter(r.kinds);
     renderJobs(r.jobs, r);
   } catch (e) {
     el.innerHTML = '<div class="glass empty">Could not load that list.</div>';
@@ -1864,7 +1901,7 @@ function renderPager(meta) {
 
   // Any history view is worth opening full-screen — that's where sorting
   // and seeing everything at once actually matters.
-  const reviewBtn = view.name === 'active' ? ''
+  const reviewBtn = ['working','waiting'].includes(view.name) ? ''
     : `<button class="primary" onclick="openReview('${view.name}')">Review all ${meta.total}</button>`;
 
   el.innerHTML = `

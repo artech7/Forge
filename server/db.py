@@ -251,7 +251,30 @@ def enqueue(path, spec, size_before=None, library_id=None, attempt=1):
 
 
 ACTIVE_STATES = ("queued", "leased", "running")
+# Job kinds, for splitting a long waiting list into something readable.
+# A spec marker rather than a column: these are all ordinary jobs, and
+# what makes one "loudness work" is what it was asked to do.
+JOB_KINDS = {
+    "convert": "Conversions",
+    "measure": "Loudness measuring",
+    "level": "Loudness levelling",
+}
+
+
+def job_kind(spec):
+    spec = spec or {}
+    if spec.get("measure"):
+        return "measure"
+    if spec.get("level_only"):
+        return "level"
+    return "convert"
+
+
 VIEWS = {
+    # Split so the short list of what's actually running isn't buried in
+    # however many thousand files are still waiting their turn.
+    "working": ("leased", "running"),
+    "waiting": ("queued",),
     "active": ACTIVE_STATES,
     "failed": ("failed",),
     "done": ("done",),
@@ -265,6 +288,22 @@ VIEWS = {
     # a working copy — the source file is gone by design, not by failure.
     "removed": ("removed",),
 }
+
+
+def _filter_kind(jobs, kind):
+    if not kind or kind == "all":
+        return jobs
+    return [j for j in jobs if job_kind(j.get("spec")) == kind]
+
+
+def queued_by_kind(library_id=None):
+    """How many jobs are waiting, per kind."""
+    jobs = list_jobs(states=["queued"], limit=20000, library_id=library_id)
+    out = {k: 0 for k in JOB_KINDS}
+    for j in jobs:
+        out[job_kind(j.get("spec"))] += 1
+    out["all"] = len(jobs)
+    return out
 
 
 def list_jobs(states=None, limit=200, offset=0, library_id=None, q=None,
