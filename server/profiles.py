@@ -355,6 +355,78 @@ def warnings_for(profile):
     if profile.get("subtitle_mode") == "strip" and not profile.get("keep_forced_subs"):
         out.append("Forced subtitles will be removed too. Films with alien or "
                    "foreign dialogue will lose those translations.")
+
+    # ---- settings that pull against each other -----------------------
+    # These are the ones where a setting is fine on its own but works
+    # against something else you've chosen. Each says what to change
+    # rather than only what's wrong.
+    skip_ext = [str(e).lower().lstrip(".")
+                for e in ((profile.get("filters") or {}).get("skip_extensions") or [])]
+
+    if container and container.lower() in skip_ext:
+        out.append(
+            f"'{container.upper()}' is in Skip these file types, which is the "
+            f"container you're converting *to*. Anything already in "
+            f"{container.upper()} will never be looked at, even when its codec "
+            "is wrong. Remove it from the skip list and let the codec check "
+            "decide instead.")
+
+    for ext in skip_ext:
+        if ext in ("mkv", "mp4", "m4v", "avi", "ts", "mov") and ext != (container or "").lower():
+            out.append(
+                f"Skipping '{ext}' files skips them entirely — Forge won't even "
+                "check what codec they use. If the intention is to leave "
+                "already-converted files alone, 'Leave existing files in the "
+                "container they're in' on the Video step does that while still "
+                "catching ones with the wrong codec.")
+            break
+
+    if profile.get("keep_existing_container"):
+        out.append(
+            "With 'Leave existing files in the container they're in' on, every "
+            f"file keeps its own container, so the {container.upper() if container else 'chosen'} "
+            "setting above only applies to files that have no container of their "
+            "own — in practice, none. Files in odd containers like AVI stay AVI. "
+            "Turn it off if you'd rather everything ended up the same type.")
+
+    if profile.get("add_stereo_track") and profile.get("downmix") != "stereo":
+        out.append(
+            "Adding a stereo track makes files a little larger — roughly 100–150 "
+            "MB per film. Worth it if people watch on phones or in browsers; "
+            "switch it off if everything you play on handles surround.")
+
+    if profile.get("auto_level_loudness") and not profile.get("auto_measure_loudness"):
+        out.append(
+            "Levelling automatically needs measuring automatically — nothing "
+            "will be levelled until a measurement exists. Turn on 'Measure "
+            "loudness on its own' as well, or level by hand from Library Health.")
+
+    if profile.get("auto_measure_loudness") and profile.get("original_action") == "delete":
+        out.append(
+            "Originals are deleted, so a levelled file can't be reverted if you "
+            "don't like the result. Consider 'Move it to an Originals folder' "
+            "while you're still deciding what settings you want.")
+
+    if profile.get("original_action") == "delete" and profile.get("auto_retry"):
+        out.append(
+            "Trying again at a smaller setting needs the original, which is "
+            "deleted here. Files that come out bigger will be left as they are "
+            "instead of retried.")
+
+    audio_bitrate = str(profile.get("audio_bitrate") or "")
+    if audio == "aac" and audio_bitrate.rstrip("k").isdigit() \
+            and int(audio_bitrate.rstrip("k")) > 256:
+        out.append(
+            f"{audio_bitrate} is a lot for AAC — 160k is transparent for stereo "
+            "and 256k is generous even for surround. Higher just makes files "
+            "bigger.")
+
+    if profile.get("downmix") == "stereo" and (profile.get("audio_languages_list") or []):
+        out.append(
+            "Downmixing applies to every audio track that's kept, including "
+            "each language. Removing languages you don't want first keeps the "
+            "file smaller.")
+
     return out
 
 
