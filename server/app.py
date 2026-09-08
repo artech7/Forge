@@ -1286,6 +1286,12 @@ async def stats_language_check(kind: str, language: str = None, library_id: int 
     return {"files": db.files_missing_language(kind, language, library_id)}
 
 
+@app.get("/api/stats/inventory")
+async def stats_inventory(library_id: int):
+    """Scanned files in one library, for the Standardize check."""
+    return {"files": await asyncio.to_thread(db.library_inventory, library_id)}
+
+
 @app.get("/api/stats/chapters")
 async def stats_chapters(library_id: int = None):
     """Files with no chapter markers — same idea, same instant source."""
@@ -1516,6 +1522,42 @@ async def stats_queue(req: Request):
                 "loudness_target_tp": float(profile.get("loudness_target_tp") or -1.5),
                 "loudness_target_lra": float(profile.get("loudness_target_lra") or 11),
             }
+            cached = db.get_cached_file(path)
+            if db.enqueue(path, spec, (cached or {}).get("size"), lib["id"]):
+                queued += 1
+            else:
+                skipped.append({"path": path,
+                                "reason": "already queued or in progress"})
+        if queued:
+            await broadcast()
+        return {"queued": queued, "skipped": skipped}
+
+    # Standardize asks for exactly what a normal scan would have done,
+    # so it takes the library's settings wholesale rather than layering
+    # overrides on top. plan_conversion still applies, so a file needing
+    # only a container change is repackaged rather than re-encoded.
+    if body.get("use_library_defaults"):
+        libraries = db.list_libraries()
+        library_for = db.library_matcher(libraries)
+        queued, skipped = 0, []
+        for path in paths:
+            lib = library_for(path)
+            if not lib:
+                skipped.append({"path": path,
+                                "reason": "not part of any configured library"})
+                continue
+            if not Path(path).is_file():
+                skipped.append({"path": path, "reason": "file no longer exists"})
+                continue
+            info = await asyncio.to_thread(probe, path)
+            spec = profiles.resolve(lib.get("profile") or {})
+            if info:
+                action, spec, _why = watcher.plan_conversion(
+                    Path(path), info, spec, lib.get("filters") or {})
+                if action == "skip":
+                    skipped.append({"path": path,
+                                    "reason": "already matches this library"})
+                    continue
             cached = db.get_cached_file(path)
             if db.enqueue(path, spec, (cached or {}).get("size"), lib["id"]):
                 queued += 1

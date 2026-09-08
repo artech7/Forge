@@ -514,6 +514,35 @@ def files_missing_language(kind, language=None, library_id=None):
     return out
 
 
+def library_inventory(library_id):
+    """Every scanned file in one library with the bits Standardize needs.
+
+    Deliberately thin — codec, audio codecs and container only. Deciding
+    what counts as "out of line" happens against the library's own
+    settings, which the interface already has, so shipping the full
+    detail blob for thousands of files would be wasted bandwidth.
+    """
+    with connect() as conn:
+        libraries = [row_to_dict(r) for r in conn.execute(
+            "SELECT id, watch_path FROM libraries").fetchall()]
+        rows = [dict(r) for r in conn.execute(
+            "SELECT path, video_codec, audio_codecs FROM files").fetchall()]
+
+    library_for = library_matcher(libraries)
+    out = []
+    for f in rows:
+        if (library_for(f["path"]) or {}).get("id") != library_id:
+            continue
+        out.append({
+            "path": f["path"], "name": Path(f["path"]).name,
+            "video_codec": f.get("video_codec"),
+            "audio_codecs": parse_json(f.get("audio_codecs"), []) or [],
+            "container": Path(f["path"]).suffix.lstrip(".").lower(),
+        })
+    out.sort(key=lambda f: f["name"].lower())
+    return out
+
+
 def files_missing_chapters(library_id=None):
     """Files with no chapter markers at all.
 

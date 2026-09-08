@@ -622,56 +622,82 @@
       gaps between what's in your library and what you'd consider a
       consistent standard across all of it.</p>
     <div class="stats-libpick" id="audio-libpick"></div>
+    <div class="tabs" id="health-tabs"></div>
 
-    <div class="queue-head" style="margin-top:10px">
-      <h2 style="margin:0">Audio Leveling</h2>
-      <div class="actions">
-        <button id="loudness-scan-btn" onclick="startLoudnessScan()">Scan for unleveled audio</button>
-        <button id="loudness-cancel-btn" onclick="cancelLoudnessScan()" hidden>Cancel scan</button>
-        <button onclick="loadLoudness()">Refresh results</button>
+    <!-- Audio Leveling -->
+    <div class="health-section" data-health="loudness">
+      <div class="queue-head" style="margin-top:4px">
+        <h2 style="margin:0">Audio Leveling</h2>
+        <div class="actions">
+          <button id="loudness-scan-btn" onclick="startLoudnessScan()">Scan for unleveled audio</button>
+          <button id="loudness-cancel-btn" onclick="cancelLoudnessScan()" hidden>Cancel scan</button>
+          <button onclick="loadLoudness()">Refresh results</button>
+        </div>
       </div>
+      <div class="note" style="margin:-4px 0 14px;color:var(--muted);font-size:12.5px">
+        Measures actual loudness by decoding each file's audio — real work
+        done by your worker nodes, so this queues jobs you'll see finish
+        over time rather than a single progress bar. Leveling only adjusts
+        loudness; codec, channels and container are left alone.
+        Cancelling and rescanning later only measures what's still
+        unmeasured.
+      </div>
+      <div id="loudness-progress"></div>
+      <input type="text" id="loudness-search" class="queue-search"
+             placeholder="Search by filename…" oninput="onLoudnessSearch(this.value)">
+      <div id="loudness-detail"><div class="stats-empty">Not scanned yet.</div></div>
     </div>
-    <div class="note" style="margin:-4px 0 14px;color:var(--muted);font-size:12.5px">
-      Measures actual loudness by decoding each file's audio — real work
-      done by your worker nodes, not an instant check, so this queues jobs
-      you'll see finish over time rather than a single progress bar.
-      Nothing is changed automatically: review the results below and
-      choose which files to level yourself, individually or in bulk.
-      Cancelling and rescanning later only measures what's still unmeasured
-      — nothing already read gets redone.
-    </div>
-    <div id="loudness-progress"></div>
-    <input type="text" id="loudness-search" class="queue-search"
-           placeholder="Search by filename…" oninput="onLoudnessSearch(this.value)">
-    <div id="loudness-detail"><div class="stats-empty">Not scanned yet.</div></div>
 
-    <div class="queue-head" style="margin-top:34px">
-      <h2 style="margin:0">Missing English Audio or Subtitles</h2>
-      <div class="actions">
-        <button onclick="loadLanguageChecks()">Refresh</button>
+    <!-- Missing Audio or Subtitles -->
+    <div class="health-section" data-health="language" hidden>
+      <div class="queue-head" style="margin-top:4px">
+        <h2 style="margin:0">Missing Audio or Subtitles</h2>
+        <div class="actions">
+          <button onclick="loadLanguageChecks()">Refresh</button>
+        </div>
       </div>
+      <div class="note" style="margin:-4px 0 14px;color:var(--muted);font-size:12.5px">
+        Read straight from your regular scans — nothing to run or wait on.
+        Informational only: Forge can't create a track that was never
+        there, so this is a list to act on yourself (Bazarr, a different
+        release), not something with a fix-it button.
+      </div>
+      <div class="glass" id="lang-controls" style="padding:14px 16px;margin-bottom:14px"></div>
+      <div id="missing-audio-detail"><div class="stats-empty">Loading…</div></div>
+      <div id="missing-subs-detail" style="margin-top:14px"></div>
     </div>
-    <div class="note" style="margin:-4px 0 14px;color:var(--muted);font-size:12.5px">
-      Read straight from your regular scans — nothing new to run or wait
-      on. Purely informational: Forge can't manufacture a subtitle track
-      that was never there, so this is a list to act on yourself (Bazarr,
-      a different release, etc.), not something with a fix-it button.
-    </div>
-    <div id="missing-audio-detail"><div class="stats-empty">Loading…</div></div>
-    <div id="missing-subs-detail" style="margin-top:14px"></div>
 
-    <div class="queue-head" style="margin-top:34px">
-      <h2 style="margin:0">Missing Chapters</h2>
-      <div class="actions">
-        <button onclick="loadChapterCheck()">Refresh</button>
+    <!-- Missing Chapters -->
+    <div class="health-section" data-health="chapters" hidden>
+      <div class="queue-head" style="margin-top:4px">
+        <h2 style="margin:0">Missing Chapters</h2>
+        <div class="actions">
+          <button onclick="loadChapterCheck()">Refresh</button>
+        </div>
       </div>
+      <div class="note" style="margin:-4px 0 14px;color:var(--muted);font-size:12.5px">
+        Instant and informational. A file scanned before this check existed
+        won't appear until its next regular or deep scan picks up chapter
+        data for it.
+      </div>
+      <div id="chapters-detail"><div class="stats-empty">Loading…</div></div>
     </div>
-    <div class="note" style="margin:-4px 0 14px;color:var(--muted);font-size:12.5px">
-      Same idea — instant, informational, no fix-it button. A file
-      scanned before this check existed won't show up here until its next
-      regular or deep scan picks up chapter data for it.
+
+    <!-- Standardize -->
+    <div class="health-section" data-health="standardize" hidden>
+      <div class="queue-head" style="margin-top:4px">
+        <h2 style="margin:0">Standardize</h2>
+        <div class="actions">
+          <button onclick="loadStandardize()">Refresh</button>
+        </div>
+      </div>
+      <div class="note" style="margin:-4px 0 14px;color:var(--muted);font-size:12.5px">
+        Files that don't match what this library is set up to want. Unlike
+        the other checks here, these are fixable — select any of them and
+        queue the conversion that brings them into line.
+      </div>
+      <div id="standardize-detail"><div class="stats-empty">Pick a single library above.</div></div>
     </div>
-    <div id="chapters-detail"><div class="stats-empty">Loading…</div></div>
   </div>
 </div>
 
@@ -2255,9 +2281,8 @@ function switchTopTab(name) {
   if (name === 'stats') loadStats();
   if (name === 'audio') {
     renderAudioLibPicker();
-    loadLoudness();
-    loadLanguageChecks();
-    loadChapterCheck();
+    renderHealthTabs();
+    switchHealthSection(healthSection);
   }
 
   // Timed rather than tied to animationend — with reduced-motion on, no
@@ -2470,6 +2495,236 @@ function donutSVG(entries, total, attribute, source, size = 108) {
 let selectedDrillPaths = new Set();
 let currentDrillFiles = [];   // last fetch, so select-all/queue don't need to refetch
 
+// ------------------------------------------------------- Standardize
+// The one Library Health section with a fix: files whose codec or
+// container doesn't match what the library asks for, and a way to queue
+// the conversion that brings them into line.
+
+let standardizeFiles = [];
+let selectedStandardize = new Set();
+
+async function loadStandardize() {
+  const box = document.getElementById('standardize-detail');
+  if (!box) return;
+  if (audioLibId === 'all') {
+    box.innerHTML = `<div class="stats-empty">Pick a single library above —
+      each one has its own target, so "doesn't match" only means something
+      per library.</div>`;
+    return;
+  }
+  const lib = ((window.__state || {}).libraries || [])
+    .find(l => String(l.id) === String(audioLibId));
+  if (!lib) { box.innerHTML = ''; return; }
+
+  box.innerHTML = '<div class="stats-empty">Checking…</div>';
+  if (!CAT) CAT = await (await fetch('/api/catalog')).json();
+
+  const p = lib.profile || {};
+  const wantVideo = p.video_codec || 'hevc';
+  const wantAudio = p.audio_codec || 'aac';
+  const wantContainer = (p.container || 'mkv').toLowerCase();
+  const keepContainer = !!p.keep_existing_container;
+
+  let files;
+  try {
+    const params = new URLSearchParams({library_id: audioLibId});
+    files = (await (await fetch('/api/stats/inventory?' + params)).json()).files || [];
+  } catch (e) {
+    box.innerHTML = '<div class="stats-empty">Could not load this.</div>';
+    return;
+  }
+
+  // "copy" means the library never wanted to change that thing, so it
+  // can't be out of line with it.
+  standardizeFiles = files.map(f => {
+    const reasons = [];
+    if (wantVideo !== 'copy' && f.video_codec && f.video_codec !== wantVideo)
+      reasons.push(`video is ${f.video_codec}, wants ${wantVideo}`);
+    if (wantAudio !== 'copy' && (f.audio_codecs || []).length
+        && !f.audio_codecs.includes(wantAudio))
+      reasons.push(`audio is ${f.audio_codecs.join('/')}, wants ${wantAudio}`);
+    if (!keepContainer && f.container && f.container !== wantContainer)
+      reasons.push(`${f.container.toUpperCase()}, wants ${wantContainer.toUpperCase()}`);
+    return {...f, reasons};
+  }).filter(f => f.reasons.length);
+
+  selectedStandardize.clear();
+  renderStandardize();
+}
+
+function renderStandardize() {
+  const box = document.getElementById('standardize-detail');
+  const files = standardizeFiles;
+  if (!files.length) {
+    box.innerHTML = `<div class="stats-empty">Everything in this library
+      already matches its settings.</div>`;
+    return;
+  }
+  const sel = selectedStandardize.size;
+  box.innerHTML = `
+    <p class="lead">${files.length} file${files.length === 1 ? '' : 's'}
+      don't match this library's settings</p>
+    <div class="glass drill-convert">
+      <label class="drill-selectall">
+        <input type="checkbox" ${sel === files.length ? 'checked' : ''}
+               onclick="selectAllStandardize(this.checked)">
+        select all
+        <span style="margin-left:auto;color:var(--muted)">${sel} selected</span>
+      </label>
+      <div style="font-size:12.5px;color:var(--muted);line-height:1.5">
+        Queues each file with this library's own settings — the same work a
+        normal scan would do. Forge still does the least it can: a file
+        that only needs its container changed gets repackaged, not
+        re-encoded.
+      </div>
+      <button class="primary" onclick="queueStandardize()">Bring selected into line</button>
+    </div>
+    <div class="drill-list">${files.map(f => `<div class="drill-row with-checkbox">
+      <input type="checkbox" data-path="${attr(f.path)}"
+             ${selectedStandardize.has(f.path) ? 'checked' : ''}>
+      <div class="drill-row-body">
+        <div class="drill-name"><span class="clickable" title="Show file details"
+          data-fileinfo="${attr(f.path)}">${f.name}</span></div>
+        <div class="drill-meta">${f.reasons.join(' · ')}</div>
+        <div class="drill-path">${f.path}</div>
+      </div></div>`).join('')}</div>`;
+
+  box.querySelectorAll('.drill-row input[type=checkbox]').forEach(cb => {
+    cb.addEventListener('change', () => {
+      if (cb.checked) selectedStandardize.add(cb.dataset.path);
+      else selectedStandardize.delete(cb.dataset.path);
+      renderStandardize();
+    });
+  });
+}
+
+function selectAllStandardize(checked) {
+  selectedStandardize = checked
+    ? new Set(standardizeFiles.map(f => f.path)) : new Set();
+  renderStandardize();
+}
+
+async function queueStandardize() {
+  const paths = [...selectedStandardize];
+  if (!paths.length) return alert('Select at least one file first.');
+  if (!confirm(`Queue ${paths.length} file(s) to be brought into line with `
+             + "this library's settings?")) return;
+  try {
+    const r = await (await fetch('/api/stats/queue', {method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({paths, use_library_defaults: true})})).json();
+    if (r.skipped && r.skipped.length) {
+      alert(`${r.queued} queued. ${r.skipped.length} skipped:\n`
+          + r.skipped.map(x => `${x.path} — ${x.reason}`).join('\n'));
+    } else {
+      alert(`${r.queued} file${r.queued === 1 ? '' : 's'} queued.`);
+    }
+  } catch (e) {
+    alert('Could not reach the server.');
+    return;
+  }
+  loadStandardize();
+}
+
+// -------------------------------------------------- Library Health tabs
+
+let healthSection = 'loudness';
+
+const HEALTH_TABS = [
+  ['loudness', 'Audio Leveling'],
+  ['language', 'Missing Audio or Subtitles'],
+  ['chapters', 'Missing Chapters'],
+  ['standardize', 'Standardize'],
+];
+
+function renderHealthTabs() {
+  const el = document.getElementById('health-tabs');
+  if (!el) return;
+  el.innerHTML = HEALTH_TABS.map(([id, label]) =>
+    `<button class="${healthSection === id ? 'on' : ''}"
+      onclick="switchHealthSection('${id}')">${label}</button>`).join('');
+}
+
+function switchHealthSection(id) {
+  healthSection = id;
+  renderHealthTabs();
+  document.querySelectorAll('.health-section').forEach(el => {
+    el.hidden = el.dataset.health !== id;
+  });
+  // Loaded on demand so opening the tab doesn't fire four requests at
+  // once, and so each section is current when you actually look at it.
+  if (id === 'loudness') loadLoudness();
+  if (id === 'language') { renderLanguageControls(); loadLanguageChecks(); }
+  if (id === 'chapters') loadChapterCheck();
+  if (id === 'standardize') loadStandardize();
+}
+
+// ---- language preferences, editable from this section ----------------
+
+function renderLanguageControls() {
+  const el = document.getElementById('lang-controls');
+  if (!el) return;
+  if (audioLibId === 'all') {
+    el.innerHTML = `<div style="font-size:12.5px;color:var(--muted)">
+      Each library is checked against its own preferred languages. Pick a
+      single library above to see or change them.</div>`;
+    return;
+  }
+  const lib = ((window.__state || {}).libraries || [])
+    .find(l => String(l.id) === String(audioLibId));
+  if (!lib) { el.innerHTML = ''; return; }
+  const p = lib.profile || {};
+  const a = (p.audio_languages_list || ['eng']).join(', ');
+  const sub = (p.subtitle_languages || ['eng']).join(', ');
+  el.innerHTML = `
+    <div style="font-size:13px;font-weight:600;margin-bottom:4px">
+      Languages wanted in ${lib.name}</div>
+    <div style="font-size:12px;color:var(--muted);line-height:1.5;margin-bottom:10px">
+      Three-letter codes, comma separated — <code>eng</code>,
+      <code>jpn</code>, <code>spa</code>, <code>deu</code>. A file counts as
+      fine if it has <em>any</em> of them. Saving here updates the library,
+      so conversions use it too.</div>
+    <label class="fld"><span>Audio</span>
+      <input type="text" id="lang-audio" value="${attr(a)}" placeholder="eng"></label>
+    <label class="fld"><span>Subtitles</span>
+      <input type="text" id="lang-subs" value="${attr(sub)}" placeholder="eng"></label>
+    <div style="margin-top:10px">
+      <button class="primary" onclick="saveLanguagePrefs()">Save and recheck</button>
+      <span id="lang-save-result" style="margin-left:10px;font-size:12.5px"></span>
+    </div>`;
+}
+
+function parseLangs(text) {
+  return String(text || '').split(',')
+    .map(x => x.trim().toLowerCase()).filter(Boolean);
+}
+
+async function saveLanguagePrefs() {
+  const out = document.getElementById('lang-save-result');
+  const audio = parseLangs(document.getElementById('lang-audio').value);
+  const subs = parseLangs(document.getElementById('lang-subs').value);
+  if (!audio.length) {
+    out.textContent = 'Enter at least one audio language.';
+    out.style.color = 'var(--fault)';
+    return;
+  }
+  const lib = ((window.__state || {}).libraries || [])
+    .find(l => String(l.id) === String(audioLibId));
+  if (!lib) return;
+  out.textContent = 'Saving…'; out.style.color = 'var(--muted)';
+  try {
+    const r = await fetch(`/api/libraries/${lib.id}`, {method: 'PATCH',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({profile: {...(lib.profile || {}),
+        audio_languages_list: audio, subtitle_languages: subs}})});
+    if (!r.ok) throw new Error('rejected');
+    out.textContent = 'Saved.'; out.style.color = 'var(--signal)';
+    loadLanguageChecks();
+  } catch (e) {
+    out.textContent = 'Could not save that.'; out.style.color = 'var(--fault)';
+  }
+}
+
 // ------------------------------------------------------- Audio Leveling
 
 // Loudness range (LU) above which a file usually shows up as "turn it up
@@ -2498,9 +2753,9 @@ function renderAudioLibPicker() {
   const all = [{id: 'all', name: 'All libraries'}, ...libs];
   el.innerHTML = all.map(l => `<button data-libid="${l.id}"
     class="${String(l.id) === String(audioLibId) ? 'on' : ''}"
-    onclick="audioLibId='${l.id}';renderAudioLibPicker();loadLoudness();
+    onclick="audioLibId='${l.id}';renderAudioLibPicker();
              renderLoudnessProgress((window.__state||{}).jobs);
-             loadLanguageChecks();loadChapterCheck()">${l.name}</button>`).join('');
+             switchHealthSection(healthSection)">${l.name}</button>`).join('');
 }
 
 async function startLoudnessScan() {
