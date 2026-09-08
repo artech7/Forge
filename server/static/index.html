@@ -335,6 +335,25 @@
   .review-item .facts .saved{color:var(--signal)}
   .review-item .acts{flex:none;display:flex;gap:7px}
   .review-item .acts button{padding:6px 11px;font-size:12px}
+
+  /* file details popup */
+  .job .file .clickable,.review-item .nm.clickable{cursor:pointer;
+      text-decoration:underline;text-decoration-color:transparent;
+      transition:color .15s,text-decoration-color .15s}
+  .job .file .clickable:hover,.review-item .nm.clickable:hover{color:var(--signal);
+      text-decoration-color:var(--signal)}
+  .fi-grid{display:grid;grid-template-columns:auto 1fr;gap:6px 16px;
+           font-size:13px;align-items:baseline}
+  .fi-grid dt{font-family:'Chivo Mono',monospace;font-size:10.5px;
+              letter-spacing:.1em;text-transform:uppercase;color:var(--muted)}
+  .fi-grid dd{margin:0}
+  .fi-section{font-size:12px;font-weight:700;letter-spacing:.06em;
+              text-transform:uppercase;color:var(--muted);
+              margin:20px 0 8px;padding-bottom:5px;border-bottom:1px solid var(--edge)}
+  .fi-track{font-size:12.5px;padding:5px 0;border-top:1px solid var(--edge)}
+  .fi-track:first-child{border-top:none}
+  .fi-track b{font-weight:600}
+  .fi-track span{color:var(--muted);font-family:'Chivo Mono',monospace;font-size:11.5px}
   .batchbar{display:flex;align-items:center;gap:9px;flex-wrap:wrap;
             padding:10px 13px;margin-bottom:9px;border-radius:11px;
             background:rgba(255,181,71,.08);border:1px solid rgba(255,181,71,.25)}
@@ -661,6 +680,10 @@
 
 <div class="veil" id="drill-veil" onclick="if(event.target===this)closeDrilldown()">
   <div class="glass wiz" id="drill-box"></div>
+</div>
+
+<div class="veil" id="fileinfo-veil" onclick="if(event.target===this)closeFileInfo()">
+  <div class="glass wiz" id="fileinfo-box"></div>
 </div>
 
 <div class="veil review-veil" id="review-veil" onclick="if(event.target===this)closeReview()">
@@ -1258,7 +1281,9 @@ function renderJobs(jobs, meta) {
     return `<div class="glass job st-${j.state}">
       <div class="file">${view.name === 'bloated'
         ? `<input class="select" type="checkbox" ${selectedBloated.has(j.id) ? 'checked' : ''}
-            onclick="toggleBloatedSelect(${j.id},this.checked)">` : ''}${name}</div>
+            onclick="toggleBloatedSelect(${j.id},this.checked)">` : ''}<span
+          class="clickable" title="Show file details"
+          onclick="openFileInfo(${JSON.stringify(j.path)})">${name}</span></div>
       <div class="pct">${pct}</div>
       <div class="meta">${bits.filter(Boolean).join(' · ')}</div>
       ${sizes ? `<div class="sizes">${sizes}</div>` : ''}
@@ -1367,6 +1392,89 @@ async function doBatchRevert() {
   }
   selectedBloated.clear();
   loadView();
+}
+
+// ----------------------------------------------------- file details
+// Reachable from any filename in the queue or the triage window.
+
+async function openFileInfo(path) {
+  document.getElementById('fileinfo-veil').classList.add('open');
+  const box = document.getElementById('fileinfo-box');
+  box.innerHTML = '<div class="stats-empty">Reading the file…</div>';
+  let f;
+  try {
+    const r = await fetch('/api/files/detail?path=' + encodeURIComponent(path));
+    if (!r.ok) {
+      const detail = (await r.json().catch(() => ({}))).detail
+        || 'Could not read that file.';
+      box.innerHTML = `<button onclick="closeFileInfo()" style="float:right">Close</button>
+        <h3>Nothing to show</h3><p class="lead">${detail}</p>`;
+      return;
+    }
+    f = await r.json();
+  } catch (e) {
+    box.innerHTML = `<button onclick="closeFileInfo()" style="float:right">Close</button>
+      <h3>Nothing to show</h3><p class="lead">Could not reach the server.</p>`;
+    return;
+  }
+
+  const d = f.detail || {};
+  const row = (k, v) => v ? `<dt>${k}</dt><dd>${v}</dd>` : '';
+  const mins = f.duration ? `${Math.floor(f.duration / 60)}m ${Math.round(f.duration % 60)}s` : '';
+  const kbps = v => v ? `${Math.round(v / 1000)} kbps` : '';
+
+  const audio = (d.audio_tracks || []).map((a, i) => `<div class="fi-track">
+      <b>${i + 1}. ${(a.codec || '?').toUpperCase()}</b>
+      <span>${[a.language, a.channel_layout || (a.channels ? a.channels + 'ch' : null)]
+        .filter(Boolean).join(' · ')}</span></div>`).join('')
+    || '<div class="fi-track"><span>No audio tracks</span></div>';
+
+  const subs = (d.subtitle_tracks || []).map((t, i) => `<div class="fi-track">
+      <b>${i + 1}. ${(t.codec || '?').toUpperCase()}</b>
+      <span>${t.language || 'no language tag'}</span></div>`).join('')
+    || '<div class="fi-track"><span>No subtitle tracks</span></div>';
+
+  const loud = d.loudness ? `<div class="fi-section">Loudness</div>
+    <dl class="fi-grid">
+      ${row('Integrated', d.loudness.integrated != null ? d.loudness.integrated + ' LUFS' : '')}
+      ${row('Range', d.loudness.range != null ? d.loudness.range + ' LU' : '')}
+      ${row('True peak', d.loudness.true_peak != null ? d.loudness.true_peak + ' dBTP' : '')}
+    </dl>` : '';
+
+  box.innerHTML = `
+    <button onclick="closeFileInfo()" style="float:right">Close</button>
+    <h3 style="word-break:break-word">${f.name}</h3>
+    <p class="lead">${f.on_disk ? 'Read from the file just now.'
+      : 'This file is not where Forge last saw it — showing what was recorded previously.'}</p>
+
+    <div class="fi-section">Video</div>
+    <dl class="fi-grid">
+      ${row('Container', (f.name.split('.').pop() || '').toUpperCase())}
+      ${row('Codec', (f.video_codec || 'unknown').toUpperCase())}
+      ${row('Profile', d.profile)}
+      ${row('Resolution', f.width && f.height ? `${f.width} × ${f.height}` : '')}
+      ${row('Bit depth', f.bit_depth ? f.bit_depth + '-bit' : '')}
+      ${row('Frame rate', d.frame_rate ? d.frame_rate + ' fps' : '')}
+      ${row('Dynamic range', d.hdr ? 'HDR (' + (d.color_transfer || 'unknown') + ')' : 'SDR')}
+      ${row('Video bitrate', kbps(f.video_bitrate))}
+    </dl>
+
+    <div class="fi-section">Audio (${(d.audio_tracks || []).length})</div>${audio}
+    <div class="fi-section">Subtitles (${(d.subtitle_tracks || []).length})</div>${subs}
+    ${loud}
+
+    <div class="fi-section">File</div>
+    <dl class="fi-grid">
+      ${row('Size', fmtSize(f.size))}
+      ${row('Duration', mins)}
+      ${row('Total bitrate', kbps(f.bitrate))}
+      ${row('Chapters', d.chapters != null ? d.chapters : '')}
+    </dl>
+    <div class="drill-path" style="margin-top:14px">${f.path}</div>`;
+}
+
+function closeFileInfo() {
+  document.getElementById('fileinfo-veil').classList.remove('open');
 }
 
 // ------------------------------------------------- full-screen triage
@@ -1514,7 +1622,8 @@ function reviewRow(j) {
   return `<div class="review-item">
     <input type="checkbox" data-id="${j.id}" ${reviewState.sel.has(j.id) ? 'checked' : ''}>
     <div class="body">
-      <div class="nm" title="${j.path}">${name}</div>
+      <div class="nm clickable" title="Show file details"
+           onclick="openFileInfo(${JSON.stringify(j.path)})">${name}</div>
       <div class="facts">${facts.join('<span style="opacity:.4">·</span>')}</div>
       ${j.error ? `<div class="drill-meta" style="color:var(--fault)">${j.error}</div>` : ''}
     </div>
@@ -3865,7 +3974,15 @@ async function saveLibrary() {
 }
 
 document.addEventListener('keydown', e => {
-  if (e.key === 'Escape') closeWizard();
+  if (e.key !== 'Escape') return;
+  // Innermost first, so Escape backs out one layer at a time rather than
+  // closing everything at once.
+  const veils = ['fileinfo-veil', 'drill-veil', 'review-veil'];
+  for (const id of veils) {
+    const el = document.getElementById(id);
+    if (el && el.classList.contains('open')) { el.classList.remove('open'); return; }
+  }
+  closeWizard();
 });
 
 async function scanRoots() {

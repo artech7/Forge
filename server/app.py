@@ -1292,6 +1292,48 @@ async def stats_chapters(library_id: int = None):
     return {"files": db.files_missing_chapters(library_id)}
 
 
+@app.get("/api/files/detail")
+async def file_detail(path: str):
+    """Everything known about one file, for the details popup.
+
+    Probed live when the file is reachable rather than served from the
+    cache: the cache can be a rename behind, and a popup that shows
+    stale information about the file you just clicked is worse than one
+    that takes a second longer. Falls back to whatever was cached when
+    the file isn't there — a job in the Failed list may well point at
+    something that has since moved.
+    """
+    cached = db.get_cached_file(path) or {}
+    try:
+        cached_detail = json.loads(cached.get("detail") or "{}")
+    except (json.JSONDecodeError, TypeError):
+        cached_detail = {}
+
+    live = None
+    if Path(path).is_file():
+        live = await asyncio.to_thread(probe, path)
+
+    if live:
+        info = {**live, "detail": live.get("detail") or {}, "on_disk": True}
+    else:
+        info = {
+            "size": cached.get("size"), "duration": cached.get("duration"),
+            "video_codec": cached.get("video_codec"),
+            "video_bitrate": cached.get("video_bitrate"),
+            "bit_depth": cached.get("bit_depth"),
+            "width": cached.get("width"), "height": cached.get("height"),
+            "bitrate": cached.get("bitrate"),
+            "audio_codecs": db.parse_json(cached.get("audio_codecs"), []),
+            "detail": cached_detail,
+            "on_disk": False,
+        }
+    info["path"] = path
+    info["name"] = Path(path).name
+    if not live and not cached:
+        raise HTTPException(404, "Nothing known about that file, and it isn't on disk.")
+    return info
+
+
 @app.get("/api/stats/loudness")
 async def stats_loudness(library_id: int = None):
     """Every file with a loudness reading, for the Audio Leveling panel."""
