@@ -413,7 +413,8 @@ check("the cause is put before the consequence", lambda: _agent.explain_failure(
       "[out#0/matroska @ 0x1] Could not write header (incorrect codec "
       "parameters ?): Invalid data found when processing input\n"
       "[af#0:1 @ 0x2] Error sending frames to consumers: Invalid data found",
-      3199971767), lambda r: r.index("af#0:1") < r.index("out#0/matroska"))
+      3199971767), lambda r:
+      r.index("audio track") < r.index("Could not write header"))
 check("and audio trouble gets a suggestion", lambda: _agent.explain_failure(
       "[af#0:1 @ 0x2] Error sending frames to consumers: Invalid data found",
       3199971767), lambda r: "Leave audio alone" in r)
