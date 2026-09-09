@@ -251,7 +251,7 @@ def scan_library(library, probe_fn):
         except OSError:
             continue
 
-        if db.was_processed(str(path), stat.st_mtime):
+        if db.was_processed(str(path), stat.st_mtime, stat.st_size):
             continue
 
         # A file already sitting in Failed/Ignored/Got-bigger is waiting for

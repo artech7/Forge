@@ -1016,12 +1016,19 @@ def mark_processed(path, mtime, size, library_id):
             (path, mtime, size, library_id, time.time()))
 
 
-def was_processed(path, mtime):
-    """True if we've already handled this exact file, unchanged since."""
+def was_processed(path, mtime, size):
+    """True if we've already handled this exact file, unchanged since.
+
+    mtime alone isn't enough: SMB copies routinely preserve or coarsen
+    mtimes, so a replacement file landing on the same path can land
+    within the 1-second tolerance below and get mistaken for the file
+    already on record. Size is stored for exactly this comparison.
+    """
     with connect() as conn:
-        row = conn.execute("SELECT mtime FROM processed WHERE path=?",
+        row = conn.execute("SELECT mtime, size FROM processed WHERE path=?",
                            (path,)).fetchone()
-    return row is not None and abs((row["mtime"] or 0) - mtime) < 1
+    return (row is not None and abs((row["mtime"] or 0) - mtime) < 1
+            and row["size"] == size)
 
 
 def note_pending(path, size):

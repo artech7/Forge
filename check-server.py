@@ -95,7 +95,9 @@ check("cache_probe", lambda: db.cache_probe("/m/a.mkv", {
     "audio_codecs": ["ac3"], "width": 1920, "height": 1080,
     "bitrate": 8_000_000, "video_bitrate": 7_000_000}))
 check("mark_processed", lambda: db.mark_processed("/m/a.mkv", 1.0, 10**9, lib_id))
-check("was_processed", lambda: db.was_processed("/m/a.mkv", 1.0), lambda r: r is True)
+check("was_processed", lambda: db.was_processed("/m/a.mkv", 1.0, 10**9), lambda r: r is True)
+check("was_processed rejects a same-mtime, different-size file",
+      lambda: db.was_processed("/m/a.mkv", 1.0, 123), lambda r: r is False)
 check("note_pending", lambda: db.note_pending("/m/b.mkv", 100))
 check("clear_pending", lambda: db.clear_pending("/m/b.mkv"))
 check("record_original", lambda: db.record_original(
