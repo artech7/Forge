@@ -859,6 +859,10 @@ async def handle_unhealthy_video(job, error):
             conf.get("api_key"), job["path"],
             conf.get("path_from", ""), conf.get("path_to", ""))
         if ok:
+            # The *arr is about to replace this file — the probe-cache row
+            # describes the corrupt copy that's going away, not whatever
+            # lands here next, so it can't just wait for the next scan.
+            db.forget_cached_file(job["path"])
             db.update_job(job["id"], state="removed", progress=100,
                           finished_at=time.time(), outcome=f"{note} {message}")
             await broadcast()

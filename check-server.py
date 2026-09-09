@@ -460,6 +460,23 @@ check("cancelling a job that already finished is refused, not overwritten",
 check("and its state is untouched", lambda: db.get_job(_done)["state"],
       lambda r: r == "done")
 
+print("\nA corrupt video handed off to the *arr:")
+_arr_lib = db.create_library(
+    "Corrupt", str(watch), str(base / "out2"),
+    {**profile, "arr": {"on_unhealthy_video": "delete_and_research",
+                        "url": "http://fake-arr", "kind": "radarr",
+                        "api_key": "x"}},
+    "archive")
+_corrupt_path = "/m/corrupt.mkv"
+_corrupt_job = db.enqueue(_corrupt_path, _spec, 1000, _arr_lib)
+db.cache_probe(_corrupt_path, {"size": 1000, "duration": 1.0,
+    "video_codec": "h264", "audio_codecs": ["ac3"]})
+app.arr.find_and_research = lambda *a, **k: (True, "found a replacement")
+check("a successful *arr research clears the stale probe-cache row", lambda: (
+      _run(app.handle_unhealthy_video(db.get_job(_corrupt_job), "decode error")),
+      db.get_cached_file(_corrupt_path))[-1], lambda r: r is None)
+db.delete_library(_arr_lib)
+
 print("\nTolerating odd stored values:")
 check("parse_json handles NULL", lambda: db.parse_json(None, {}),
       lambda r: r == {})
