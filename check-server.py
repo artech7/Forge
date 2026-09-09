@@ -226,6 +226,21 @@ check("forward mapping to Windows", lambda: scheduler.resolve_path(
 check("an unmapped path is streamed", lambda: scheduler.resolve_path(
       _WIN, "/other/a.mkv")[0], lambda r: r == "stream")
 
+# A node with one mount nested inside another must match the more specific
+# one regardless of registration order, or files under the nested mount
+# resolve through the coarser (wrong) local path.
+_NESTED = {"mounts": [{"server": "/media", "local": "Z:/Media"},
+                      {"server": "/media/4k", "local": "D:/4K"}]}
+check("nested mount matches the more specific prefix", lambda: scheduler.resolve_path(
+      _NESTED, "/media/4k/movie.mkv"),
+      lambda r: r == ("local", "D:/4K/movie.mkv"))
+check("the coarser mount still matches outside the nested one", lambda:
+      scheduler.resolve_path(_NESTED, "/media/movie.mkv"),
+      lambda r: r == ("local", "Z:/Media/movie.mkv"))
+check("reverse mapping also prefers the more specific mount", lambda:
+      scheduler.reverse_path(_NESTED, "D:\\4K\\movie.mkv"),
+      lambda r: r == "/media/4k/movie.mkv")
+
 print("\nWhere originals go:")
 check("in place, no choice", lambda: str(watcher.originals_dir(
       {"name": "Movies", "watch_path": "/media/Movies", "output_path": None})),

@@ -40,7 +40,13 @@ def resolve_path(node, path):
     otherwise the server streams it and takes the result back.
     """
     normalised = _slashes(path)
-    for mount in node.get("mounts", []):
+    # Longest prefix first: a node with both /media and /media/4k mounted
+    # must match the more specific one, or every file under it resolves
+    # through the coarser mount instead (same hazard db.library_matcher
+    # guards against for library watch_paths).
+    mounts = sorted(node.get("mounts", []),
+                     key=lambda m: -len(_slashes(m.get("server", ""))))
+    for mount in mounts:
         server_prefix = _slashes(mount.get("server", ""))
         local_prefix = _slashes(mount.get("local", ""))
         if server_prefix and normalised.startswith(server_prefix + "/"):
@@ -183,7 +189,11 @@ def reverse_path(node, node_path):
     if not node_path:
         return node_path
     normalised = _slashes(node_path)
-    for mount in node.get("mounts", []):
+    # Same longest-prefix-wins reasoning as resolve_path, mirrored here
+    # since this is the reverse direction of the same mapping.
+    mounts = sorted(node.get("mounts", []),
+                     key=lambda m: -len(_slashes(m.get("local", ""))))
+    for mount in mounts:
         server_prefix = _slashes(mount.get("server", ""))
         local_prefix = _slashes(mount.get("local", ""))
         if local_prefix and normalised.startswith(local_prefix + "/"):
