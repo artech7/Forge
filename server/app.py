@@ -2163,7 +2163,7 @@ async def retry_job(job_id: int):
     # Only one live job per file. If this path is already waiting or running,
     # putting this one back would break that rule — and the file is going to
     # be converted anyway, so the stale entry is simply cleared.
-    if db.has_job_for(job["path"], list(db.ACTIVE_STATES)):
+    if db.has_job_for(job["path"], list(db.ACTIVE_STATES), exclude_id=job_id):
         db.delete_job(job_id)
         await broadcast()
         return {"ok": True, "removed": True,

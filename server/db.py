@@ -1174,13 +1174,16 @@ def unresolved_job_for(path):
     return row_to_dict(row)
 
 
-def has_job_for(path, states=None):
+def has_job_for(path, states=None, exclude_id=None):
     """True if a job already exists for this path in any of these states."""
     query = "SELECT 1 FROM jobs WHERE path=?"
     params = [path]
     if states:
         query += f" AND state IN ({','.join('?' * len(states))})"
         params.extend(states)
+    if exclude_id is not None:
+        query += " AND id != ?"
+        params.append(exclude_id)
     with connect() as conn:
         return conn.execute(query + " LIMIT 1", params).fetchone() is not None
 

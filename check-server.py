@@ -386,6 +386,16 @@ check("a lone failed job requeues", lambda: (_run(app.retry_job(_solo)),
 check("and its error is cleared", lambda: db.get_job(_solo)["error"],
       lambda r: r is None)
 
+# A job's own row is always "active" by the time someone hits Restart on
+# it (that's the only state where the button appears) — has_job_for must
+# not mistake that for a duplicate and delete the job out from under a
+# worker that's still processing it.
+_active = db.enqueue("/m/active.mkv", _spec, 1000)
+db.update_job(_active, state="running")
+check("restarting a running job requeues it, not deletes it", lambda: (
+      _run(app.retry_job(_active)), db.get_job(_active)), lambda r:
+      r is not None and r["state"] == "queued")
+
 print("\nTolerating odd stored values:")
 check("parse_json handles NULL", lambda: db.parse_json(None, {}),
       lambda r: r == {})
