@@ -255,6 +255,29 @@ check("a blank choice falls back", lambda: str(watcher.originals_dir(
       {"name": "TV", "watch_path": "/in", "output_path": "/media/TV",
        "originals_path": "  "})), lambda r: r == "/media/Originals/TV")
 
+print("\nDisposing of the original once the new file is placed:")
+_orig_dir = pathlib.Path(tempfile.mkdtemp())
+_no_lib_source = _orig_dir / "no-library.mkv"
+_no_lib_source.write_bytes(b"x")
+_no_lib_final = _orig_dir / "no-library.mp4"
+_no_lib_final.write_bytes(b"y")
+# /api/queue jobs have no library, so original_action defaults to
+# "archive" with nowhere to archive into — that must leave the file
+# alone, not quietly delete someone's source video.
+check("archive with no library leaves the original alone", lambda: (
+      app.handle_original({"id": 1, "path": str(_no_lib_source)},
+                          None, _no_lib_final),
+      _no_lib_source.exists())[-1], lambda r: r is True)
+
+_delete_source = _orig_dir / "delete-me.mkv"
+_delete_source.write_bytes(b"x")
+_delete_final = _orig_dir / "delete-me.mp4"
+_delete_final.write_bytes(b"y")
+check("an explicit delete action still removes the original", lambda: (
+      app.handle_original({"id": 2, "path": str(_delete_source)},
+                          {"original_action": "delete"}, _delete_final),
+      _delete_source.exists())[-1], lambda r: r is False)
+
 print("\nGiving up on stuck jobs:")
 _AF = {"enabled": True, "amount": 2, "unit": "hours",
        "stall_enabled": True, "stall_minutes": 30}

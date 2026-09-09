@@ -756,7 +756,11 @@ def handle_original(job, library, final):
         db.record_original(str(archived), job["id"], library["id"],
                            str(final), size)
     elif action == "archive":
-        source.unlink(missing_ok=True)
+        # No library to archive into (a job queued straight through
+        # /api/queue rather than a watched library). "Archive" means
+        # preserve, not delete, so the safest thing with nowhere to put
+        # it is to leave it exactly where it is.
+        pass
 
 
 @app.post("/api/jobs/{job_id}/fail")
