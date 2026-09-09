@@ -12,7 +12,8 @@ global.document = {
   getElementById: id => (id === 'wizerr' ? null : el(id)),
   querySelector: sel => (sel === '.wiz-nav' ? el('wiznav') : null),
   querySelectorAll: () => [], addEventListener: () => {},
-  createElement: () => ({style:{}, scrollIntoView(){}, classList:{add(){}}})};
+  createElement: () => ({style:{}, scrollIntoView(){}, classList:{add(){}}}),
+  documentElement: {dataset: {}}};
 global.window = {}; global.location = {protocol:'http:', host:'x', reload(){}};
 global.WebSocket = class { constructor(){} };
 global.alert = () => {}; global.confirm = () => true;
@@ -183,8 +184,9 @@ check('slot control at limits', () => {
 
   console.log();
   if (failures) {
-    console.log(failures.length + ' problem(s):');
-    failures.forEach(f => console.log('  ' + f));
+    // Each failure already printed its own detail line as it happened;
+    // failures is just a count, not a list, so there's nothing to repeat.
+    console.log(failures + ' problem(s).');
     process.exit(1);
   }
   console.log('Interface renders cleanly.');
