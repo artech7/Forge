@@ -16,6 +16,7 @@ import db                                        # noqa: E402
 db.DB_PATH = pathlib.Path(tempfile.mkdtemp()) / "check.db"
 
 from datetime import datetime as _DT             # noqa: E402
+from fastapi import HTTPException                # noqa: E402
 import app                                       # noqa: E402
 import naming, profiles, schedule, watcher       # noqa: E402
 import lookup, scheduler                         # noqa: E402
@@ -27,6 +28,15 @@ def _run(coroutine):
     """Run one async endpoint from this synchronous script."""
     import asyncio
     return asyncio.run(coroutine)
+
+
+def _status(coroutine):
+    """Run an endpoint expected to reject the request, return its status code."""
+    try:
+        _run(coroutine)
+    except HTTPException as exc:
+        return exc.status_code
+    return None
 
 
 def check(label, fn, expect=None):
@@ -397,6 +407,20 @@ db.update_job(_active, state="running")
 check("restarting a running job requeues it, not deletes it", lambda: (
       _run(app.retry_job(_active)), db.get_job(_active)), lambda r:
       r is not None and r["state"] == "queued")
+
+print("\nCancelling a job:")
+check("cancelling a running job succeeds", lambda: (
+      _run(app.cancel(_active)), db.get_job(_active)["state"])[-1],
+      lambda r: r == "cancelled")
+check("cancelling a job that doesn't exist 404s",
+      lambda: _status(app.cancel(999999)), lambda r: r == 404)
+
+_done = db.enqueue("/m/done.mkv", _spec, 1000)
+db.update_job(_done, state="done", finished_at=time.time())
+check("cancelling a job that already finished is refused, not overwritten",
+      lambda: _status(app.cancel(_done)), lambda r: r == 409)
+check("and its state is untouched", lambda: db.get_job(_done)["state"],
+      lambda r: r == "done")
 
 print("\nTolerating odd stored values:")
 check("parse_json handles NULL", lambda: db.parse_json(None, {}),

@@ -1750,6 +1750,16 @@ async def queue(req: Request):
 
 @app.post("/api/jobs/{job_id}/cancel")
 async def cancel(job_id: int):
+    job = db.get_job(job_id)
+    if not job:
+        raise HTTPException(404, "No such job")
+    # Without this guard, a cancel racing a worker's own /complete call
+    # can land after the job already finished and stamp a done job as
+    # cancelled — wiping out the fact that it actually succeeded.
+    if job["state"] not in db.ACTIVE_STATES:
+        raise HTTPException(
+            409, f"That job already finished (state: {job['state']}) "
+                 f"— there's nothing left to cancel.")
     db.update_job(job_id, state="cancelled", finished_at=time.time())
     await broadcast()
     return {"ok": True}
