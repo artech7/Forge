@@ -64,15 +64,25 @@ const state = {
 
 let failures = 0;
 function check(label, fn) {
-  try { fn(); console.log('  ok      ' + label); }
-  catch (e) { failures++; console.log('  FAILED  ' + label + ' -> ' + e.message); }
+  try {
+    const result = fn();
+    // An async check (or one returning a promise chain) must be awaited
+    // before declaring success — otherwise its assertions run in the
+    // background, after this call has already logged "ok", and a later
+    // check reads DOM state the async one hasn't finished writing yet.
+    if (result && typeof result.then === 'function') {
+      return result.then(() => console.log('  ok      ' + label),
+        e => { failures++; console.log('  FAILED  ' + label + ' -> ' + e.message); });
+    }
+    console.log('  ok      ' + label);
+  } catch (e) { failures++; console.log('  FAILED  ' + label + ' -> ' + e.message); }
 }
 
 try { eval(src + '\nglobal.__x = {render, renderLibs, renderTabs, renderJobs, slotControl, ' +
   'setSlots, retryJob, cancelJob, requeueJob, removeJob, bulkJobs, switchView, ' +
   'loadView, openWizard, drawSettings, refreshPreview, scanOne, scanAll, ' +
   'toggleLib, removeLib, splitList, describeFilters, wizardError, jumpTo, ' +
-  'backToReview, nextStep, validateFirstStep, STEPS, ' +
+  'backToReview, nextStep, validateFirstStep, STEPS, GROUPS, groupIndexOf, ' +
   'get step(){return step;}, set step(v){step = v;}, ' +
   'get returnTo(){return returnTo;}, get draft(){return draft;}, drawStep};'); }
 catch (e) { console.log('SCRIPT FAILED TO LOAD: ' + e.message); process.exit(1); }
@@ -136,7 +146,7 @@ check('slot control at limits', () => {
     if (__x.returnTo !== null) throw new Error('returnTo still set');
   });
 
-  check('editing pre-fills from a saved library', () => {
+  await check('editing pre-fills from a saved library', () => {
     const lib = {id:99, name:'Saved', watch_path:'/w', output_path:'/o',
       original_action:'delete',
       profile:{video_codec:'hevc', container:'mkv', keep_chapters:false},
@@ -168,7 +178,7 @@ check('slot control at limits', () => {
       throw new Error('min_saving_percent missing from the defaults');
   });
 
-  check('every step renders after toggling its switches', async () => {
+  await check('every step renders after toggling its switches', async () => {
     for (let i = 0; i < __x.STEPS.length - 1; i++) {
       __x.step = i;
       await __x.drawStep();
@@ -176,10 +186,16 @@ check('slot control at limits', () => {
     }
   });
 
-  check('step bar is clickable', () => {
+  await check('step bar is clickable', async () => {
+    // The bar only shows dots for the steps inside the CURRENT group
+    // (see the comment in bar()) rather than all of them at once, so
+    // land on a group with more than one step to have something to count.
+    const group = __x.GROUPS.find(g => g.steps.length > 1);
+    __x.step = group.steps[0];
+    await __x.drawStep();
     const segs = els.wiz.innerHTML.match(/<i class="[^"]*" title="/g) || [];
-    if (segs.length !== __x.STEPS.length)
-      throw new Error(segs.length + ' segments for ' + __x.STEPS.length + ' steps');
+    if (segs.length !== group.steps.length)
+      throw new Error(segs.length + ' segments for a ' + group.steps.length + '-step group');
   });
 
   console.log();
