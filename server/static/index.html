@@ -1163,7 +1163,10 @@ function renderActiveBar(jobs) {
   if (!total) { el.innerHTML = ''; return; }
 
   const where = scoped ? '' : ' here';
-  let buttons = `<button onclick="cancelQueue('all')">Cancel all ${total}${where}</button>`;
+  // This total spans both Working and Waiting (it's everything queued or
+  // running, not just what's on screen) — spelled out so it can't be read
+  // as a count of whatever tab happens to be open when it's showing.
+  let buttons = `<button onclick="cancelQueue('all')">Cancel all ${total} queued or running${where}</button>`;
   // Only worth splitting when there's actually a mix to split.
   if (scoped && kinds.conversions && kinds.housekeeping) {
     buttons += `
@@ -1322,6 +1325,10 @@ function renderJobs(jobs, meta) {
       : view.name === 'ignored' ? '<b>Nothing ignored</b>Files that still fail with their audio left untouched land here instead of cluttering Failed.'
       : view.name === 'removed' ? '<b>Nothing removed</b>Files whose video was unrecoverable and were handed to Radarr/Sonarr to re-fetch land here.'
       : view.name === 'done' ? '<b>Nothing finished yet</b>Completed conversions collect here.'
+      // Nothing currently running is a different fact from nothing queued —
+      // saying "queued" here read as contradicting the Waiting tab's own
+      // count, right below the same "Cancel all" bar that includes it.
+      : view.name === 'working' ? '<b>Nothing running right now</b>Anything queued up shows under the Waiting tab instead.'
       : '<b>Nothing queued</b>Drop a file into a watch folder and it will appear.'}</div>`;
     renderPager(meta);
     return;
