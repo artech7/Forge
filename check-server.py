@@ -443,7 +443,7 @@ check("and its error is cleared", lambda: db.get_job(_solo)["error"],
 _active = db.enqueue("/m/active.mkv", _spec, 1000)
 db.update_job(_active, state="running")
 check("restarting a running job requeues it, not deletes it", lambda: (
-      _run(app.retry_job(_active)), db.get_job(_active)), lambda r:
+      _run(app.retry_job(_active)), db.get_job(_active))[-1], lambda r:
       r is not None and r["state"] == "queued")
 
 print("\nCancelling a job:")
