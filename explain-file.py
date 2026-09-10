@@ -102,7 +102,7 @@ def main():
 
     print()
     print("3. Already handled before")
-    if db.was_processed(str(target), stat.st_mtime):
+    if db.was_processed(str(target), stat.st_mtime, stat.st_size):
         print("   YES - this exact file was already dealt with, so it is")
         print("   skipped. That happens after it was converted, filtered out,")
         print("   or found to need nothing. Touching the file (or editing the")
@@ -110,10 +110,22 @@ def main():
         return 0
     print("   no, it's new to Forge")
 
+    print()
+    print("4. A past attempt still sitting unresolved")
+    stuck = db.unresolved_job_for(str(target))
+    if stuck and stuck.get("size_before") == stat.st_size:
+        print(f"   YES - job #{stuck['id']} against this exact file (same size) is")
+        print(f"   sitting in {stuck['state'].capitalize()}, waiting for a person to")
+        print("   look at it. The scanner leaves it alone on purpose rather than")
+        print("   re-trying the same failure every cycle. Retry or remove it from")
+        print(f"   the {stuck['state'].capitalize()} list to make Forge look again.")
+        return 0
+    print("   no")
+
     # ---- skip rules ---------------------------------------------------
     filters = owner.get("filters") or {}
     print()
-    print("4. Skip rules")
+    print("5. Skip rules")
     reason = watcher.filter_verdict(target, stat.st_size, None, filters)
     if reason:
         print(f"   SKIPPED - {reason}")
@@ -136,7 +148,7 @@ def main():
         return 0
 
     print()
-    print("5. What's in the file")
+    print("6. What's in the file")
     print(f"   video {info.get('video_codec')} "
           f"{info.get('width')}x{info.get('height')} at "
           f"{(info.get('video_bitrate') or 0) / 1000:.0f} kbps")
@@ -144,7 +156,7 @@ def main():
     print(f"   container .{target.suffix.lstrip('.')}")
 
     print()
-    print("6. Speed")
+    print("7. Speed")
     depth = int(info.get("bit_depth") or 8)
     hi10p = info.get("video_codec") == "h264" and depth > 8
     slow_here = []
@@ -174,7 +186,7 @@ def main():
         print(f"   {depth}-bit source, nothing unusual expected.")
 
     print()
-    print("7. What needs doing")
+    print("8. What needs doing")
     action, adjusted, why = watcher.plan_conversion(target, info, spec, filters)
     print(f"   {action.upper()}: {why}")
 
@@ -204,7 +216,7 @@ def main():
         return 0
 
     print()
-    print("8. Where it would go")
+    print("9. Where it would go")
     if owner.get("output_path"):
         print("   " + str(watcher.destination_for(owner, str(target), spec["container"])))
     else:
