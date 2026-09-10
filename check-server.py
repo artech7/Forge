@@ -278,6 +278,65 @@ check("an explicit delete action still removes the original", lambda: (
                           {"original_action": "delete"}, _delete_final),
       _delete_source.exists())[-1], lambda r: r is False)
 
+print("\nReworking an already-converted file without losing the true original:")
+_rw_dir = pathlib.Path(tempfile.mkdtemp())
+_rw_lib = {"id": 9501, "name": "Rework", "watch_path": str(_rw_dir),
+          "original_action": "archive"}
+_rw_baseline_n = db.originals_summary()["n"]
+
+# The common Radarr/Sonarr-integrated setup: converts in place, no rename,
+# same container in and out — so source and final are the exact same path.
+# Before the fix this was never archived at all: handle_original() ran
+# after the new file had already overwritten it.
+_samepath = _rw_dir / "Show - S01E01.mkv"
+_samepath.write_bytes(b"true original bytes")
+check("an in-place, same-path conversion still archives the original",
+      lambda: (app.handle_original({"id": 9601, "path": str(_samepath)},
+                                   _rw_lib, _samepath),
+               # Stand in for the os.replace(staged, final) that real
+               # completion does immediately after handle_original() —
+               # without it, nothing simulates the converted file actually
+               # landing back at this path.
+               _samepath.write_bytes(b"job 1's converted output"),
+               db.original_for_path(str(_samepath)))[-1],
+      lambda r: r is not None and pathlib.Path(r["archived_path"]).read_bytes()
+                == b"true original bytes")
+
+# Now rework that same (already-converted, already-archived) file again —
+# a loudness pass, a retranscode, another remux. This must find the
+# existing archive by lineage and update it, not create a second entry
+# that clobbers the one true original or gets lost because the container
+# changed.
+_reworked_final = _rw_dir / "Show - S01E01.mp4"
+check("reworking it again doesn't touch the true original's bytes",
+      lambda: (app.handle_original({"id": 9602, "path": str(_samepath)},
+                                   _rw_lib, _reworked_final),
+               db.original_for_job(9602))[-1],
+      lambda r: (r is not None
+                 and r["final_path"] == str(_reworked_final)
+                 and pathlib.Path(r["archived_path"]).read_bytes()
+                     == b"true original bytes"))
+check("...and there's still only one archived copy, not two",
+      lambda: db.originals_summary()["n"] - _rw_baseline_n, lambda r: r == 1)
+
+# A second, unrelated file that happens to share an archived name must
+# never silently overwrite the first one.
+_dupe_dir = pathlib.Path(tempfile.mkdtemp())
+_dupe_lib = {"id": 9502, "name": "Dupes", "watch_path": str(_dupe_dir),
+            "original_action": "archive"}
+_dupe_a = _dupe_dir / "Same Name.mkv"
+_dupe_a.write_bytes(b"first release")
+app.handle_original({"id": 9701, "path": str(_dupe_a)}, _dupe_lib,
+                    _dupe_dir / "Same Name.mp4")
+_dupe_b = _dupe_dir / "Same Name.mkv"
+_dupe_b.write_bytes(b"second release, different file")
+check("a second archive of the same name doesn't clobber the first",
+      lambda: (app.handle_original({"id": 9702, "path": str(_dupe_b)},
+                                   _dupe_lib, _dupe_dir / "Same Name.mp4"),
+               [p.read_bytes() for p in
+                (watcher.originals_dir(_dupe_lib)).glob("Same Name*")])[-1],
+      lambda r: sorted(r) == [b"first release", b"second release, different file"])
+
 print("\nGiving up on stuck jobs:")
 _AF = {"enabled": True, "amount": 2, "unit": "hours",
        "stall_enabled": True, "stall_minutes": 30}

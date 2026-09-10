@@ -1161,6 +1161,33 @@ def original_for_job(job_id):
         return row_to_dict(row)
 
 
+def original_for_path(path):
+    """The archived original standing behind whatever currently sits at
+    this path, if any.
+
+    Matches on final_path rather than the archived path itself: a rework
+    job's source *is* an earlier conversion's output, so this is how a
+    second or third pass on the same file finds the original that's
+    already safely archived, instead of losing track of it or archiving a
+    duplicate over it. Most recent match wins, in case a path was ever
+    reused for something unrelated.
+    """
+    with connect() as conn:
+        row = conn.execute(
+            """SELECT * FROM originals WHERE final_path=?
+               ORDER BY archived_at DESC LIMIT 1""", (path,)).fetchone()
+        return row_to_dict(row)
+
+
+def update_original(archived_path, job_id, final_path):
+    """Point an already-archived original at whichever job and output most
+    recently reworked it, without touching the archived bytes themselves."""
+    with connect() as conn:
+        conn.execute(
+            "UPDATE originals SET job_id=?, final_path=? WHERE archived_path=?",
+            (job_id, final_path, archived_path))
+
+
 def forget_processed(path):
     """Let a path be picked up by the scanner again."""
     with connect() as conn:

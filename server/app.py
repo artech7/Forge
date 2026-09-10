@@ -40,10 +40,11 @@ REQUIRED = {
     "db": ["init", "migrate", "set_slots", "node_slots", "create_library",
            "get_settings", "save_settings", "record_original", "mark_processed",
            "count_jobs", "job_counts", "delete_job", "delete_jobs",
-           "requeue_jobs", "record_completion"],
+           "requeue_jobs", "record_completion", "original_for_path",
+           "update_original"],
     "scheduler": ["lease_job", "reverse_path", "requeue_expired"],
     "watcher": ["scan_library", "scan_all", "destination_for", "sweep_originals",
-                "filter_verdict", "plan_conversion"],
+                "filter_verdict", "plan_conversion", "restore_original_row"],
     "profiles": ["catalog", "resolve", "warnings_for"],
     "naming": ["parse", "format_path", "preview", "resolve"],
     "schedule": ["is_open", "describe", "cleanup_due", "describe_cleanup",
@@ -581,8 +582,13 @@ async def complete(job_id: int, result: UploadFile = File(None),
             staged.unlink(missing_ok=True)
             raise ValueError("Result file was empty")
 
-        os.replace(staged, final)          # atomic within a filesystem
+        # Deal with the source while it still exists — including when it
+        # and `final` are the very same path (no rename, no container
+        # change). Doing this after the replace below would be too late in
+        # that case: the replace would have already overwritten it, with
+        # nothing left to archive.
         handle_original(job, library, final)
+        os.replace(staged, final)          # atomic within a filesystem
 
     except Exception as exc:
         db.update_job(job_id, state="failed", error=f"Placing file: {exc}"[:400],
@@ -733,11 +739,43 @@ async def handle_bloated(job, library, percent, reason):
     return {"ok": True, "bloated": True, "note": note}
 
 
+def _dedupe_archive_path(path):
+    """A second, unrelated file landing on the same archived name must
+    never silently overwrite whatever's already there."""
+    n = 2
+    candidate = path
+    while candidate.exists():
+        candidate = path.with_name(f"{path.stem} ({n}){path.suffix}")
+        n += 1
+    return candidate
+
+
 def handle_original(job, library, final):
-    """Archive, delete, or keep the source file once the new one is safe."""
+    """Archive, delete, or keep the source file before the new one replaces it.
+
+    Called before `final` is written (see complete() above), while `source`
+    still holds the pre-job bytes — including when `source` and `final` are
+    the very same path, which is the common case for a library that
+    converts in place without renaming. Called any later than this, that
+    case would already be lost: the new file would have overwritten it.
+    """
     source = Path(job["path"])
-    if not source.exists() or source.resolve() == final.resolve():
+    if not source.exists():
         return
+
+    # A file already tracked as the *output* of an earlier archived
+    # conversion isn't something new to archive — it IS the previous
+    # original's replacement. Reworking it again (a retranscode, a
+    # loudness pass, another remux) must not create a second archive entry
+    # that clobbers the one true original on disk, or lose track of it
+    # because the name or container changed since it was first archived.
+    # The existing record just follows the file instead: same archived
+    # bytes, pointed at wherever this rework's output is about to land.
+    existing = db.original_for_path(str(source))
+    if existing and Path(existing["archived_path"]).is_file():
+        db.update_original(existing["archived_path"], job["id"], str(final))
+        return
+
     action = (library or {}).get("original_action", "archive")
 
     if action == "delete":
@@ -750,7 +788,7 @@ def handle_original(job, library, final):
             relative = Path(".")
         target_dir = dest_dir / relative
         target_dir.mkdir(parents=True, exist_ok=True)
-        archived = target_dir / source.name
+        archived = _dedupe_archive_path(target_dir / source.name)
         size = source.stat().st_size
         shutil.move(str(source), str(archived))
         db.record_original(str(archived), job["id"], library["id"],
@@ -759,7 +797,9 @@ def handle_original(job, library, final):
         # No library to archive into (a job queued straight through
         # /api/queue rather than a watched library). "Archive" means
         # preserve, not delete, so the safest thing with nowhere to put
-        # it is to leave it exactly where it is.
+        # it is to leave it exactly where it is. Only actually preserves
+        # it when source and final differ — with nowhere to archive to and
+        # no rename happening either, there is nothing this can do.
         pass
 
 
@@ -2165,11 +2205,31 @@ async def sweep_now(force: bool = False):
 
 @app.get("/api/originals")
 async def read_originals():
+    libraries = {l["id"]: l["name"] for l in db.list_libraries()}
     rows = db.list_originals()
     for row in rows:
         row["replacement_ok"] = bool(
             row["final_path"] and Path(row["final_path"]).is_file())
+        row["library_name"] = libraries.get(row["library_id"])
+    rows.sort(key=lambda r: r["archived_at"], reverse=True)
     return rows
+
+
+@app.post("/api/originals/restore")
+async def restore_one_original(req: Request):
+    """Put a single archived original back, from the Originals list rather
+    than from a specific job — the job that archived it may be long gone,
+    or superseded by a later rework of the same file."""
+    body = await req.json()
+    archived_path = body.get("archived_path")
+    rows = db.list_originals()
+    row = next((r for r in rows if r["archived_path"] == archived_path), None)
+    if not row:
+        raise HTTPException(404, "No such archived original")
+    ok, message = watcher.restore_original_row(row)
+    if ok:
+        await broadcast()
+    return {"ok": ok, "message": message}
 
 
 @app.post("/api/jobs/{job_id}/retry")

@@ -577,3 +577,38 @@ def restore_original(job, library):
         db.forget_processed(str(converted))
     prune_empty_dirs()
     return True, "original restored"
+
+
+def restore_original_row(row):
+    """Put one archived original back, given only its row from the
+    originals table — no live job needed.
+
+    This is what the Originals list restores from: by the time someone is
+    browsing that list, the job that did the archiving may be long gone
+    from the queue, or may have been superseded by a later rework of the
+    same file. final_path is kept up to date across every rework (see
+    handle_original() in app.py), so it always points at wherever the
+    current, live replacement actually is — that's the file this puts back
+    in place of.
+    """
+    archived = Path(row["archived_path"])
+    if not archived.is_file():
+        db.forget_original(row["archived_path"])
+        return False, "the archived file is no longer there"
+
+    target = Path(row["final_path"]) if row.get("final_path") else None
+    if not target:
+        return False, "no destination is recorded for this original"
+
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if target.is_file() and target != archived:
+            target.unlink()
+        shutil.move(str(archived), str(target))
+    except OSError as exc:
+        return False, f"could not put the original back: {exc}"
+
+    db.forget_original(str(archived))
+    db.forget_processed(str(target))
+    prune_empty_dirs()
+    return True, "original restored"
