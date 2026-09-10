@@ -305,6 +305,23 @@
                 border:1px solid var(--edge);border-radius:11px;color:var(--text)}
   .queue-search::placeholder{color:var(--muted)}
 
+  .originals-panel{padding:16px 19px;margin-bottom:18px}
+  .originals-panel .op-head{display:flex;align-items:baseline;
+                            justify-content:space-between;gap:10px}
+  .originals-panel h3{margin:0;font-size:15px;font-weight:600}
+  .originals-empty{font-size:12.5px;color:var(--muted);padding:10px 0 2px}
+  .orig-row{display:flex;align-items:center;gap:12px;padding:9px 0;
+            border-top:1px solid var(--edge)}
+  .orig-row:first-child{border-top:none}
+  .orig-name{flex:1;min-width:0;font-size:12.5px;overflow:hidden;
+             text-overflow:ellipsis;white-space:nowrap}
+  .orig-meta{flex:none;font-family:'Chivo Mono',monospace;font-size:10.5px;
+             color:var(--muted);display:flex;gap:10px;align-items:center}
+  .orig-warn{color:var(--fault)}
+  .orig-row button{padding:5px 10px;font-size:11.5px;flex:none}
+  #originalsSweepStatus{margin-top:8px}
+  #originalsSweepStatus:empty{display:none}
+
   /* Full-screen triage window — deciding what to do about a list of files
      means comparing them against each other, which needs them all on
      screen at once rather than 20 at a time. */
@@ -578,6 +595,16 @@
         <button onclick="sweepNow()">Clean up Originals</button>
       </div>
     </div>
+
+    <div class="glass originals-panel">
+      <div class="op-head">
+        <h3>Originals held</h3>
+        <span class="sec" id="originalsSummary">—</span>
+      </div>
+      <div id="originalsList"></div>
+      <div class="sec" id="originalsSweepStatus"></div>
+    </div>
+
     <div class="tabs" id="libtabs"></div>
     <div class="tabs" id="jobtabs"></div>
     <div class="tabs" id="kindfilter"></div>
@@ -895,6 +922,15 @@ function render(state) {
       : '') +
     (state.cleanup_text && state.originals && state.originals.n
       ? `  \u00b7  ${state.cleanup_text.toLowerCase()}` : '');
+
+  // The full Originals list only needs re-fetching when the count actually
+  // changes (a new archive, a sweep, a restore) \u2014 not on every websocket
+  // tick, which during active encoding can be several times a second.
+  const originalsCount = (state.originals || {}).n ?? 0;
+  if (originalsCount !== lastOriginalsCount) {
+    lastOriginalsCount = originalsCount;
+    if (activeTopTab === 'queue') loadOriginals();
+  }
 
   renderLibs(state.libraries);
   renderLibTabs(state.libraries);
@@ -2346,16 +2382,97 @@ async function saveSettings() {
   closeWizard();
 }
 
+// -------------------------------------------------------------- Originals
+// A live view of what's actually sitting in the Originals folder right
+// now — not just the running count shown in the schedule bar — so growth
+// (a new archive) and shrinkage (a sweep, or a restore) are both visible
+// as they happen, and any archived file can be put back without hunting
+// through a filesystem by hand.
+let originalsRows = [];
+let originalsRestoreStatus = {};   // archived_path -> {busy} or {message}
+let lastOriginalsCount = null;
+
+function timeAgo(ts) {
+  if (!ts) return '';
+  const mins = Math.max(0, Date.now() / 1000 - ts) / 60;
+  if (mins < 90) return Math.round(mins) + ' min ago';
+  const hours = mins / 60;
+  if (hours < 36) return Math.round(hours) + ' hr ago';
+  const days = hours / 24;
+  if (days < 60) return Math.round(days) + ' days ago';
+  return Math.round(days / 30) + ' months ago';
+}
+
+async function loadOriginals() {
+  originalsRows = await (await fetch('/api/originals')).json();
+  renderOriginalsList();
+}
+
+function renderOriginalsList() {
+  const summary = document.getElementById('originalsSummary');
+  if (!summary) return;   // panel not in the DOM yet on first load
+  const totalBytes = originalsRows.reduce((sum, r) => sum + (r.size || 0), 0);
+  summary.innerHTML = originalsRows.length
+    ? `${originalsRows.length} held \u00b7 ${fmtBytes(totalBytes)}`
+    : 'none held';
+
+  const el = document.getElementById('originalsList');
+  if (!originalsRows.length) {
+    el.innerHTML = `<div class="originals-empty">Nothing archived right now.</div>`;
+    return;
+  }
+  el.innerHTML = originalsRows.map(r => {
+    const name = r.archived_path.split(/[\\/]/).pop();
+    const status = originalsRestoreStatus[r.archived_path] || {};
+    const action = status.busy
+      ? `<span class="sec">Restoring…</span>`
+      : status.message
+        ? `<span class="sec">${status.message}</span>`
+        : `<button onclick="restoreOriginal('${r.archived_path.replace(/'/g, "\\'")}')">Restore</button>`;
+    return `<div class="orig-row">
+      <div class="orig-name" title="${r.archived_path}">${name}</div>
+      <div class="orig-meta">
+        ${r.library_name ? `<span>${r.library_name}</span>` : ''}
+        <span>${fmtBytes(r.size || 0)}</span>
+        <span>${timeAgo(r.archived_at)}</span>
+        ${r.replacement_ok ? '' : '<span class="orig-warn">replacement missing</span>'}
+      </div>
+      ${action}
+    </div>`;
+  }).join('');
+}
+
+async function restoreOriginal(archivedPath) {
+  if (!confirm('Put this original back and remove the file that replaced it?')) return;
+  originalsRestoreStatus[archivedPath] = {busy: true};
+  renderOriginalsList();
+  try {
+    const r = await (await fetch('/api/originals/restore', {method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({archived_path: archivedPath})})).json();
+    originalsRestoreStatus[archivedPath] = {message: r.ok ? 'Restored.' : (r.message || 'Could not restore that.')};
+  } catch (e) {
+    originalsRestoreStatus[archivedPath] = {message: 'Could not reach the server.'};
+  }
+  await loadOriginals();
+}
+
 async function sweepNow() {
+  const statusEl = document.getElementById('originalsSweepStatus');
   const rows = await (await fetch('/api/originals')).json();
-  if (!rows.length) return alert('The Originals folder is already empty.');
+  if (!rows.length) {
+    if (statusEl) statusEl.textContent = 'The Originals folder is already empty.';
+    return;
+  }
   const unverified = rows.filter(r => !r.replacement_ok).length;
   const msg = `Delete ${rows.length - unverified} original file(s)?\n\n` +
     (unverified ? `${unverified} will be kept — their converted version is missing.\n\n` : '') +
     `This cannot be undone.`;
   if (!confirm(msg)) return;
   const r = await (await fetch('/api/originals/sweep?force=true', {method:'POST'})).json();
-  alert(`Deleted ${r.deleted}, freed ${(r.freed/1e9).toFixed(2)} GB. Kept ${r.kept}.`);
+  if (statusEl) statusEl.textContent =
+    `Deleted ${r.deleted}, freed ${(r.freed/1e9).toFixed(2)} GB. Kept ${r.kept}.`;
+  loadOriginals();
 }
 
 /* ------------------------------------------------------------- wizard */
@@ -2486,6 +2603,7 @@ function switchTopTab(name) {
   activeTopTab = name;
 
   if (name === 'stats') loadStats();
+  if (name === 'queue') loadOriginals();
   if (name === 'audio') {
     renderAudioLibPicker();
     renderHealthTabs();
