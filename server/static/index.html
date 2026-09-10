@@ -259,6 +259,10 @@
          border-radius:2px;transition:width .5s ease}
   .job .acts{grid-column:1/-1;display:flex;gap:7px;margin-top:10px}
   .job .acts button{padding:5px 11px;font-size:11.5px;border-radius:9px}
+  .job.draggable-row{cursor:grab}
+  .job.draggable-row:active{cursor:grabbing}
+  .job.draggable-row.dragging{opacity:.4}
+  .job.draggable-row.drag-over{outline:2px dashed var(--signal);outline-offset:-2px}
   .st-queued .pct{color:var(--amber)}
   .st-running .pct{color:var(--signal)}
   .st-failed .pct{color:var(--fault)}
@@ -1170,6 +1174,65 @@ async function cancelJob(id) {
   if (result && view.name !== 'working') loadView();
 }
 
+async function moveJobToTop(id) {
+  const r = await fetch(`/api/jobs/${id}/priority`, {method: 'POST'});
+  if (!r.ok) return alert((await r.json()).detail || 'Could not move that.');
+  loadView();
+}
+
+// -------------------------------------------------- waiting-list reordering
+// Plain HTML5 drag-and-drop, scoped to one page of the Waiting view: rows
+// are reordered visually as you drag, then the whole visible order is sent
+// to the server once on drop, rather than one request per position moved.
+let queueDragId = null;
+
+function queueDragStart(e, id) {
+  queueDragId = id;
+  e.dataTransfer.effectAllowed = 'move';
+  e.currentTarget.classList.add('dragging');
+}
+
+function queueDragOver(e) {
+  e.preventDefault();   // required for this element to accept a drop at all
+  e.dataTransfer.dropEffect = 'move';
+  if (Number(e.currentTarget.dataset.jobId) !== queueDragId) {
+    e.currentTarget.classList.add('drag-over');
+  }
+}
+
+function queueDragLeave(e) {
+  e.currentTarget.classList.remove('drag-over');
+}
+
+function queueDragEnd() {
+  document.querySelectorAll('#queue .dragging, #queue .drag-over')
+    .forEach(el => el.classList.remove('dragging', 'drag-over'));
+  queueDragId = null;
+}
+
+async function queueDrop(e, targetId) {
+  e.preventDefault();
+  e.currentTarget.classList.remove('drag-over');
+  if (queueDragId == null || queueDragId === targetId) return;
+
+  const rows = [...document.querySelectorAll('#queue .job[data-job-id]')];
+  const fromEl = rows.find(r => Number(r.dataset.jobId) === queueDragId);
+  const toEl = rows.find(r => Number(r.dataset.jobId) === targetId);
+  if (!fromEl || !toEl) return;
+
+  // Reflect the new order immediately rather than waiting on a round trip.
+  const movingDown = rows.indexOf(fromEl) < rows.indexOf(toEl);
+  if (movingDown) toEl.after(fromEl); else toEl.before(fromEl);
+  fromEl.classList.remove('dragging');
+
+  const ids = [...document.querySelectorAll('#queue .job[data-job-id]')]
+    .map(r => Number(r.dataset.jobId));
+  queueDragId = null;
+  await fetch('/api/jobs/reorder', {method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ids})});
+}
+
 /* --------------------------------------------------------- job views */
 const view = {name:'working', page:1, perPage:20, loaded:false, counts:{},
               kind:'all',
@@ -1480,10 +1543,25 @@ function renderJobs(jobs, meta) {
          <button onclick="removeJob(${j.id})">Remove</button>`
       : j.state === 'done'
       ? `<button onclick="removeJob(${j.id})">Remove</button>`
+      : j.state === 'queued'
+      ? `<button onclick="moveJobToTop(${j.id})">Move to top</button>
+         <button onclick="requeueJob(${j.id},'${j.state}')">Restart</button>
+         <button onclick="cancelJob(${j.id})">Cancel</button>`
       : `<button onclick="requeueJob(${j.id},'${j.state}')">Restart</button>
          <button onclick="cancelJob(${j.id})">Cancel</button>`;
 
-    return `<div class="glass job st-${j.state}">
+    // Drag-and-drop reordering only makes sense for the waiting list
+    // itself — a fixed running order to hand out to workers, not history.
+    const draggableRow = view.name === 'waiting';
+    const dragAttrs = draggableRow
+      ? `draggable="true" data-job-id="${j.id}"
+         ondragstart="queueDragStart(event,${j.id})"
+         ondragover="queueDragOver(event)"
+         ondragleave="queueDragLeave(event)"
+         ondrop="queueDrop(event,${j.id})"
+         ondragend="queueDragEnd(event)"` : '';
+
+    return `<div class="glass job st-${j.state}${draggableRow ? ' draggable-row' : ''}" ${dragAttrs}>
       <div class="file">${view.name === 'bloated'
         ? `<input class="select" type="checkbox" ${selectedBloated.has(j.id) ? 'checked' : ''}
             onclick="toggleBloatedSelect(${j.id},this.checked)">` : ''}<span

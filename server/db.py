@@ -118,7 +118,8 @@ CREATE TABLE IF NOT EXISTS jobs (
     created_at    REAL NOT NULL,
     started_at    REAL,
     finished_at   REAL,
-    bounces       INTEGER NOT NULL DEFAULT 0  -- consecutive lease expiries with no check-in
+    bounces       INTEGER NOT NULL DEFAULT 0, -- consecutive lease expiries with no check-in
+    queue_order   REAL                        -- manual position; NULL means "natural (by id)"
 );
 
 CREATE INDEX IF NOT EXISTS idx_jobs_state ON jobs(state);
@@ -385,9 +386,13 @@ def list_jobs(states=None, limit=200, offset=0, library_id=None, q=None,
         query += f" ORDER BY {SORTS[sort]}"
     else:
         # Active work reads best oldest-first (that's the running order);
-        # history reads best newest-first.
+        # history reads best newest-first. queue_order lets a person move
+        # a specific job up or down within that order by hand — it's NULL
+        # until someone actually does that, so id is still what breaks
+        # ties (and is the whole order for anyone who never touches it).
         ascending = states and set(states) <= set(ACTIVE_STATES)
-        query += " ORDER BY id ASC" if ascending else " ORDER BY id DESC"
+        query += (" ORDER BY COALESCE(queue_order, id) ASC, id ASC" if ascending
+                  else " ORDER BY id DESC")
     query += " LIMIT ? OFFSET ?"
     params.extend([limit, offset])
     with connect() as conn:
@@ -481,6 +486,46 @@ def requeue_jobs(states, library_id=None, q=None):
         except sqlite3.IntegrityError:
             skipped += 1
     return moved, skipped
+
+
+def move_job_to_top(job_id):
+    """Put one queued job ahead of everything else waiting.
+
+    Just needs to beat the current lowest position, not renumber anything
+    else — so this is one UPDATE regardless of how long the queue is.
+    """
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT MIN(COALESCE(queue_order, id)) AS m FROM jobs WHERE state='queued'"
+        ).fetchone()
+        floor = (row["m"] if row and row["m"] is not None else 0) - 1
+        conn.execute("UPDATE jobs SET queue_order=? WHERE id=?", (floor, job_id))
+
+
+def reorder_jobs(ids):
+    """Set these jobs' relative order to match the sequence given.
+
+    Anchored at the lowest position already held by any job in the list,
+    so reordering (a drag within one page of the waiting list, say)
+    doesn't disturb anything before or after that group — just the order
+    within it.
+    """
+    ids = [int(i) for i in ids]
+    if not ids:
+        return
+    with connect() as conn:
+        placeholders = ",".join("?" * len(ids))
+        rows = conn.execute(
+            f"""SELECT id, COALESCE(queue_order, id) AS q FROM jobs
+                WHERE id IN ({placeholders})""", ids).fetchall()
+        current = {r["id"]: r["q"] for r in rows}
+        if not current:
+            return
+        base = min(current.values())
+        for position, job_id in enumerate(ids):
+            if job_id in current:
+                conn.execute("UPDATE jobs SET queue_order=? WHERE id=?",
+                            (base + position, job_id))
 
 
 def cancel_loudness_jobs(library_id=None):
@@ -942,7 +987,8 @@ def migrate():
                  ("attempt", "INTEGER NOT NULL DEFAULT 1"),
                  ("size_now", "INTEGER"), ("outcome", "TEXT"),
                  ("progress_at", "REAL"),
-                 ("bounces", "INTEGER NOT NULL DEFAULT 0")],
+                 ("bounces", "INTEGER NOT NULL DEFAULT 0"),
+                 ("queue_order", "REAL")],
         "libraries": [("filters", "TEXT NOT NULL DEFAULT '{}'"),
                       ("naming", "TEXT NOT NULL DEFAULT '{}'"),
                       ("originals_path", "TEXT")],

@@ -141,6 +141,29 @@ check("delete_jobs with q only removes the matching jobs", lambda: (
       lambda r: r == 0)
 db.delete_library(_bulk_lib)
 
+print("\nManual queue order:")
+_qo_a = db.enqueue("/queueorder/A.mkv", {"codec": "copy"}, 1000)
+_qo_b = db.enqueue("/queueorder/B.mkv", {"codec": "copy"}, 1000)
+_qo_c = db.enqueue("/queueorder/C.mkv", {"codec": "copy"}, 1000)
+check("natural order is oldest first", lambda: [j["id"] for j in db.list_jobs(["queued"])
+      if j["id"] in (_qo_a, _qo_b, _qo_c)], lambda r: r == [_qo_a, _qo_b, _qo_c])
+check("move_job_to_top beats everything else waiting", lambda: (
+      db.move_job_to_top(_qo_c),
+      [j["id"] for j in db.list_jobs(["queued"])
+       if j["id"] in (_qo_a, _qo_b, _qo_c)])[-1],
+      lambda r: r == [_qo_c, _qo_a, _qo_b])
+check("reorder_jobs sets the exact sequence given", lambda: (
+      db.reorder_jobs([_qo_b, _qo_a, _qo_c]),
+      [j["id"] for j in db.list_jobs(["queued"])
+       if j["id"] in (_qo_a, _qo_b, _qo_c)])[-1],
+      lambda r: r == [_qo_b, _qo_a, _qo_c])
+check("the scheduler leases in that same manual order", lambda: (
+      db.upsert_node("qo-node", "QONode", ["libx264"],
+                     [{"server": "/queueorder", "local": "/queueorder"}], 1),
+      scheduler.lease_job("qo-node")["id"])[-1],
+      lambda r: r == _qo_b)
+db.delete_jobs(["queued"])
+
 print("\nOther modules:")
 check("profiles.catalog", profiles.catalog, lambda r: "video" in r and "naming" in r)
 check("profiles.resolve", lambda: profiles.resolve(profile),

@@ -42,7 +42,7 @@ REQUIRED = {
            "get_settings", "save_settings", "record_original", "mark_processed",
            "count_jobs", "job_counts", "delete_job", "delete_jobs",
            "requeue_jobs", "record_completion", "original_for_path",
-           "update_original"],
+           "update_original", "move_job_to_top", "reorder_jobs"],
     "scheduler": ["lease_job", "reverse_path", "requeue_expired"],
     "watcher": ["scan_library", "scan_all", "destination_for", "sweep_originals",
                 "filter_verdict", "plan_conversion", "restore_original_row"],
@@ -1815,6 +1815,33 @@ async def cancel(job_id: int):
             409, f"That job already finished (state: {job['state']}) "
                  f"— there's nothing left to cancel.")
     db.update_job(job_id, state="cancelled", finished_at=time.time())
+    await broadcast()
+    return {"ok": True}
+
+
+@app.post("/api/jobs/{job_id}/priority")
+async def prioritize_job(job_id: int):
+    """Move one waiting job to the front of the queue."""
+    job = db.get_job(job_id)
+    if not job:
+        raise HTTPException(404, "No such job")
+    if job["state"] != "queued":
+        raise HTTPException(409, "Only a waiting job can be moved — "
+                                  f"this one is {job['state']}.")
+    db.move_job_to_top(job_id)
+    await broadcast()
+    return {"ok": True}
+
+
+@app.post("/api/jobs/reorder")
+async def reorder_jobs(req: Request):
+    """Set the relative order of a list of jobs — a drag-and-drop within
+    one page of the waiting list, typically."""
+    body = await req.json()
+    ids = body.get("ids") or []
+    if not ids:
+        raise HTTPException(400, "No jobs given to reorder.")
+    db.reorder_jobs(ids)
     await broadcast()
     return {"ok": True}
 
