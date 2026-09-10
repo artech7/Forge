@@ -685,6 +685,7 @@
         Cancelling and rescanning later only measures what's still
         unmeasured.
       </div>
+      <div class="sec" id="loudness-scan-status"></div>
       <div id="loudness-progress"></div>
       <input type="text" id="loudness-search" class="queue-search"
              placeholder="Search by filename…" oninput="onLoudnessSearch(this.value)">
@@ -3320,21 +3321,25 @@ function renderAudioLibPicker() {
 
 async function startLoudnessScan() {
   const btn = document.getElementById('loudness-scan-btn');
+  const status = document.getElementById('loudness-scan-status');
   btn.disabled = true;
+  if (status) status.textContent = 'Scanning…';
   const body = audioLibId === 'all' ? {} : {library_ids: [Number(audioLibId) || audioLibId]};
   let r;
   try {
     r = await (await fetch('/api/scan/loudness', {method: 'POST',
       headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)})).json();
   } catch (e) {
-    alert('Could not start the scan — check the server is reachable.');
+    if (status) status.textContent = 'Could not start the scan — check the server is reachable.';
     btn.disabled = false;
     return;
   }
   btn.disabled = false;
-  alert(`Queued ${r.queued} file${r.queued === 1 ? '' : 's'} for measurement.`
-      + (r.already_queued ? ` ${r.already_queued} were already queued or in progress from an earlier scan.` : '')
-      + (r.queued ? ' Watch them just below as they run, or hit Refresh once they finish.' : ''));
+  if (status) status.textContent =
+    `Queued ${r.queued} file${r.queued === 1 ? '' : 's'} for measurement.`
+    + (r.already_queued ? ` ${r.already_queued} already queued or in progress from an earlier scan.` : '');
+  await refreshLoudnessQueuedCount(true);
+  renderLoudnessProgress((window.__state || {}).jobs);
 }
 
 async function cancelLoudnessScan() {
@@ -3360,9 +3365,36 @@ function updateLoudnessScanLabel() {
   btn.textContent = lib ? `Scan ${lib.name} for unleveled audio` : 'Scan for unleveled audio';
 }
 
-// Fed straight from the same websocket everything else uses — these are
-// ordinary jobs with a marker in their spec, not a separate system, so
-// there's already a live feed of exactly this without a new endpoint.
+// The websocket feed only ever carries leased/running jobs (it's capped
+// there deliberately — a library with thousands queued would otherwise
+// mean pushing that whole list on every broadcast). That undercounted a
+// loudness scan badly: a job sitting in "queued" — which is most of them,
+// especially since housekeeping work is held back entirely while any real
+// conversion is waiting anywhere (see lease_job() in scheduler.py) — never
+// showed up here at all, so a scan that queued thousands of files could
+// look like it had done nothing. loudnessQueuedCount fills that gap with
+// an actual count of what's still waiting, fetched separately.
+let loudnessQueuedCount = 0;
+let lastLoudnessQueuedFetch = 0;
+
+async function refreshLoudnessQueuedCount(force) {
+  const now = Date.now();
+  if (!force && now - lastLoudnessQueuedFetch < 4000) return false;
+  lastLoudnessQueuedFetch = now;
+  const base = {view: 'waiting', per_page: '1'};
+  if (audioLibId !== 'all') base.library_id = audioLibId;
+  try {
+    const [measure, level] = await Promise.all([
+      (await fetch('/api/jobs?' + new URLSearchParams({...base, kind: 'measure'}))).json(),
+      (await fetch('/api/jobs?' + new URLSearchParams({...base, kind: 'level'}))).json(),
+    ]);
+    loudnessQueuedCount = (measure.total || 0) + (level.total || 0);
+  } catch (e) {
+    // Leave the last known count in place rather than flashing to zero.
+  }
+  return true;
+}
+
 function renderLoudnessProgress(jobs) {
   const box = document.getElementById('loudness-progress');
   const cancelBtn = document.getElementById('loudness-cancel-btn');
@@ -3370,19 +3402,27 @@ function renderLoudnessProgress(jobs) {
   updateLoudnessScanLabel();
 
   const id = audioLibId === 'all' ? null : (Number(audioLibId) || audioLibId);
-  const mine = (jobs || []).filter(j => j.spec && j.spec.measure === 'loudness'
+  const mine = (jobs || []).filter(j => j.spec && (j.spec.measure === 'loudness' || j.spec.level_only)
     && (id == null || j.library_id === id));
+  const total = mine.length + loudnessQueuedCount;
 
-  cancelBtn.hidden = mine.length === 0;
-  if (!mine.length) { box.innerHTML = ''; return; }
+  cancelBtn.hidden = total === 0;
+  if (!total) { box.innerHTML = ''; return; }
 
   box.innerHTML = `<div class="glass" style="padding:12px 16px;margin-bottom:14px">
     <div style="font-size:12.5px;color:var(--muted);margin-bottom:8px">
-      ${mine.length} file${mine.length === 1 ? '' : 's'} queued or measuring right now</div>
+      ${total} file${total === 1 ? '' : 's'} still to measure or level
+      ${loudnessQueuedCount
+        ? ` — ${loudnessQueuedCount} waiting for a worker slot${mine.length ? `, ${mine.length} running now` : ''}`
+        : ''}</div>
     ${mine.slice(0, 12).map(j => `<div class="drill-meta">
         ${j.state === 'running' ? 'measuring' : 'queued'}: ${j.path.split('/').pop()}</div>`).join('')}
     ${mine.length > 12 ? `<div class="drill-meta">…and ${mine.length - 12} more</div>` : ''}
   </div>`;
+
+  // Throttled inside refreshLoudnessQueuedCount, so this is cheap to call
+  // on every broadcast — it only actually fetches every few seconds.
+  refreshLoudnessQueuedCount().then(changed => { if (changed) renderLoudnessProgress(jobs); });
 }
 
 async function loadLoudness() {
@@ -3399,6 +3439,8 @@ async function loadLoudness() {
     box.innerHTML = '<div class="stats-empty">Could not load this.</div>';
     return;
   }
+  await refreshLoudnessQueuedCount(true);
+  renderLoudnessProgress((window.__state || {}).jobs);
   LOUDNESS_RANGE_THRESHOLD = currentLoudnessThreshold();
   currentLoudnessFiles = data.files || [];
   selectedLoudnessPaths.clear();
@@ -3424,7 +3466,15 @@ function visibleLoudnessFiles() {
 function renderLoudnessList() {
   const box = document.getElementById('loudness-detail');
   if (!currentLoudnessFiles.length) {
-    box.innerHTML = '<div class="stats-empty">No files measured yet — run a scan above.</div>';
+    // A scan already having queued work is a different situation from
+    // nothing having been asked for at all — worth saying which, since
+    // "run a scan above" reads as "you forgot a step" even right after
+    // you didn't.
+    box.innerHTML = loudnessQueuedCount
+      ? `<div class="stats-empty">${loudnessQueuedCount} file${loudnessQueuedCount === 1 ? '' : 's'}
+           queued from an earlier scan, but none have finished measuring yet —
+           see above. This list fills in as they complete.</div>`
+      : '<div class="stats-empty">No files measured yet — run a scan above.</div>';
     return;
   }
   const files = visibleLoudnessFiles();
