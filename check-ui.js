@@ -4,7 +4,7 @@
 const fs = require('fs');
 const els = {};
 const el = id => els[id] || (els[id] = {innerHTML:'', textContent:'', scrollTop:0,
-  classList:{add(){},remove(){},toggle(){}}, remove(){ delete els[id]; },
+  classList:{add(){},remove(){},toggle(){},contains(){return false}}, remove(){ delete els[id]; },
   parentNode:{insertBefore(){}}, scrollIntoView(){},
   querySelector: () => null, querySelectorAll: () => []});
 

@@ -305,10 +305,18 @@
                 border:1px solid var(--edge);border-radius:11px;color:var(--text)}
   .queue-search::placeholder{color:var(--muted)}
 
-  .originals-panel{padding:16px 19px;margin-bottom:18px}
-  .originals-panel .op-head{display:flex;align-items:baseline;
-                            justify-content:space-between;gap:10px}
-  .originals-panel h3{margin:0;font-size:15px;font-weight:600}
+  .count-badge{font-family:'Chivo Mono',monospace;font-size:10.5px;
+    padding:1px 6px;border-radius:5px;background:rgba(255,255,255,.1);
+    font-variant-numeric:tabular-nums;margin-left:6px}
+  .count-badge:empty{display:none;margin:0}
+
+  /* The Originals veil — deliberately its own modal rather than inline in
+     the Queue tab, so a library that's built up hundreds of archived
+     originals doesn't push the actual queue out of view. Only the row
+     list scrolls internally; the header and Close button stay put. */
+  .op-head{display:flex;align-items:baseline;justify-content:space-between;
+           gap:10px;margin-bottom:6px}
+  .originals-scroll{max-height:52vh;overflow-y:auto;margin:0 -8px;padding:0 8px}
   .originals-empty{font-size:12.5px;color:var(--muted);padding:10px 0 2px}
   .orig-row{display:flex;align-items:center;gap:12px;padding:9px 0;
             border-top:1px solid var(--edge)}
@@ -319,8 +327,6 @@
              color:var(--muted);display:flex;gap:10px;align-items:center}
   .orig-warn{color:var(--fault)}
   .orig-row button{padding:5px 10px;font-size:11.5px;flex:none}
-  #originalsSweepStatus{margin-top:8px}
-  #originalsSweepStatus:empty{display:none}
 
   /* Full-screen triage window — deciding what to do about a list of files
      means comparing them against each other, which needs them all on
@@ -592,17 +598,8 @@
     <div class="queue-head">
       <h2>Queue</h2>
       <div class="actions">
-        <button onclick="sweepNow()">Clean up Originals</button>
+        <button onclick="openOriginals()">Originals<span class="count-badge" id="originalsBadge"></span></button>
       </div>
-    </div>
-
-    <div class="glass originals-panel">
-      <div class="op-head">
-        <h3>Originals held</h3>
-        <span class="sec" id="originalsSummary">—</span>
-      </div>
-      <div id="originalsList"></div>
-      <div class="sec" id="originalsSweepStatus"></div>
     </div>
 
     <div class="tabs" id="libtabs"></div>
@@ -745,6 +742,10 @@
 
 <div class="veil review-veil" id="review-veil" onclick="if(event.target===this)closeReview()">
   <div class="glass review-box" id="review-box"></div>
+</div>
+
+<div class="veil" id="originals-veil" onclick="if(event.target===this)closeOriginals()">
+  <div class="glass wiz" id="originals-box"></div>
 </div>
 
 <script>
@@ -925,11 +926,15 @@ function render(state) {
 
   // The full Originals list only needs re-fetching when the count actually
   // changes (a new archive, a sweep, a restore) \u2014 not on every websocket
-  // tick, which during active encoding can be several times a second.
+  // tick, which during active encoding can be several times a second. The
+  // button's badge is cheap enough to keep current regardless of whether
+  // the list itself is open.
   const originalsCount = (state.originals || {}).n ?? 0;
   if (originalsCount !== lastOriginalsCount) {
     lastOriginalsCount = originalsCount;
-    if (activeTopTab === 'queue') loadOriginals();
+    updateOriginalsBadge(originalsCount);
+    const veil = document.getElementById('originals-veil');
+    if (veil && veil.classList.contains('open')) loadOriginals();
   }
 
   renderLibs(state.libraries);
@@ -2383,13 +2388,15 @@ async function saveSettings() {
 }
 
 // -------------------------------------------------------------- Originals
-// A live view of what's actually sitting in the Originals folder right
-// now — not just the running count shown in the schedule bar — so growth
-// (a new archive) and shrinkage (a sweep, or a restore) are both visible
-// as they happen, and any archived file can be put back without hunting
-// through a filesystem by hand.
+// A separate, on-demand view of what's actually sitting in the Originals
+// folder — deliberately NOT inline in the Queue tab. A library that's been
+// running a while can hold hundreds of archived originals, and the Queue's
+// job is to show the queue; browsing/reviewing something else shouldn't
+// push that out of view. This opens in its own veil instead, the same way
+// file info and drilldowns do.
 let originalsRows = [];
 let originalsRestoreStatus = {};   // archived_path -> {busy} or {message}
+let originalsSweepStatus = '';
 let lastOriginalsCount = null;
 
 function timeAgo(ts) {
@@ -2403,49 +2410,77 @@ function timeAgo(ts) {
   return Math.round(days / 30) + ' months ago';
 }
 
-async function loadOriginals() {
-  originalsRows = await (await fetch('/api/originals')).json();
-  renderOriginalsList();
+function updateOriginalsBadge(n) {
+  const badge = document.getElementById('originalsBadge');
+  if (badge) badge.textContent = n ? ` ${n}` : '';
 }
 
-function renderOriginalsList() {
-  const summary = document.getElementById('originalsSummary');
-  if (!summary) return;   // panel not in the DOM yet on first load
+async function openOriginals() {
+  document.getElementById('originals-veil').classList.add('open');
+  renderOriginalsBox();          // show something immediately, then refresh
+  await loadOriginals();
+}
+
+function closeOriginals() {
+  document.getElementById('originals-veil').classList.remove('open');
+}
+
+async function loadOriginals() {
+  originalsRows = await (await fetch('/api/originals')).json();
+  updateOriginalsBadge(originalsRows.length);
+  renderOriginalsBox();
+}
+
+function renderOriginalsBox() {
+  const box = document.getElementById('originals-box');
+  if (!box) return;
   const totalBytes = originalsRows.reduce((sum, r) => sum + (r.size || 0), 0);
-  summary.innerHTML = originalsRows.length
+  const summary = originalsRows.length
     ? `${originalsRows.length} held \u00b7 ${fmtBytes(totalBytes)}`
     : 'none held';
 
-  const el = document.getElementById('originalsList');
-  if (!originalsRows.length) {
-    el.innerHTML = `<div class="originals-empty">Nothing archived right now.</div>`;
-    return;
-  }
-  el.innerHTML = originalsRows.map(r => {
-    const name = r.archived_path.split(/[\\/]/).pop();
-    const status = originalsRestoreStatus[r.archived_path] || {};
-    const action = status.busy
-      ? `<span class="sec">Restoring…</span>`
-      : status.message
-        ? `<span class="sec">${status.message}</span>`
-        : `<button onclick="restoreOriginal('${r.archived_path.replace(/'/g, "\\'")}')">Restore</button>`;
-    return `<div class="orig-row">
-      <div class="orig-name" title="${r.archived_path}">${name}</div>
-      <div class="orig-meta">
-        ${r.library_name ? `<span>${r.library_name}</span>` : ''}
-        <span>${fmtBytes(r.size || 0)}</span>
-        <span>${timeAgo(r.archived_at)}</span>
-        ${r.replacement_ok ? '' : '<span class="orig-warn">replacement missing</span>'}
-      </div>
-      ${action}
+  const list = !originalsRows.length
+    ? `<div class="originals-empty">Nothing archived right now.</div>`
+    : originalsRows.map(r => {
+        const name = r.archived_path.split(/[\\/]/).pop();
+        const status = originalsRestoreStatus[r.archived_path] || {};
+        const action = status.busy
+          ? `<span class="sec">Restoring…</span>`
+          : status.message
+            ? `<span class="sec">${status.message}</span>`
+            : `<button onclick="restoreOriginal('${r.archived_path.replace(/'/g, "\\'")}')">Restore</button>`;
+        return `<div class="orig-row">
+          <div class="orig-name" title="${r.archived_path}">${name}</div>
+          <div class="orig-meta">
+            ${r.library_name ? `<span>${r.library_name}</span>` : ''}
+            <span>${fmtBytes(r.size || 0)}</span>
+            <span>${timeAgo(r.archived_at)}</span>
+            ${r.replacement_ok ? '' : '<span class="orig-warn">replacement missing</span>'}
+          </div>
+          ${action}
+        </div>`;
+      }).join('');
+
+  box.innerHTML = `
+    <h3>Originals</h3>
+    <p class="lead">Every file Forge has archived instead of overwriting, across every
+      library. Restore any of them to undo whatever replaced it.</p>
+    <div class="op-head">
+      <span class="sec">${summary}</span>
+      <button onclick="sweepNow()">Clean up now</button>
+    </div>
+    <div class="originals-scroll">${list}</div>
+    ${originalsSweepStatus ? `<div class="sec" style="margin-top:10px">${originalsSweepStatus}</div>` : ''}
+    <div class="wiz-nav">
+      <span class="grow"></span>
+      <button class="primary" onclick="closeOriginals()">Close</button>
     </div>`;
-  }).join('');
 }
 
 async function restoreOriginal(archivedPath) {
   if (!confirm('Put this original back and remove the file that replaced it?')) return;
   originalsRestoreStatus[archivedPath] = {busy: true};
-  renderOriginalsList();
+  renderOriginalsBox();
   try {
     const r = await (await fetch('/api/originals/restore', {method: 'POST',
       headers: {'Content-Type': 'application/json'},
@@ -2458,10 +2493,11 @@ async function restoreOriginal(archivedPath) {
 }
 
 async function sweepNow() {
-  const statusEl = document.getElementById('originalsSweepStatus');
-  const rows = await (await fetch('/api/originals')).json();
+  const rows = originalsRows.length ? originalsRows
+    : await (await fetch('/api/originals')).json();
   if (!rows.length) {
-    if (statusEl) statusEl.textContent = 'The Originals folder is already empty.';
+    originalsSweepStatus = 'The Originals folder is already empty.';
+    renderOriginalsBox();
     return;
   }
   const unverified = rows.filter(r => !r.replacement_ok).length;
@@ -2470,9 +2506,9 @@ async function sweepNow() {
     `This cannot be undone.`;
   if (!confirm(msg)) return;
   const r = await (await fetch('/api/originals/sweep?force=true', {method:'POST'})).json();
-  if (statusEl) statusEl.textContent =
+  originalsSweepStatus =
     `Deleted ${r.deleted}, freed ${(r.freed/1e9).toFixed(2)} GB. Kept ${r.kept}.`;
-  loadOriginals();
+  await loadOriginals();
 }
 
 /* ------------------------------------------------------------- wizard */
@@ -2603,7 +2639,6 @@ function switchTopTab(name) {
   activeTopTab = name;
 
   if (name === 'stats') loadStats();
-  if (name === 'queue') loadOriginals();
   if (name === 'audio') {
     renderAudioLibPicker();
     renderHealthTabs();
@@ -4610,7 +4645,7 @@ document.addEventListener('keydown', e => {
   if (e.key !== 'Escape') return;
   // Innermost first, so Escape backs out one layer at a time rather than
   // closing everything at once.
-  const veils = ['fileinfo-veil', 'drill-veil', 'review-veil'];
+  const veils = ['fileinfo-veil', 'drill-veil', 'review-veil', 'originals-veil'];
   for (const id of veils) {
     const el = document.getElementById(id);
     if (el && el.classList.contains('open')) { el.classList.remove('open'); return; }
