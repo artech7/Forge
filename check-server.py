@@ -527,10 +527,21 @@ check("titles follow the mapped order", lambda: _st.kept_tracks(
 print("\nSize-check logic:")
 check("savings_verdict smaller", lambda: profiles.savings_verdict(1000, 400),
       lambda r: r[0] is True)
-check("savings_verdict bigger", lambda: profiles.savings_verdict(1000, 1200),
+check("savings_verdict bigger",
+      # Real file-scale numbers, well past GROWTH_NOISE_FLOOR — the old
+      # toy-scale 1000->1200 stopped meaning anything once "bigger" became
+      # a real byte comparison rather than a pure percentage.
+      lambda: profiles.savings_verdict(200_000_000, 240_000_000),
       lambda r: r[0] is False and r[1] < 0)
 check("savings_verdict below threshold",
       lambda: profiles.savings_verdict(1000, 970, 10), lambda r: r[0] is False)
+check("savings_verdict remux landing on the same size isn't 'bigger'",
+      lambda: profiles.savings_verdict(213_000_000, 213_000_000),
+      lambda r: r[0] is True)
+check("savings_verdict a real regression still isn't hidden by the noise floor",
+      lambda: profiles.savings_verdict(
+          200_000_000, 200_000_000 + profiles.GROWTH_NOISE_FLOOR + 1),
+      lambda r: r[0] is False)
 check("base_quality", lambda: profiles.base_quality({"quality_level": "balanced"}),
       lambda r: r == 22)
 check("retry_ladder off", lambda: profiles.retry_ladder({"quality_level": "balanced"}),

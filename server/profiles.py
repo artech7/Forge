@@ -514,6 +514,17 @@ def manual_steps(profile):
     return out
 
 
+# Repackaging into a different container changes muxing overhead by at
+# most a few hundred KB, regardless of how big the file is — a percentage
+# tolerance would let a huge file grow by megabytes unnoticed while still
+# being too tight for a small one, so this is a flat byte count instead.
+# Without it, a remux landing on exactly the size it started at — the
+# expected, successful outcome for a plain repack — got reported as
+# "came out 0% larger" and run through the same handling as a genuinely
+# bloated re-encode.
+GROWTH_NOISE_FLOOR = 2 * 1024 * 1024  # bytes
+
+
 def savings_verdict(size_before, size_after, min_percent=0.0):
     """Was this conversion worth keeping?
 
@@ -523,7 +534,7 @@ def savings_verdict(size_before, size_after, min_percent=0.0):
     if not size_before or not size_after:
         return True, 0.0, None
     percent = (size_before - size_after) / size_before * 100
-    if size_after >= size_before:
+    if size_after - size_before > GROWTH_NOISE_FLOOR:
         return False, percent, f"came out {abs(percent):.0f}% larger"
     if min_percent and percent < min_percent:
         return False, percent, (f"only saved {percent:.0f}%, below the "
