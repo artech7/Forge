@@ -417,6 +417,7 @@
                color:var(--muted);letter-spacing:.04em}
   .lib .row{display:flex;gap:8px;margin-top:13px}
   .lib button{padding:6px 12px;font-size:12px}
+  .lib .scanresult{font-size:11.5px;color:var(--muted);line-height:1.5;margin-top:10px}
   .sec{font-size:11px;color:var(--muted)}
 
 
@@ -949,10 +950,16 @@ function renderLibs(libs) {
       <div class="recipe">${recipe}</div>
       <div class="row">
         <button onclick="openWizard(${l.id})">Edit</button>
-        <button onclick="scanOne(${l.id})">Check now</button>
+        <button onclick="scanOne(${l.id})" ${libScanBusy[l.id] ? 'disabled' : ''}>Check now</button>
         <button onclick="toggleLib(${l.id},${l.enabled ? 0 : 1})">${l.enabled ? 'Pause' : 'Resume'}</button>
         <button onclick="removeLib(${l.id},'${safeName}')">Remove</button>
       </div>
+      ${libScanBusy[l.id] ? `<div class="scanbar on">
+        <div class="track"><div class="fill" style="width:100%"></div></div>
+        <div class="label"><span class="current">Checking "${l.name}"…</span></div>
+      </div>` : ''}
+      ${!libScanBusy[l.id] && libScanResult[l.id]
+        ? `<div class="scanresult">${libScanResult[l.id]}</div>` : ''}
     </div>`;
   }).join('');
 }
@@ -961,6 +968,13 @@ function renderLibs(libs) {
 // Held between renders so the number responds to a click immediately,
 // rather than waiting for the server to echo it back over the websocket.
 const pendingSlots = {};
+
+// Per-library "Check now" state, held the same way as pendingSlots above —
+// the websocket rebroadcasts (and re-renders every library card) many times
+// a minute, so an in-flight or just-finished check has to live outside
+// renderLibs itself or it would be wiped out mid-scan.
+const libScanBusy = {};    // library id -> true while a check is running
+const libScanResult = {};  // library id -> last plain-language outcome
 
 function slotControl(n) {
   const server = n.slots == null ? (n.max_jobs || 1) : n.slots;
@@ -1947,8 +1961,17 @@ async function bulkJobs(action) {
 }
 
 async function scanOne(id) {
-  const r = await (await fetch(`/api/libraries/${id}/scan`, {method:'POST'})).json();
-  alert(`Queued ${r.queued}. Still copying: ${r.waiting}. Already correct: ${r.already_ok}.`);
+  libScanBusy[id] = true;
+  delete libScanResult[id];
+  renderLibs((window.__state || {}).libraries);
+  try {
+    const r = await (await fetch(`/api/libraries/${id}/scan`, {method:'POST'})).json();
+    libScanResult[id] = `Queued ${r.queued}. Still copying: ${r.waiting}. Already correct: ${r.already_ok}.`;
+  } catch (e) {
+    libScanResult[id] = 'Could not reach the server.';
+  }
+  libScanBusy[id] = false;
+  renderLibs((window.__state || {}).libraries);
 }
 async function scanAll() {
   const libs = (await (await fetch('/api/libraries')).json());
