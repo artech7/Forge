@@ -328,6 +328,17 @@
   .orig-warn{color:var(--fault)}
   .orig-row button{padding:5px 10px;font-size:11.5px;flex:none}
 
+  .explain-output{font-family:'Chivo Mono',monospace;font-size:12px;
+    line-height:1.7;color:var(--text);white-space:pre-wrap;word-break:break-word;
+    background:rgba(255,255,255,.04);border:1px solid var(--edge);
+    border-radius:11px;padding:14px 16px;margin-top:14px;max-height:46vh;
+    overflow-y:auto}
+  .explain-matches{display:flex;flex-direction:column;gap:6px;margin-top:10px}
+  .explain-match{display:flex;flex-direction:column;align-items:flex-start;
+    gap:2px;padding:9px 12px;text-align:left;font-size:13px}
+  .explain-match .sec{font-size:11px;overflow:hidden;text-overflow:ellipsis;
+    white-space:nowrap;max-width:100%}
+
   /* Full-screen triage window — deciding what to do about a list of files
      means comparing them against each other, which needs them all on
      screen at once rather than 20 at a time. */
@@ -585,6 +596,7 @@
       <div class="actions">
         <button class="primary" onclick="openWizard()">Add a library</button>
         <button id="scan-btn" onclick="scanAll()">Check folders now</button>
+        <button onclick="openExplain()">Explain a file</button>
       </div>
     </div>
     <div class="scanbar" id="scanbar"></div>
@@ -746,6 +758,10 @@
 
 <div class="veil" id="originals-veil" onclick="if(event.target===this)closeOriginals()">
   <div class="glass wiz" id="originals-box"></div>
+</div>
+
+<div class="veil" id="explain-veil" onclick="if(event.target===this)closeExplain()">
+  <div class="glass wiz" id="explain-box"></div>
 </div>
 
 <script>
@@ -2509,6 +2525,98 @@ async function sweepNow() {
   originalsSweepStatus =
     `Deleted ${r.deleted}, freed ${(r.freed/1e9).toFixed(2)} GB. Kept ${r.kept}.`;
   await loadOriginals();
+}
+
+// ---------------------------------------------------------------- Explain
+// "Why isn't this file showing up?", answerable from inside the app —
+// no shell or filesystem access needed. Search by filename (whatever's
+// recognisable from Jellyfin or the *arrs, not an in-container path) and
+// walk the same decisions the scanner itself makes.
+let explainQuery = '';
+let explainResult = null;   // null | 'loading' | {matches, lines, error?}
+let explainDebounce = null;
+
+function openExplain() {
+  explainQuery = '';
+  explainResult = null;
+  const box = document.getElementById('explain-box');
+  box.innerHTML = `
+    <h3>Explain a file</h3>
+    <p class="lead">Why did (or didn't) Forge pick this file up? Type a name you'd
+      recognise from Jellyfin or the *arrs — not the full path.</p>
+    <input type="text" class="queue-search" id="explain-input"
+           placeholder="e.g. The Mist" oninput="onExplainInput(this.value)">
+    <div id="explain-results"></div>
+    <div class="wiz-nav">
+      <span class="grow"></span>
+      <button class="primary" onclick="closeExplain()">Close</button>
+    </div>`;
+  document.getElementById('explain-veil').classList.add('open');
+  renderExplainResults();
+  setTimeout(() => document.getElementById('explain-input')?.focus(), 50);
+}
+
+function closeExplain() {
+  document.getElementById('explain-veil').classList.remove('open');
+}
+
+function onExplainInput(value) {
+  explainQuery = value;
+  clearTimeout(explainDebounce);
+  if (!value.trim()) {
+    explainResult = null;
+    renderExplainResults();
+    return;
+  }
+  explainDebounce = setTimeout(() => runExplainSearch(value), 400);
+}
+
+async function runExplainSearch(query) {
+  explainResult = 'loading';
+  renderExplainResults();
+  try {
+    explainResult = await (await fetch('/api/explain?' +
+      new URLSearchParams({name: query}))).json();
+  } catch (e) {
+    explainResult = {matches: [], lines: [], error: 'Could not reach the server.'};
+  }
+  renderExplainResults();
+}
+
+async function explainExactPath(path) {
+  explainResult = 'loading';
+  renderExplainResults();
+  try {
+    explainResult = await (await fetch('/api/explain?' +
+      new URLSearchParams({path}))).json();
+  } catch (e) {
+    explainResult = {matches: [], lines: [], error: 'Could not reach the server.'};
+  }
+  renderExplainResults();
+}
+
+function renderExplainResults() {
+  const el = document.getElementById('explain-results');
+  if (!el) return;
+  const r = explainResult;
+
+  if (r === 'loading') {
+    el.innerHTML = `<p class="sec">Searching…</p>`;
+  } else if (r && r.error) {
+    el.innerHTML = `<p class="sec">${r.error}</p>`;
+  } else if (r && r.lines && r.lines.length) {
+    el.innerHTML = `<pre class="explain-output">${r.lines.join('\n')}</pre>`;
+  } else if (r && r.matches && r.matches.length > 1) {
+    el.innerHTML = `<p class="sec">More than one file matches "${explainQuery}" — pick one:</p>
+      <div class="explain-matches">${r.matches.map(m =>
+        `<button class="explain-match" onclick="explainExactPath('${m.replace(/'/g, "\\'")}')">
+          ${m.split(/[\\/]/).pop()}<span class="sec">${m}</span></button>`).join('')}</div>`;
+  } else if (r && r.matches && r.matches.length === 0) {
+    el.innerHTML = `<p class="sec">No file matching "${explainQuery}" was found in any
+      watched library.</p>`;
+  } else {
+    el.innerHTML = '';
+  }
 }
 
 /* ------------------------------------------------------------- wizard */
@@ -4645,7 +4753,7 @@ document.addEventListener('keydown', e => {
   if (e.key !== 'Escape') return;
   // Innermost first, so Escape backs out one layer at a time rather than
   // closing everything at once.
-  const veils = ['fileinfo-veil', 'drill-veil', 'review-veil', 'originals-veil'];
+  const veils = ['fileinfo-veil', 'drill-veil', 'review-veil', 'originals-veil', 'explain-veil'];
   for (const id of veils) {
     const el = document.getElementById(id);
     if (el && el.classList.contains('open')) { el.classList.remove('open'); return; }

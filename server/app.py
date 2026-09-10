@@ -21,6 +21,7 @@ import naming
 import profiles
 import watcher
 import schedule
+import explain
 import arr
 
 STATIC = Path(__file__).parent / "static"
@@ -50,13 +51,14 @@ REQUIRED = {
     "schedule": ["is_open", "describe", "cleanup_due", "describe_cleanup",
                  "overrun_reason", "describe_auto_fail", "limit_seconds"],
     "lookup": ["TMDB", "enrich"],
+    "explain": ["walk", "find"],
 }
 
 
 def check_modules():
     modules = {"db": db, "scheduler": scheduler, "watcher": watcher,
                "profiles": profiles, "naming": naming, "schedule": schedule,
-               "lookup": lookup}
+               "lookup": lookup, "explain": explain}
     problems = []
     for name, needed in REQUIRED.items():
         module = modules.get(name)
@@ -2153,6 +2155,33 @@ async def scan_library_now(lib_id: int):
     log_filed(library, report)
     await broadcast()
     return report
+
+
+@app.get("/api/explain")
+async def explain_file(name: str = "", path: str = ""):
+    """Why did (or didn't) Forge pick up a file — the same walkthrough as
+    explain-file.py, but runnable from the UI without shell access.
+
+    Pass `path` for an exact, already-known file. Pass `name` to search by
+    filename instead — the common case, since a person usually knows a
+    movie's name from Jellyfin or the *arrs, not its in-container path.
+    """
+    if path:
+        target = Path(path).expanduser().resolve()
+        return {"matches": [str(target)],
+                "lines": await asyncio.to_thread(explain.walk, target, probe)}
+
+    if not name.strip():
+        raise HTTPException(400, "Type a filename to search for.")
+    matches = await asyncio.to_thread(explain.find, name, db.list_libraries())
+    if not matches:
+        return {"matches": [], "lines": []}
+    if len(matches) == 1:
+        return {"matches": [str(matches[0])],
+                "lines": await asyncio.to_thread(explain.walk, matches[0], probe)}
+    # More than one hit — let the caller narrow it down rather than
+    # guessing which one they meant.
+    return {"matches": [str(m) for m in matches], "lines": []}
 
 
 def _settings_payload(settings):
