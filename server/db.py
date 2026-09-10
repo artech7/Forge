@@ -117,7 +117,8 @@ CREATE TABLE IF NOT EXISTS jobs (
     final_path    TEXT,                 -- where the server put it, in server space
     created_at    REAL NOT NULL,
     started_at    REAL,
-    finished_at   REAL
+    finished_at   REAL,
+    bounces       INTEGER NOT NULL DEFAULT 0  -- consecutive lease expiries with no check-in
 );
 
 CREATE INDEX IF NOT EXISTS idx_jobs_state ON jobs(state);
@@ -468,7 +469,8 @@ def requeue_jobs(states, library_id=None):
                 conn.execute(
                     """UPDATE jobs SET state='queued', node_id=NULL,
                        lease_expires=NULL, progress=0, fps=0, speed=0,
-                       error=NULL WHERE id=?""", (job["id"],))
+                       error=NULL, started_at=NULL, finished_at=NULL,
+                       bounces=0 WHERE id=?""", (job["id"],))
             moved += 1
         except sqlite3.IntegrityError:
             skipped += 1
@@ -933,7 +935,8 @@ def migrate():
                  ("final_path", "TEXT"),
                  ("attempt", "INTEGER NOT NULL DEFAULT 1"),
                  ("size_now", "INTEGER"), ("outcome", "TEXT"),
-                 ("progress_at", "REAL")],
+                 ("progress_at", "REAL"),
+                 ("bounces", "INTEGER NOT NULL DEFAULT 0")],
         "libraries": [("filters", "TEXT NOT NULL DEFAULT '{}'"),
                       ("naming", "TEXT NOT NULL DEFAULT '{}'"),
                       ("originals_path", "TEXT")],

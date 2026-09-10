@@ -8,6 +8,17 @@ import db
 
 LEASE_SECONDS = 120
 
+# A job whose lease expires this many times in a row without a single
+# progress check-in in between isn't a slow encode, it's stuck — most often
+# FFmpeg hanging on a specific file with nothing coming out on stdout to
+# report. LEASE_SECONDS is far shorter than the (opt-in, minutes-to-hours)
+# auto_fail thresholds, so left alone a job like that never survives one
+# lease long enough for auto_fail to ever see it: it just gets handed back
+# out and re-leased forever, camping at the front of the oldest-first queue
+# and starving everything behind it. This is the backstop that applies
+# regardless of auto_fail being configured at all.
+BOUNCE_LIMIT = 5
+
 # Intent codec -> encoder ids that satisfy it, in preference order.
 # Hardware first: on a homelab, wall-clock beats the marginal quality gain.
 CODEC_FAMILIES = {
@@ -74,17 +85,42 @@ def active_job_count(node_id):
 
 
 def requeue_expired():
-    """Any lease that outlived its node goes back in the pool."""
+    """Any lease that outlived its node goes back in the pool.
+
+    A job that keeps expiring without ever checking in once (see
+    BOUNCE_LIMIT above) is given up on here instead — putting it back in
+    the pool again would just repeat the same hang.
+    """
     now = time.time()
     with db.connect() as conn:
-        cur = conn.execute(
-            """UPDATE jobs
-               SET state='queued', node_id=NULL, lease_expires=NULL,
-                   progress=0, fps=0, speed=0
+        expired = conn.execute(
+            """SELECT id, path, bounces FROM jobs
                WHERE state IN ('leased','running') AND lease_expires < ?""",
             (now,),
-        )
-        return cur.rowcount
+        ).fetchall()
+        given_up = 0
+        for job in expired:
+            if (job["bounces"] or 0) + 1 >= BOUNCE_LIMIT:
+                conn.execute(
+                    """UPDATE jobs SET state='failed', node_id=NULL,
+                           lease_expires=NULL, finished_at=?, error=?
+                       WHERE id=?""",
+                    (now,
+                     f"Lease expired {BOUNCE_LIMIT} times in a row with no "
+                     "progress reported in between — the encoder is likely "
+                     "hanging on this file. Given up on automatically.",
+                     job["id"]),
+                )
+                given_up += 1
+            else:
+                conn.execute(
+                    """UPDATE jobs
+                       SET state='queued', node_id=NULL, lease_expires=NULL,
+                           progress=0, fps=0, speed=0, bounces=bounces+1
+                       WHERE id=?""",
+                    (job["id"],),
+                )
+        return len(expired)
 
 
 def lease_job(node_id):
@@ -159,11 +195,17 @@ def lease_job(node_id):
 
         # Claim it. The WHERE guard makes this safe against two nodes
         # asking at the same moment.
+        #
+        # started_at is only ever set once (COALESCE keeps the first value):
+        # a job that keeps bouncing back into the pool and getting re-leased
+        # is still the same stuck attempt, not a fresh one, and auto_fail's
+        # limit/stall thresholds need the real elapsed time since it first
+        # started to ever have a chance of catching it.
         with db.connect() as conn:
             claimed = conn.execute(
                 """UPDATE jobs
                    SET state='leased', node_id=?, transport=?,
-                       lease_expires=?, started_at=?
+                       lease_expires=?, started_at=COALESCE(started_at, ?)
                    WHERE id=? AND state='queued'""",
                 (node_id, transport, time.time() + LEASE_SECONDS,
                  time.time(), job["id"]),
@@ -181,7 +223,10 @@ def lease_job(node_id):
 
 
 def renew_lease(job_id):
-    db.update_job(job_id, lease_expires=time.time() + LEASE_SECONDS)
+    # A check-in is proof the job is actually alive, so it clears any
+    # bounces run up before this — those were a different, now-resolved
+    # spell of not checking in, not a sign this attempt is doomed too.
+    db.update_job(job_id, lease_expires=time.time() + LEASE_SECONDS, bounces=0)
 
 
 def reverse_path(node, node_path):

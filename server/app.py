@@ -2190,7 +2190,8 @@ async def retry_job(job_id: int):
 
     try:
         db.update_job(job_id, state="queued", node_id=None, lease_expires=None,
-                      progress=0, fps=0, speed=0, error=None, outcome=None)
+                      progress=0, fps=0, speed=0, error=None, outcome=None,
+                      started_at=None, finished_at=None, bounces=0)
     except sqlite3.IntegrityError as exc:
         raise HTTPException(400, f"Couldn't queue that again: {exc}")
     await broadcast()
