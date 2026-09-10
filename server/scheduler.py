@@ -164,33 +164,38 @@ def lease_job(node_id):
     # conversion keeps the discrete GPU busy while a reserved slot keeps
     # loudness work moving on whatever's left over, rather than housekeeping
     # never getting a turn at all behind a backlog that never empties.
+    #
+    # Kept as its own independent branch rather than folded into the
+    # opportunistic-idle check below: a reservation is an unconditional cap
+    # ("always keep this many on housekeeping while there's any to do"),
+    # not one more condition on top of "only when idle" — those are two
+    # different rules and mixing them into one expression made this much
+    # harder to convince yourself was correct than it needed to be.
     reserved = int(node.get("housekeeping_slots") or 0)
     active_housekeeping_here = sum(
         1 for j in db.node_active_jobs(node_id) if is_housekeeping(j))
-    has_reserved_room = reserved > active_housekeeping_here
+    reserved_room_open = role == "both" and reserved > active_housekeeping_here
 
-    # For a node doing both, priority alone still lets housekeeping fill
-    # a second slot while a conversion runs in the first. Holding it back
-    # entirely until nothing real is queued or running anywhere makes it
-    # genuinely use only time nothing else wants.
-    #
-    # A node dedicated to housekeeping is exempt: waiting on conversions
-    # happening on other machines would leave it idle for no reason,
-    # which is the opposite of why someone would dedicate it. So is a node
-    # with reserved capacity still open — that capacity isn't "spare", it's
-    # earmarked, so it shouldn't wait on anything either.
-    if (housekeeping and role == "both" and not has_reserved_room
-            and db.get_settings().get("housekeeping_when_idle", True)):
-        busy_elsewhere = real_work or [
-            j for j in db.list_jobs(states=["leased", "running"], limit=200)
-            if not is_housekeeping(j)]
-        if busy_elsewhere:
-            housekeeping = []
-
-    # Reserved room open and housekeeping work to fill it with: offer that
-    # first. Otherwise the usual oldest-first, real-work-first order.
-    ordered = (housekeeping + real_work) if (has_reserved_room and housekeeping) \
-        else (real_work + housekeeping)
+    if reserved_room_open and housekeeping:
+        # Earmarked, not spare - offer it before anything else, and skip
+        # the idle check entirely: not needing to wait for the node to be
+        # idle is the whole point of reserving it.
+        ordered = housekeeping + real_work
+    else:
+        # Outside any reserved capacity, the original rule: housekeeping
+        # only runs opportunistically, when the node is otherwise idle.
+        # A node dedicated to housekeeping is exempt from waiting at all —
+        # waiting on conversions happening on other machines would leave
+        # it idle for no reason, the opposite of why someone would
+        # dedicate it.
+        if (housekeeping and role == "both"
+                and db.get_settings().get("housekeeping_when_idle", True)):
+            busy_elsewhere = real_work or [
+                j for j in db.list_jobs(states=["leased", "running"], limit=200)
+                if not is_housekeeping(j)]
+            if busy_elsewhere:
+                housekeeping = []
+        ordered = real_work + housekeeping
 
     for job in ordered:
         spec = job["spec"]
