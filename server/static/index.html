@@ -230,16 +230,19 @@
              margin-left:4px}
   .slots{display:flex;align-items:center;gap:10px;margin-top:13px;
          padding-top:13px;border-top:1px solid var(--edge)}
-  .slots .lbl{font-size:12.5px;color:var(--muted);flex:1;line-height:1.4}
-  .slots .lbl b{color:var(--text);font-weight:600}
+  .slots .lbl, .node-role-block .lbl{font-size:12.5px;color:var(--muted);
+                                     flex:1;line-height:1.4}
+  .slots .lbl b, .node-role-block .lbl b{color:var(--text);font-weight:600}
   .stepper{display:flex;align-items:center;gap:0;border:1px solid var(--edge);
-           border-radius:10px;overflow:hidden;flex:none}
+           border-radius:10px;overflow:hidden;flex:none;width:fit-content}
   .stepper button{border:0;border-radius:0;padding:6px 12px;font-size:16px;
                   line-height:1;background:rgba(255,255,255,.05)}
   .stepper button:disabled{opacity:.3;cursor:default}
   .stepper .n{padding:0 13px;font-family:'Chivo Mono',monospace;font-size:14px;
               font-variant-numeric:tabular-nums;min-width:34px;text-align:center}
-  .slots .tip{font-size:11.5px;color:var(--amber);margin-top:7px;line-height:1.45}
+  .slots .tip, .node-role-block .tip{font-size:11.5px;color:var(--amber);
+                                     margin-top:7px;line-height:1.45}
+  .node-role-block{margin-top:13px;padding-top:13px;border-top:1px solid var(--edge)}
 
   /* Signature: a live scope trace of encode throughput per node. */
   .scope{height:34px;width:100%;margin-top:13px;display:block;opacity:.9}
@@ -1075,6 +1078,8 @@ function slotControl(n) {
       <button onclick="setSlots('${n.id}',${slots + 1})"
         ${slots >= 16 ? 'disabled' : ''} aria-label="More at once">+</button>
     </div>
+  </div>
+  <div class="node-role-block">
     <div class="lbl" style="margin-top:10px">Takes on
       <div class="tip">${NODE_ROLE_TIP[n.role || 'both']}</div></div>
     <select class="node-role" onchange="setNodeRole('${n.id}',this.value)">
