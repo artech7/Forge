@@ -445,25 +445,31 @@ def delete_job(job_id):
         conn.execute("DELETE FROM jobs WHERE id=?", (job_id,))
 
 
-def delete_jobs(states, library_id=None):
+def delete_jobs(states, library_id=None, q=None):
     query = f"DELETE FROM jobs WHERE state IN ({','.join('?' * len(states))})"
     params = list(states)
     if library_id is not None:
         query += " AND library_id=?"
         params.append(library_id)
+    if q:
+        query += " AND path LIKE ?"
+        params.append(f"%{q}%")
     with connect() as conn:
         cur = conn.execute(query, params)
         return cur.rowcount
 
 
-def requeue_jobs(states, library_id=None):
+def requeue_jobs(states, library_id=None, q=None):
     """Put jobs back in the queue, skipping any whose path is already active.
 
     The partial unique index would reject a duplicate, so those are counted
-    and reported rather than raising.
+    and reported rather than raising. q narrows this to whatever's actually
+    on screen when a bulk button is search-filtered — without it, a "Retry
+    all 3" clicked after searching would silently act on every job in the
+    view instead of just the 3 the search turned up.
     """
     moved, skipped = 0, 0
-    for job in list_jobs(states=list(states), limit=2000, library_id=library_id):
+    for job in list_jobs(states=list(states), limit=2000, library_id=library_id, q=q):
         try:
             with connect() as conn:
                 conn.execute(

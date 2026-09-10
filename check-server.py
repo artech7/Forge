@@ -119,6 +119,28 @@ check("delete_job", lambda: db.delete_job(job_id))
 check("delete_jobs", lambda: db.delete_jobs(["done"]), lambda r: isinstance(r, int))
 check("delete_library", lambda: db.delete_library(lib_id))
 
+print("\nBulk actions stay scoped to an active search:")
+# A "Retry all N" clicked after searching must only touch the N jobs the
+# search matched, not every job in the view — this used to silently act
+# on everything regardless of what was actually on screen.
+_bulk_lib = db.create_library("BulkTest", "/bulk", None, {}, "archive")
+for i in range(3):
+    jid = db.enqueue(f"/bulk/Other Movie {i}.mkv", {"codec": "hevc"}, 1000, _bulk_lib)
+    db.update_job(jid, state="ignored", error="x")
+for i in range(2):
+    jid = db.enqueue(f"/bulk/Divergent (2014) - part{i}.mkv", {"codec": "hevc"}, 1000, _bulk_lib)
+    db.update_job(jid, state="ignored", error="x")
+check("requeue_jobs with q only moves the matching jobs", lambda: (
+      db.requeue_jobs(["ignored"], _bulk_lib, "Divergent"),
+      db.count_jobs(["ignored"], _bulk_lib),
+      db.count_jobs(["queued"], _bulk_lib))[1:],
+      lambda r: r == (3, 2))
+check("delete_jobs with q only removes the matching jobs", lambda: (
+      db.delete_jobs(["ignored"], _bulk_lib, "Other"),
+      db.count_jobs(["ignored"], _bulk_lib))[-1],
+      lambda r: r == 0)
+db.delete_library(_bulk_lib)
+
 print("\nOther modules:")
 check("profiles.catalog", profiles.catalog, lambda r: "video" in r and "naming" in r)
 check("profiles.resolve", lambda: profiles.resolve(profile),

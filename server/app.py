@@ -1288,6 +1288,10 @@ async def bulk_jobs(req: Request):
     body = await req.json()
     action = body.get("action")
     library_id = body.get("library_id")
+    # Whatever filename search is active in the UI when the button is
+    # clicked — a bulk action has to stay scoped to what's actually on
+    # screen, not everything in the view regardless of the search box.
+    q = (body.get("q") or "").strip() or None
 
     if action == "cancel":
         # Cancel targets whatever is active, not a state list from VIEWS,
@@ -1305,14 +1309,14 @@ async def bulk_jobs(req: Request):
     if action == "retry":
         if set(states) & set(db.ACTIVE_STATES):
             raise HTTPException(400, "Those jobs are already queued")
-        moved, skipped = db.requeue_jobs(list(states), library_id)
+        moved, skipped = db.requeue_jobs(list(states), library_id, q)
         await broadcast()
         return {"requeued": moved, "skipped": skipped}
 
     if action == "clear":
         if set(states) & set(db.ACTIVE_STATES):
             raise HTTPException(400, "Cancel active jobs instead of clearing them")
-        removed = db.delete_jobs(list(states), library_id)
+        removed = db.delete_jobs(list(states), library_id, q)
         await broadcast()
         return {"removed": removed}
 

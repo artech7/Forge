@@ -1972,10 +1972,10 @@ function renderPager(meta) {
   const first = (meta.page - 1) * meta.per_page + 1;
   const last = Math.min(meta.page * meta.per_page, meta.total);
   const bulk = (view.name === 'failed' || view.name === 'ignored')
-    ? `<button onclick="bulkJobs('retry')">Retry all ${meta.total}</button>
-       <button onclick="bulkJobs('clear')">Remove all</button>`
+    ? `<button onclick="bulkJobs('retry', ${meta.total})">Retry all ${meta.total}</button>
+       <button onclick="bulkJobs('clear', ${meta.total})">Remove all ${meta.total}</button>`
     : (view.name === 'done' || view.name === 'removed')
-    ? `<button onclick="bulkJobs('clear')">Clear history</button>` : '';
+    ? `<button onclick="bulkJobs('clear', ${meta.total})">Clear history (${meta.total})</button>` : '';
 
   // Any history view is worth opening full-screen — that's where sorting
   // and seeing everything at once actually matters.
@@ -2001,17 +2001,23 @@ async function removeJob(id) {
   loadView();
 }
 
-async function bulkJobs(action) {
-  const total = view.counts[view.name] || 0;
+async function bulkJobs(action, total) {
+  // total comes from the caller's own on-screen count (the pager's meta,
+  // the same number already shown on the button) rather than view.counts —
+  // that gets overwritten by the next websocket broadcast with the
+  // library's unfiltered totals, which raced this into confirming (and
+  // would have acted on) every job in the view instead of just a search.
   const label = view.name === 'ignored' ? 'ignored' : view.name;
   const scope = view.library_id == null ? '' : ' in this library';
+  const searchScope = queueSearch ? ` matching "${queueSearch}"` : '';
   const message = action === 'retry'
-    ? `Put all ${total} ${label} job(s)${scope} back in the queue?`
-    : `Remove all ${total} entries${scope} from this list? Video files are not touched.`;
+    ? `Put all ${total} ${label} job(s)${scope}${searchScope} back in the queue?`
+    : `Remove all ${total} entries${scope}${searchScope} from this list? Video files are not touched.`;
   if (!confirm(message)) return;
   const r = await (await fetch('/api/jobs/bulk', {method:'POST',
     headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({action, view: view.name, library_id: view.library_id})})).json();
+    body: JSON.stringify({action, view: view.name, library_id: view.library_id,
+                          q: queueSearch || null})})).json();
   if (r.skipped) alert(`${r.requeued} requeued. ${r.skipped} skipped — already queued.`);
   view.page = 1;
   loadView();
