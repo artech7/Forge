@@ -164,6 +164,45 @@ check("the scheduler leases in that same manual order", lambda: (
       lambda r: r == _qo_b)
 db.delete_jobs(["queued"])
 
+print("\nA job that only ever checks in once doesn't bounce forever:")
+# A loudness measurement reports progress exactly once (a "started" ping)
+# then blocks on one uninterruptible FFmpeg call until it finishes. If that
+# call hangs, the lease expires, the reaper bounces it back to queued, and
+# it gets re-leased and reports that same single ping again — which must
+# NOT look like proof the new attempt is healthy, or it can bounce forever
+# without ever tripping BOUNCE_LIMIT.
+_zombie = db.enqueue("/zombie/Stuck.mkv", {"measure": "loudness"}, 1000)
+db.update_job(_zombie, state="leased", lease_expires=time.time() + 120,
+              started_at=time.time())
+for cycle in range(scheduler.BOUNCE_LIMIT):
+    row = db.get_job(_zombie)
+    if row["state"] == "failed":
+        break
+    scheduler.renew_lease(_zombie, reset_bounces=row["state"] != "leased")
+    with db.connect() as conn:
+        conn.execute("UPDATE jobs SET state='running', lease_expires=? WHERE id=?",
+                     (time.time() - 1, _zombie))
+    scheduler.requeue_expired()
+    if db.get_job(_zombie)["state"] != "failed":
+        with db.connect() as conn:
+            conn.execute("UPDATE jobs SET state='leased' WHERE id=?", (_zombie,))
+check("a job that only ever checks in once eventually gets given up on",
+      lambda: db.get_job(_zombie)["state"], lambda r: r == "failed")
+
+# A job that genuinely keeps working (a second check-in within the same
+# attempt) must be completely unaffected by this.
+_healthy = db.enqueue("/zombie/Healthy.mkv", {"codec": "hevc"}, 1000)
+db.update_job(_healthy, state="leased", lease_expires=time.time() + 120,
+              started_at=time.time(), bounces=3)
+scheduler.renew_lease(_healthy, reset_bounces=False)   # first check-in
+check("a job's first check-in alone doesn't clear its bounces",
+      lambda: db.get_job(_healthy)["bounces"], lambda r: r == 3)
+db.update_job(_healthy, state="running")
+scheduler.renew_lease(_healthy, reset_bounces=True)    # second check-in
+check("but a second check-in (genuinely still running) does",
+      lambda: db.get_job(_healthy)["bounces"], lambda r: r == 0)
+db.delete_jobs(["failed", "leased", "running"])
+
 print("\nReserving housekeeping capacity on a mixed-role node:")
 for i in range(6):
     db.enqueue(f"/hk/Backlog {i}.mkv", {"codec": "hevc", "quality": 22}, 1000)

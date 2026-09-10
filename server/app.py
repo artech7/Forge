@@ -520,6 +520,22 @@ async def progress(job_id: int, req: Request):
     if job and job["state"] not in ("leased", "running"):
         return {"stop": True, "reason": job["state"]}
 
+    # A job's very first check-in only proves it *started* — for most jobs
+    # that's immediately followed by more progress a couple of seconds
+    # later, but a loudness measurement reports exactly once (so the node
+    # card shows it as busy) and then blocks on one uninterruptible FFmpeg
+    # call with no further word until it finishes. If that call hangs, the
+    # lease expires, the job bounces back to queued, gets re-leased, and
+    # reports that same "just started" ping again — which used to reset
+    # both the bounce counter and the stall clock every single cycle,
+    # forever, since from either safety net's point of view a fresh ping
+    # looks identical to genuine ongoing progress. Only a check-in that
+    # arrives once the job is already running proves it survived actually
+    # doing work, not just starting it — that's what real progress on a
+    # healthy job looks like, so that's the only thing allowed to prove
+    # this attempt isn't stuck.
+    first_checkin = job["state"] == "leased" if job else False
+
     # Recorded only when the figure actually advances, so a worker that keeps
     # reporting the same percentage still counts as stalled.
     reported = float(body.get("progress", 0))
@@ -527,14 +543,14 @@ async def progress(job_id: int, req: Request):
     db.update_job(
         job_id, state="running",
         progress=reported,
-        **({"progress_at": time.time()} if moved else {}),
+        **({"progress_at": time.time()} if moved and not first_checkin else {}),
         fps=float(body.get("fps", 0)),
         speed=float(body.get("speed", 0)),
         size_now=int(body.get("size_now") or 0) or None,
         encoder_used=body.get("encoder"),
         **({"outcome": body["note"]} if body.get("note") else {}),
     )
-    scheduler.renew_lease(job_id)
+    scheduler.renew_lease(job_id, reset_bounces=not first_checkin)
     await broadcast()
     return {"ok": True}
 

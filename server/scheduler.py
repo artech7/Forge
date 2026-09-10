@@ -242,11 +242,18 @@ def lease_job(node_id):
     return None
 
 
-def renew_lease(job_id):
-    # A check-in is proof the job is actually alive, so it clears any
-    # bounces run up before this — those were a different, now-resolved
-    # spell of not checking in, not a sign this attempt is doomed too.
-    db.update_job(job_id, lease_expires=time.time() + LEASE_SECONDS, bounces=0)
+def renew_lease(job_id, reset_bounces=True):
+    # A check-in that proves the job is still doing work (not just that it
+    # started) clears any bounces run up before this — those were a
+    # different, now-resolved spell of not checking in, not a sign this
+    # attempt is doomed too. reset_bounces=False is for a job's very first
+    # check-in after a (re-)lease, which only proves it started; see the
+    # long comment in app.py's /progress handler for why that distinction
+    # matters.
+    fields = {"lease_expires": time.time() + LEASE_SECONDS}
+    if reset_bounces:
+        fields["bounces"] = 0
+    db.update_job(job_id, **fields)
 
 
 def reverse_path(node, node_path):
