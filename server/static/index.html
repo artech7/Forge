@@ -1082,7 +1082,66 @@ function slotControl(n) {
         `<option value="${id}" ${(n.role || 'both') === id ? 'selected' : ''}>${label}</option>`
       ).join('')}
     </select>
+    ${housekeepingSlotControl(n, slots)}
   </div>`;
+}
+
+// A node set to "Anything" still holds loudness work back completely
+// while any real conversion is waiting anywhere — by design, so a batch
+// of loudness passes can't cut in front of a real transcode. But on a
+// machine with two independent encoders (a discrete GPU plus an iGPU,
+// say), that leaves one of them sitting idle rather than doing the
+// loudness work the other could easily spare a slot for. This reserves
+// some of THIS node's own slots for it permanently, regardless of the
+// conversion backlog, without needing a second worker process.
+let pendingHousekeepingSlots = {};
+
+function housekeepingSlotControl(n, total) {
+  if ((n.role || 'both') !== 'both' || total <= 0) return '';
+
+  const server = n.housekeeping_slots || 0;
+  const reserved = Math.min(total, pendingHousekeepingSlots[n.id] != null
+    ? pendingHousekeepingSlots[n.id] : server);
+  if (pendingHousekeepingSlots[n.id] != null && server === pendingHousekeepingSlots[n.id])
+    delete pendingHousekeepingSlots[n.id];
+
+  const label = reserved === 0
+    ? 'None reserved — loudness work waits until this node is fully idle'
+    : `<b>${reserved}</b> of ${total} kept for loudness work, no matter what else is queued`;
+
+  return `<div class="lbl" style="margin-top:10px">${label}
+      <div class="tip">One machine, two encoders — reserve a slot for loudness
+        measuring/levelling so it isn't stuck waiting behind the whole
+        conversion queue the way the rest of "Anything" mode does.</div></div>
+    <div class="stepper" data-hk-node="${n.id}">
+      <button onclick="setHousekeepingSlots('${n.id}',${reserved - 1})"
+        ${reserved <= 0 ? 'disabled' : ''} aria-label="Reserve fewer">&minus;</button>
+      <span class="n">${reserved}</span>
+      <button onclick="setHousekeepingSlots('${n.id}',${reserved + 1})"
+        ${reserved >= total ? 'disabled' : ''} aria-label="Reserve more">+</button>
+    </div>`;
+}
+
+async function setHousekeepingSlots(id, value) {
+  const total = pendingSlots[id] != null ? pendingSlots[id]
+    : (document.querySelector(`.stepper[data-node="${id}"] .n`) || {}).textContent;
+  const wanted = Math.max(0, Math.min(Number(total) || 0, value));
+  pendingHousekeepingSlots[id] = wanted;
+  const box = document.querySelector(`.stepper[data-hk-node="${id}"] .n`);
+  if (box) box.textContent = wanted;
+
+  try {
+    const r = await fetch(`/api/nodes/${id}/housekeeping-slots`, {method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({slots: wanted})});
+    if (!r.ok) {
+      delete pendingHousekeepingSlots[id];
+      alert(`Could not change it (error ${r.status}).`);
+    }
+  } catch (e) {
+    delete pendingHousekeepingSlots[id];
+    alert('Could not reach the server.');
+  }
 }
 
 const NODE_ROLES = [

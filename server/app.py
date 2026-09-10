@@ -42,7 +42,8 @@ REQUIRED = {
            "get_settings", "save_settings", "record_original", "mark_processed",
            "count_jobs", "job_counts", "delete_job", "delete_jobs",
            "requeue_jobs", "record_completion", "original_for_path",
-           "update_original", "move_job_to_top", "reorder_jobs"],
+           "update_original", "move_job_to_top", "reorder_jobs",
+           "set_housekeeping_slots", "node_active_jobs"],
     "scheduler": ["lease_job", "reverse_path", "requeue_expired"],
     "watcher": ["scan_library", "scan_all", "destination_for", "sweep_originals",
                 "filter_verdict", "plan_conversion", "restore_original_row"],
@@ -482,6 +483,16 @@ async def set_slots(node_id: str, req: Request):
     value = db.set_slots(node_id, body.get("slots", 1))
     await broadcast()
     return {"slots": value}
+
+
+@app.post("/api/nodes/{node_id}/housekeeping-slots")
+async def set_housekeeping_slots(node_id: str, req: Request):
+    """Of this node's slots, how many stay reserved for loudness work
+    regardless of how deep the conversion backlog is."""
+    body = await req.json()
+    value = db.set_housekeeping_slots(node_id, body.get("slots", 0))
+    await broadcast()
+    return {"housekeeping_slots": value}
 
 
 @app.post("/api/nodes/{node_id}/role")

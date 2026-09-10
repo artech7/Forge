@@ -159,6 +159,16 @@ def lease_job(node_id):
     elif role == "housekeeping":
         real_work = []             # never does conversions
 
+    # A slice of this node's own capacity can be permanently earmarked for
+    # housekeeping instead — the "one machine, two encoders" case: a real
+    # conversion keeps the discrete GPU busy while a reserved slot keeps
+    # loudness work moving on whatever's left over, rather than housekeeping
+    # never getting a turn at all behind a backlog that never empties.
+    reserved = int(node.get("housekeeping_slots") or 0)
+    active_housekeeping_here = sum(
+        1 for j in db.node_active_jobs(node_id) if is_housekeeping(j))
+    has_reserved_room = reserved > active_housekeeping_here
+
     # For a node doing both, priority alone still lets housekeeping fill
     # a second slot while a conversion runs in the first. Holding it back
     # entirely until nothing real is queued or running anywhere makes it
@@ -166,8 +176,10 @@ def lease_job(node_id):
     #
     # A node dedicated to housekeeping is exempt: waiting on conversions
     # happening on other machines would leave it idle for no reason,
-    # which is the opposite of why someone would dedicate it.
-    if (housekeeping and role == "both"
+    # which is the opposite of why someone would dedicate it. So is a node
+    # with reserved capacity still open — that capacity isn't "spare", it's
+    # earmarked, so it shouldn't wait on anything either.
+    if (housekeeping and role == "both" and not has_reserved_room
             and db.get_settings().get("housekeeping_when_idle", True)):
         busy_elsewhere = real_work or [
             j for j in db.list_jobs(states=["leased", "running"], limit=200)
@@ -175,7 +187,10 @@ def lease_job(node_id):
         if busy_elsewhere:
             housekeeping = []
 
-    ordered = real_work + housekeeping
+    # Reserved room open and housekeeping work to fill it with: offer that
+    # first. Otherwise the usual oldest-first, real-work-first order.
+    ordered = (housekeeping + real_work) if (has_reserved_room and housekeeping) \
+        else (real_work + housekeeping)
 
     for job in ordered:
         spec = job["spec"]

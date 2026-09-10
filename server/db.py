@@ -25,7 +25,10 @@ CREATE TABLE IF NOT EXISTS nodes (
     benchmarks_10bit TEXT NOT NULL DEFAULT '{}',
     last_seen    REAL NOT NULL,
     enabled      INTEGER NOT NULL DEFAULT 1,
-    role         TEXT NOT NULL DEFAULT 'both'   -- both|transcode|housekeeping
+    role         TEXT NOT NULL DEFAULT 'both',  -- both|transcode|housekeeping
+    housekeeping_slots INTEGER NOT NULL DEFAULT 0  -- of this node's slots, how many
+                                                    -- stay reserved for loudness work
+                                                    -- regardless of the conversion backlog
 );
 
 CREATE TABLE IF NOT EXISTS libraries (
@@ -207,6 +210,30 @@ def set_slots(node_id, slots):
     with connect() as conn:
         conn.execute("UPDATE nodes SET slots=? WHERE id=?", (slots, node_id))
     return slots
+
+
+def set_housekeeping_slots(node_id, slots):
+    """How many of this node's slots stay reserved for loudness work,
+    immune to the usual "hold back until nothing real is waiting"
+    behaviour. Clamped to what the node actually has, since reserving more
+    than its total slots doesn't mean anything.
+    """
+    total = node_slots(node_id)
+    slots = max(0, min(total, int(slots)))
+    with connect() as conn:
+        conn.execute("UPDATE nodes SET housekeeping_slots=? WHERE id=?",
+                     (slots, node_id))
+    return slots
+
+
+def node_active_jobs(node_id):
+    """This node's currently leased/running jobs, for judging how much of
+    its reserved housekeeping capacity is already spoken for."""
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT * FROM jobs WHERE node_id=? AND state IN ('leased','running')",
+            (node_id,)).fetchall()
+    return [row_to_dict(r) for r in rows]
 
 
 def node_slots(node_id):
@@ -996,7 +1023,8 @@ def migrate():
                   ("benchmarks", "TEXT NOT NULL DEFAULT '{}'"),
                   ("slots", "INTEGER"), ("cpus", "INTEGER"),
                   ("benchmarks_10bit", "TEXT NOT NULL DEFAULT '{}'"),
-                  ("role", "TEXT NOT NULL DEFAULT 'both'")],
+                  ("role", "TEXT NOT NULL DEFAULT 'both'"),
+                  ("housekeeping_slots", "INTEGER NOT NULL DEFAULT 0")],
         "files": [("video_bitrate", "INTEGER"), ("bit_depth", "INTEGER"),
                   ("detail", "TEXT")],
     }

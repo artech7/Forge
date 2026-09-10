@@ -164,6 +164,33 @@ check("the scheduler leases in that same manual order", lambda: (
       lambda r: r == _qo_b)
 db.delete_jobs(["queued"])
 
+print("\nReserving housekeeping capacity on a mixed-role node:")
+for i in range(6):
+    db.enqueue(f"/hk/Backlog {i}.mkv", {"codec": "hevc", "quality": 22}, 1000)
+for i in range(3):
+    db.enqueue(f"/hk/Loud {i}.mkv", {"measure": "loudness"}, 1000)
+db.upsert_node("hk-node", "HKNode", ["libx265"],
+               [{"server": "/hk", "local": "/hk"}], 1)
+db.set_slots("hk-node", 2)
+
+check("with nothing reserved, both slots go to real work (unchanged default)",
+      lambda: sorted("Loud" in (scheduler.lease_job("hk-node") or {"source_path": ""})
+                     ["source_path"] for _ in range(2)),
+      lambda r: r == [False, False])
+db.requeue_jobs(["leased", "running"])   # give the two claimed jobs back
+
+check("set_housekeeping_slots is clamped to the node's own slot count",
+      lambda: db.set_housekeeping_slots("hk-node", 99), lambda r: r == 2)
+db.set_housekeeping_slots("hk-node", 1)
+
+check("with 1 reserved, exactly one of two concurrent leases is housekeeping",
+      lambda: sorted("Loud" in (scheduler.lease_job("hk-node") or {"source_path": ""})
+                     ["source_path"] for _ in range(2)),
+      lambda r: r == [False, True])
+check("a third lease is refused — the node is already at its 2-slot cap",
+      lambda: scheduler.lease_job("hk-node"), lambda r: r is None)
+db.delete_jobs(["queued", "leased", "running"])
+
 print("\nOther modules:")
 check("profiles.catalog", profiles.catalog, lambda r: "video" in r and "naming" in r)
 check("profiles.resolve", lambda: profiles.resolve(profile),
