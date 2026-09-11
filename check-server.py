@@ -681,6 +681,43 @@ check("run-node.ps1 takes a -Token parameter",
 check("and passes it to the worker",
       lambda: "$env:FORGE_TOKEN = $Token" in _ps1, lambda r: r is True)
 
+print("\nChecking a file's tracks decode:")
+_hc_src = str(base / "hc.mkv")
+pathlib.Path(_hc_src).write_bytes(b"not really a video")
+_hc_info = {"streams": [
+    {"index": 0, "codec_type": "video", "codec_name": "h264"},
+    {"index": 1, "codec_type": "audio", "codec_name": "aac"},
+    {"index": 2, "codec_type": "audio", "codec_name": "ac3"},
+    {"index": 3, "codec_type": "subtitle", "codec_name": "subrip"}]}
+_hc_calls = []
+_real_decode = _st._decode_streams
+# A healthy file: the combined pass says yes and nothing else runs.
+_st._decode_streams = lambda path, idx: (_hc_calls.append(list(idx)), (True, None))[1]
+_hc = _st.health_check(_hc_src, _hc_info)
+check("a healthy file is read once, not once per track",
+      lambda: len(_hc_calls), lambda r: r == 1)
+check("and that one pass covers video plus every audio track",
+      lambda: _hc_calls[0], lambda r: r == [0, 1, 2])
+check("subtitles are left out of it",
+      lambda: 3 in _hc_calls[0], lambda r: r is False)
+check("every checked track comes back healthy",
+      lambda: (_hc["video"], sorted(_hc["audio"])),
+      lambda r: r == ((True, None), [1, 2]))
+
+# A file with something wrong: fall back to one pass per track to find it.
+_hc_calls.clear()
+_st._decode_streams = lambda path, idx: (
+    _hc_calls.append(list(idx)),
+    (True, None) if idx == [1] else (False, "broken"))[1]
+_hc2 = _st.health_check(_hc_src, _hc_info)
+check("a bad file falls back to checking each track alone",
+      lambda: _hc_calls, lambda r: r == [[0, 1, 2], [0], [1], [2]])
+check("and says which track is at fault",
+      lambda: (_hc2["video"][0], _hc2["audio"][1][0], _hc2["audio"][2][0]),
+      lambda r: r == (False, True, False))
+_st._decode_streams = _real_decode
+pathlib.Path(_hc_src).unlink(missing_ok=True)
+
 print("\nSaying what a job is doing before there's a percentage:")
 _ph_lib = db.create_library("Phases", str(base / "ph"), "", profile, "archive")
 _ph_job = db.enqueue("/ph/big.mkv", {"codec": "hevc"}, 5_000_000_000, _ph_lib)

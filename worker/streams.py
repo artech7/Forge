@@ -211,35 +211,61 @@ def health_check(path, info, on_stream=None):
     audios = [s for s in streams if s.get("codec_type") == "audio"]
 
     # on_stream(done, total, kind) is called before each pass so the
-    # caller can say which track is being read. Every pass decodes a
-    # whole stream, so on a long file this is minutes of work with
-    # nothing else to show for it.
+    # caller can say what is being read.
     result = {"video": None, "audio": {}}
-    total = len(videos[:1]) + len(audios)
+    checked = videos[:1] + audios
+    total = len(checked)
+    if not checked:
+        return result
+
+    # One pass over the file decoding every track that matters, rather
+    # than one pass per track. The decoding costs the same either way —
+    # the saving is that the file is read once instead of N times, and
+    # on a worker reading from a network share that is most of the wall
+    # clock. A healthy file, which is nearly all of them, stops here.
+    if on_stream:
+        on_stream(0, total, "all")
+    if _decode_streams(path, [s["index"] for s in checked])[0]:
+        if videos:
+            result["video"] = (True, None)
+        for stream in audios:
+            result["audio"][stream["index"]] = (True, None)
+        return result
+
+    # Something in there doesn't decode. Now it's worth the extra reads
+    # to find out which, because the answer decides what happens next:
+    # a bad video track fails the job, a bad audio track is dropped and
+    # the rest of the file converts.
     done = 0
     if videos:
         done += 1
         if on_stream:
             on_stream(done, total, "video")
-        result["video"] = _decode_check(path, videos[0]["index"])
+        result["video"] = _decode_streams(path, [videos[0]["index"]])
     for stream in audios:
         done += 1
         if on_stream:
             on_stream(done, total, "audio")
-        result["audio"][stream["index"]] = _decode_check(path, stream["index"])
+        result["audio"][stream["index"]] = _decode_streams(
+            path, [stream["index"]])
     return result
 
 
-def _decode_check(path, stream_index):
-    """Decode one stream to nothing, reporting whether FFmpeg complained.
+def _decode_streams(path, indexes):
+    """Decode these streams to nothing, reporting whether FFmpeg complained.
 
     -v error means the only output possible is an actual decode problem —
     no progress lines, no warnings, nothing to misinterpret as a failure.
+    Several indexes decode together in one read of the file; one index
+    is the same thing, and says which stream the complaint is about.
     """
+    maps = []
+    for index in indexes:
+        maps += ["-map", f"0:{index}"]
     try:
         out = subprocess.run(
             ["ffmpeg", "-v", "error", "-xerror", "-i", path,
-             "-map", f"0:{stream_index}", "-f", "null", "-"],
+             *maps, "-f", "null", "-"],
             capture_output=True, text=True, encoding="utf-8", errors="replace",
             timeout=HEALTH_CHECK_TIMEOUT)
     except (subprocess.TimeoutExpired, OSError):

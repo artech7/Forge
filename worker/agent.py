@@ -341,8 +341,10 @@ def run_job(job, caps):
             with Phase(job_id, "checking every track plays") as phase:
                 health = streams.health_check(
                     src, info, on_stream=lambda done, total, kind: phase.say(
-                        f"reading the whole {kind} track to check it "
-                        f"decodes \u2014 {done} of {total}"))
+                        f"reading the file once to check all {total} tracks "
+                        f"decode" if kind == "all" else
+                        f"finding the bad track \u2014 reading the {kind} "
+                        f"track on its own, {done} of {total}"))
             video_ok, video_msg = health["video"] or (True, None)
             if not video_ok:
                 report_fail(
