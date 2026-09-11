@@ -501,6 +501,46 @@
   .veil{position:fixed;inset:0;background:rgba(4,7,12,.72);backdrop-filter:blur(7px);
         display:none;align-items:center;justify-content:center;padding:18px;z-index:50}
   .veil.open{display:flex}
+  /* in-page confirmations and notices, in place of the browser's own
+     confirm()/alert() dialogs — those can't be themed, they freeze the
+     page, and on some browsers they carry a "stop this page creating
+     more dialogs" checkbox that silently disables them for good. */
+  .ask{width:min(460px,100%);padding:24px 26px}
+  .ask h4{margin:0 0 9px;font-size:17px;font-weight:700;
+          letter-spacing:-.01em;line-height:1.35}
+  .ask p{margin:0 0 9px;font-size:13px;color:var(--muted);
+         line-height:1.6;white-space:pre-line}
+  .ask p:last-of-type{margin-bottom:0}
+  .ask-acts{display:flex;gap:9px;justify-content:flex-end;margin-top:20px;
+            flex-wrap:wrap}
+  .ask-acts .go{background:var(--signal);color:#06210f;border-color:transparent}
+  .ask-acts .go:hover{background:var(--signal);filter:brightness(1.09)}
+  .ask-acts .go.danger{background:var(--fault);color:#2a0606}
+  /* the global focus ring is the signal colour, which reads as "go"
+     sitting on top of a red destructive button */
+  .ask-acts .go.danger:focus-visible{outline-color:var(--fault)}
+
+  .toasts{position:fixed;right:18px;bottom:18px;z-index:80;display:flex;
+          flex-direction:column;gap:9px;align-items:flex-end;
+          max-width:min(380px,calc(100vw - 36px));pointer-events:none}
+  .toast{pointer-events:auto;padding:11px 14px;border-radius:12px;
+         font-size:12.5px;line-height:1.55;white-space:pre-line;cursor:pointer;
+         background:var(--glass);border:1px solid var(--edge);
+         backdrop-filter:blur(22px) saturate(150%);
+         -webkit-backdrop-filter:blur(22px) saturate(150%);
+         box-shadow:0 10px 30px rgba(0,0,0,.35);
+         animation:toast-in .22s ease-out}
+  .toast.good{border-left:3px solid var(--signal)}
+  .toast.bad{border-left:3px solid var(--fault)}
+  .toast.info{border-left:3px solid var(--muted)}
+  .toast.out{animation:toast-out .2s ease-in forwards}
+  @keyframes toast-in{from{opacity:0;transform:translateY(8px)}to{opacity:1}}
+  @keyframes toast-out{to{opacity:0;transform:translateY(6px)}}
+  @media (prefers-reduced-motion:reduce){
+    .toast{animation:none}
+    .toast.out{animation:none;opacity:0}
+  }
+
   .wiz{width:min(620px,100%);max-height:88vh;overflow-y:auto;padding:26px}
   .wiz h3{margin:0 0 5px;font-size:20px;font-weight:800;letter-spacing:-.02em}
   .wiz .lead{color:var(--muted);font-size:13.5px;line-height:1.6;margin:0 0 20px}
@@ -788,6 +828,10 @@
   <div class="glass wiz" id="originals-box"></div>
 </div>
 
+<div class="veil" id="ask-veil" onclick="if(event.target===this)askClose(false)">
+  <div class="glass ask" id="ask-box"></div>
+</div>
+<div class="toasts" id="toasts" aria-live="polite"></div>
 <div class="veil" id="explain-veil" onclick="if(event.target===this)closeExplain()">
   <div class="glass wiz" id="explain-box"></div>
 </div>
@@ -1167,11 +1211,11 @@ async function setHousekeepingSlots(id, value) {
       body: JSON.stringify({slots: wanted})});
     if (!r.ok) {
       delete pendingHousekeepingSlots[id];
-      alert(`Could not change it (error ${r.status}).`);
+      notifyBad(`Could not change it (error ${r.status}).`);
     }
   } catch (e) {
     delete pendingHousekeepingSlots[id];
-    alert('Could not reach the server.');
+    notifyBad('Could not reach the server.');
   }
 }
 
@@ -1194,7 +1238,7 @@ async function setNodeRole(id, role) {
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({role})});
   } catch (e) {
-    alert('Could not reach the server.');
+    notifyBad('Could not reach the server.');
   }
 }
 
@@ -1210,7 +1254,7 @@ async function setSlots(id, value) {
       body: JSON.stringify({slots: wanted})});
     if (!r.ok) {
       delete pendingSlots[id];
-      alert(r.status === 404
+      notifyBad(r.status === 404
         ? 'This version of the server does not support changing the number '
         + 'of files yet. Update the server files and restart Forge.'
         : `Could not change it (error ${r.status}).`);
@@ -1219,7 +1263,7 @@ async function setSlots(id, value) {
     pendingSlots[id] = (await r.json()).slots;
   } catch (e) {
     delete pendingSlots[id];
-    alert('Could not reach the server to change that.');
+    notifyBad('Could not reach the server to change that.');
   }
 }
 
@@ -1232,19 +1276,19 @@ async function callJob(id, path, options) {
     if (!r.ok) {
       let detail = `The server refused that (error ${r.status}).`;
       try { detail = (await r.json()).detail || detail; } catch (e) {}
-      alert(detail);
+      notifyBad(detail);
       return null;
     }
     return await r.json().catch(() => ({}));
   } catch (e) {
-    alert('Could not reach the server.');
+    notifyBad('Could not reach the server.');
     return null;
   }
 }
 
 async function retryJob(id) {
   const result = await callJob(id, 'retry');
-  if (result && result.message) alert(result.message);
+  if (result && result.message) notifyInfo(result.message);
   if (result) loadView();
 }
 
@@ -1253,21 +1297,23 @@ async function requeueJob(id, state) {
     ? 'This job is part-way through. Restarting throws away that progress and '
     + 'starts over — worth it only if it would now use a faster encoder.\n\nRestart?'
     : 'Put this job back in the queue?';
-  if (!confirm(warning)) return;
+  if (!await ask(warning, {yes: state === 'running' ? 'Restart it'
+                                         : 'Put it back'})) return;
   const result = await callJob(id, 'retry');
-  if (result && result.message) alert(result.message);
+  if (result && result.message) notifyInfo(result.message);
   if (result && view.name !== 'working') loadView();
 }
 
 async function cancelJob(id) {
-  if (!confirm('Cancel this job? The original file is left untouched.')) return;
+  if (!await ask('Cancel this job? The original file is left untouched.',
+      {yes: 'Stop the job'})) return;
   const result = await callJob(id, 'cancel');
   if (result && view.name !== 'working') loadView();
 }
 
 async function moveJobToTop(id) {
   const r = await fetch(`/api/jobs/${id}/priority`, {method: 'POST'});
-  if (!r.ok) return alert((await r.json()).detail || 'Could not move that.');
+  if (!r.ok) return notifyBad((await r.json()).detail || 'Could not move that.');
   loadView();
 }
 
@@ -1418,15 +1464,16 @@ async function cancelQueue(kind) {
       + 'from Library Health.'
     : 'Conversions come back on the next folder scan. Measuring resumes on '
       + 'its own. Files queued for levelling need selecting again.';
-  if (!confirm(`${CANCEL_BLURB[kind]} in ${scope}.\n\n${resumable}`
-             + '\n\nNo video files are changed or deleted.')) return;
+  if (!await ask(`${CANCEL_BLURB[kind]} in ${scope}.\n\n${resumable}`
+             + '\n\nNo video files are changed or deleted.',
+      {yes: 'Stop them'})) return;
   try {
     const r = await (await fetch('/api/jobs/bulk', {method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({action: 'cancel', kind, library_id: id})})).json();
-    if (!r.cancelled) alert('Nothing was queued or running.');
+    if (!r.cancelled) notifyGood('Nothing was queued or running.');
   } catch (e) {
-    alert('Could not reach the server.');
+    notifyBad('Could not reach the server.');
   }
 }
 
@@ -1728,14 +1775,14 @@ function selectAllBloated(checked) {
 
 async function doBatchRetranscode() {
   const quality = +(document.getElementById('batch-quality') || {}).value;
-  if (!quality) return alert('Pick a quality first.');
+  if (!quality) return notifyInfo('Pick a quality first.');
   const ids = [...selectedBloated];
   const r = await (await fetch('/api/jobs/bloated/bulk-retranscode', {method:'POST',
     headers:{'Content-Type':'application/json'},
     body: JSON.stringify({job_ids: ids, quality})})).json();
   selectedBloated.clear();
   if (r.failed && r.failed.length) {
-    alert(`${r.queued} queued. ${r.failed.length} couldn't be: `
+    notifyBad(`${r.queued} queued. ${r.failed.length} couldn't be: `
         + r.failed.map(f => `#${f.id} (${f.reason})`).join('; '));
   }
   loadView();
@@ -1743,7 +1790,7 @@ async function doBatchRetranscode() {
 
 async function doBatchAccept() {
   const ids = [...selectedBloated];
-  if (!confirm(`Keep all ${ids.length} selected files even though they got bigger?`)) return;
+  if (!await ask(`Keep all ${ids.length} selected files even though they got bigger?`)) return;
   await fetch('/api/jobs/bloated/bulk-accept', {method:'POST',
     headers:{'Content-Type':'application/json'},
     body: JSON.stringify({job_ids: ids})});
@@ -1753,7 +1800,7 @@ async function doBatchAccept() {
 
 async function doBatchRevert() {
   const ids = [...selectedBloated];
-  if (!confirm(`Settle ${ids.length} selected entr${ids.length === 1 ? 'y' : 'ies'} as `
+  if (!await ask(`Settle ${ids.length} selected entr${ids.length === 1 ? 'y' : 'ies'} as `
              + '"keeping the original"? Forge already restores the original '
              + 'automatically when a conversion grows, so this usually just '
              + 'closes them out.')) return;
@@ -1761,7 +1808,7 @@ async function doBatchRevert() {
     headers:{'Content-Type':'application/json'},
     body: JSON.stringify({job_ids: ids})})).json();
   if (r.failed && r.failed.length) {
-    alert(`${r.reverted} settled. ${r.failed.length} couldn't be: `
+    notifyBad(`${r.reverted} settled. ${r.failed.length} couldn't be: `
         + r.failed.map(f => `#${f.id} (${f.reason})`).join('; '));
   }
   selectedBloated.clear();
@@ -1771,6 +1818,81 @@ async function doBatchRevert() {
 // Paths contain quotes, ampersands and apostrophes. Building an inline
 // onclick out of one breaks the attribute, so the path rides in a data
 // attribute and a single delegated listener reads it back.
+// Forge's own confirm(): same "return true to go ahead" contract, but a
+// promise, so every caller becomes `if (!await ask(...)) return;`.
+let askPending = null;
+
+function askSplit(message) {
+  const paras = String(message == null ? '' : message)
+    .split(/\n{2,}/).map(t => t.trim()).filter(Boolean);
+  let head = paras.shift() || 'Are you sure?';
+  // These messages are nearly all written as "Question? Explanation.",
+  // so the question makes a good heading and the rest reads as body.
+  const split = head.match(/^([\s\S]*?\?)\s+([\s\S]+)$/);
+  if (split) { head = split[1]; paras.unshift(split[2]); }
+  return {head, paras};
+}
+
+function ask(message, opts) {
+  opts = opts || {};
+  askClose(false);          // a second question supersedes an open one
+  const {head, paras} = askSplit(message);
+  const box = document.getElementById('ask-box');
+  if (!box) return Promise.resolve(false);
+  box.innerHTML = `<h4>${attr(head)}</h4>`
+    + paras.map(t => `<p>${attr(t)}</p>`).join('')
+    + `<div class="ask-acts">
+         <button onclick="askClose(false)">${attr(opts.no || 'Never mind')}</button>
+         <button class="go${opts.danger ? ' danger' : ''}" id="ask-go"
+                 onclick="askClose(true)">${attr(opts.yes || 'Continue')}</button>
+       </div>`;
+  document.getElementById('ask-veil').classList.add('open');
+  const go = document.getElementById('ask-go');
+  if (go && go.focus) go.focus();
+  return new Promise(resolve => { askPending = resolve; });
+}
+
+// Always resolves the waiting caller. Closing the dialog any other way —
+// Escape, the backdrop, a second question — would otherwise leave the
+// `await` hanging forever with no visible sign of it.
+function askClose(answer) {
+  const veil = document.getElementById('ask-veil');
+  if (veil) veil.classList.remove('open');
+  const resolve = askPending;
+  askPending = null;
+  if (resolve) resolve(!!answer);
+}
+
+function askIsOpen() {
+  const veil = document.getElementById('ask-veil');
+  return !!(veil && veil.classList.contains('open'));
+}
+
+// Forge's own alert(): a corner notice instead of a modal, so a result
+// never blocks what you were doing. 'good', 'bad' or 'info'.
+function notify(message, kind) {
+  const host = document.getElementById('toasts');
+  const text = String(message == null ? '' : message);
+  if (!host || !text) return;
+  const el = document.createElement('div');
+  el.className = 'toast ' + (kind || 'info');
+  el.textContent = text;                    // never parsed as markup
+  const dismiss = () => {
+    if (!el.parentNode) return;
+    el.classList.add('out');
+    setTimeout(() => { if (el.parentNode) el.remove(); }, 220);
+  };
+  el.onclick = dismiss;
+  host.appendChild(el);
+  // Bad news stays longer; there is usually something to read in it.
+  setTimeout(dismiss, kind === 'bad' ? 9000 : 5500);
+  while (host.children.length > 4) host.removeChild(host.firstChild);
+}
+
+const notifyGood = m => notify(m, 'good');
+const notifyBad  = m => notify(m, 'bad');
+const notifyInfo = m => notify(m, 'info');
+
 function attr(text) {
   return String(text).replace(/&/g, '&amp;').replace(/"/g, '&quot;')
                      .replace(/</g, '&lt;').replace(/>/g, '&gt;');
@@ -2039,16 +2161,16 @@ async function reviewBatch(action) {
 
   if (action === 'retranscode') {
     const quality = +(document.getElementById('review-quality') || {}).value;
-    if (!quality) return alert('Pick a quality first.');
+    if (!quality) return notifyInfo('Pick a quality first.');
     const r = await (await fetch('/api/jobs/bloated/bulk-retranscode', {method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({job_ids: ids, quality})})).json();
     if (r.failed && r.failed.length) {
-      alert(`${r.queued} queued. ${r.failed.length} couldn't be: `
+      notifyBad(`${r.queued} queued. ${r.failed.length} couldn't be: `
           + r.failed.map(f => `#${f.id} (${f.reason})`).join('; '));
     }
   } else if (action === 'revert') {
-    if (!confirm(`Settle ${ids.length} selected entr${ids.length === 1 ? 'y' : 'ies'} as `
+    if (!await ask(`Settle ${ids.length} selected entr${ids.length === 1 ? 'y' : 'ies'} as `
                 + '"keeping the original"? Forge already restores the original '
                 + 'automatically when a conversion grows, so this usually just '
                 + 'closes them out.')) return;
@@ -2056,19 +2178,19 @@ async function reviewBatch(action) {
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({job_ids: ids})})).json();
     if (r.failed && r.failed.length) {
-      alert(`${r.reverted} settled. ${r.failed.length} couldn't be: `
+      notifyBad(`${r.reverted} settled. ${r.failed.length} couldn't be: `
           + r.failed.map(f => `#${f.id} (${f.reason})`).join('; '));
     }
   } else if (action === 'accept') {
-    if (!confirm(`Keep all ${ids.length} selected file(s) even though they got bigger?`)) return;
+    if (!await ask(`Keep all ${ids.length} selected file(s) even though they got bigger?`)) return;
     await fetch('/api/jobs/bloated/bulk-accept', {method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({job_ids: ids})});
   } else if (action === 'retry') {
     for (const id of ids) await fetch(`/api/jobs/${id}/retry`, {method: 'POST'});
   } else if (action === 'remove') {
-    if (!confirm(`Remove ${ids.length} entr${ids.length === 1 ? 'y' : 'ies'} from this list? `
-                + 'Video files are not touched.')) return;
+    if (!await ask(`Remove ${ids.length} entr${ids.length === 1 ? 'y' : 'ies'} from this list? `
+                + 'Video files are not touched.', {yes: 'Remove them'})) return;
     for (const id of ids) await fetch(`/api/jobs/${id}`, {method: 'DELETE'});
   }
   reviewState.sel.clear();
@@ -2115,20 +2237,20 @@ let CAT_SCALE = null;
 async function doRetranscode(jobId) {
   const sel = document.getElementById('q-' + jobId);
   const quality = +sel.value;
-  if (!quality) return alert('Pick a quality first.');
+  if (!quality) return notifyInfo('Pick a quality first.');
   const r = await fetch('/api/jobs/' + jobId + '/retranscode', {method:'POST',
     headers:{'Content-Type':'application/json'}, body: JSON.stringify({quality})});
-  if (!r.ok) return alert((await r.json()).detail || 'Could not queue that.');
+  if (!r.ok) return notifyBad((await r.json()).detail || 'Could not queue that.');
   loadView();
 }
 
 async function acceptJob(jobId) {
-  if (!confirm('Keep the converted file even though it got bigger?')) return;
+  if (!await ask('Keep the converted file even though it got bigger?')) return;
   if (await callJob(jobId, 'accept')) loadView();
 }
 
 async function revertJob(jobId) {
-  if (!confirm('Settle this entry as "keeping the original"? In most cases the '
+  if (!await ask('Settle this entry as "keeping the original"? In most cases the '
              + 'original is already back in place — Forge restores it '
              + 'automatically when a conversion comes out bigger — so this '
              + 'usually just closes the entry.')) return;
@@ -2165,7 +2287,8 @@ function renderPager(meta) {
 }
 
 async function removeJob(id) {
-  if (!confirm('Remove this from the list? The video file itself is not touched.')) return;
+  if (!await ask('Remove this from the list? The video file itself is not touched.',
+      {yes: 'Remove it'})) return;
   await fetch(`/api/jobs/${id}`, {method:'DELETE'});
   loadView();
 }
@@ -2182,12 +2305,13 @@ async function bulkJobs(action, total) {
   const message = action === 'retry'
     ? `Put all ${total} ${label} job(s)${scope}${searchScope} back in the queue?`
     : `Remove all ${total} entries${scope}${searchScope} from this list? Video files are not touched.`;
-  if (!confirm(message)) return;
+  if (!await ask(message, {yes: action === 'retry' ? 'Requeue them' : 'Remove them',
+                           danger: action !== 'retry'})) return;
   const r = await (await fetch('/api/jobs/bulk', {method:'POST',
     headers:{'Content-Type':'application/json'},
     body: JSON.stringify({action, view: view.name, library_id: view.library_id,
                           q: queueSearch || null})})).json();
-  if (r.skipped) alert(`${r.requeued} requeued. ${r.skipped} skipped — already queued.`);
+  if (r.skipped) notifyGood(`${r.requeued} requeued. ${r.skipped} skipped — already queued.`);
   view.page = 1;
   loadView();
 }
@@ -2207,7 +2331,7 @@ async function scanOne(id) {
 }
 async function scanAll() {
   const libs = (await (await fetch('/api/libraries')).json());
-  if (!libs.length) return alert('Add a library first.');
+  if (!libs.length) return notifyInfo('Add a library first.');
 
   const btn = document.getElementById('scan-btn');
   const bar = document.getElementById('scanbar');
@@ -2241,7 +2365,8 @@ async function toggleLib(id, enabled) {
     headers:{'Content-Type':'application/json'}, body:JSON.stringify({enabled})});
 }
 async function removeLib(id, name) {
-  if (!confirm(`Stop watching "${name}"? Files already converted stay where they are.`)) return;
+  if (!await ask(`Stop watching "${name}"? Files already converted stay where they are.`,
+      {yes: 'Stop watching', danger: true})) return;
   await fetch(`/api/libraries/${id}`, {method:'DELETE'});
 }
 
@@ -2724,7 +2849,8 @@ function renderOriginalsBox() {
 }
 
 async function restoreOriginal(archivedPath) {
-  if (!confirm('Put this original back and remove the file that replaced it?')) return;
+  if (!await ask('Put this original back and remove the file that replaced it?',
+      {yes: 'Put it back', danger: true})) return;
   originalsRestoreStatus[archivedPath] = {busy: true};
   renderOriginalsBox();
   try {
@@ -2750,7 +2876,7 @@ async function sweepNow() {
   const msg = `Delete ${rows.length - unverified} original file(s)?\n\n` +
     (unverified ? `${unverified} will be kept — their converted version is missing.\n\n` : '') +
     `This cannot be undone.`;
-  if (!confirm(msg)) return;
+  if (!await ask(msg, {yes: 'Delete them', danger: true})) return;
   const r = await (await fetch('/api/originals/sweep?force=true', {method:'POST'})).json();
   originalsSweepStatus =
     `Deleted ${r.deleted}, freed ${(r.freed/1e9).toFixed(2)} GB. Kept ${r.kept}.`;
@@ -2946,7 +3072,7 @@ async function openWizard(libId) {
   if (editingId != null) {
     const lib = ((window.__state || {}).libraries || [])
       .find(l => l.id === editingId);
-    if (!lib) return alert('Could not find that library.');
+    if (!lib) return notifyBad('Could not find that library.');
     draft = draftFromLibrary(lib);
     // Editing is almost always "change one thing," not "go through this
     // again from the top" — the review step is already a jump-to-anything
@@ -3037,15 +3163,16 @@ function renderDeepScanBar(scan) {
 }
 
 async function startDeepScan() {
-  if (!confirm('Reprobe every file in every library from scratch? This can '
+  if (!await ask('Reprobe every file in every library from scratch? This can '
               + 'take a long time on a large library — everything else '
-              + 'keeps working normally while it runs.')) return;
+              + 'keeps working normally while it runs.',
+      {yes: 'Reprobe everything'})) return;
   try {
     const r = await fetch('/api/scan/deep', {method: 'POST',
       headers: {'Content-Type': 'application/json'}, body: '{}'});
-    if (r.status === 409) alert('A deep scan is already running.');
+    if (r.status === 409) notifyInfo('A deep scan is already running.');
   } catch (e) {
-    alert('Could not start the scan — check the server is reachable.');
+    notifyBad('Could not start the scan — check the server is reachable.');
   }
 }
 
@@ -3314,21 +3441,21 @@ function selectAllStandardize(checked) {
 
 async function queueStandardize() {
   const paths = [...selectedStandardize];
-  if (!paths.length) return alert('Select at least one file first.');
-  if (!confirm(`Queue ${paths.length} file(s) to be brought into line with `
-             + "this library's settings?")) return;
+  if (!paths.length) return notifyInfo('Select at least one file first.');
+  if (!await ask(`Queue ${paths.length} file(s) to be brought into line with `
+             + "this library's settings?", {yes: 'Queue them'})) return;
   try {
     const r = await (await fetch('/api/stats/queue', {method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({paths, use_library_defaults: true})})).json();
     if (r.skipped && r.skipped.length) {
-      alert(`${r.queued} queued. ${r.skipped.length} skipped:\n`
+      notifyGood(`${r.queued} queued. ${r.skipped.length} skipped:\n`
           + r.skipped.map(x => `${x.path} — ${x.reason}`).join('\n'));
     } else {
-      alert(`${r.queued} file${r.queued === 1 ? '' : 's'} queued.`);
+      notifyGood(`${r.queued} file${r.queued === 1 ? '' : 's'} queued.`);
     }
   } catch (e) {
-    alert('Could not reach the server.');
+    notifyBad('Could not reach the server.');
     return;
   }
   loadStandardize();
@@ -3493,15 +3620,16 @@ async function startLoudnessScan() {
 
 async function cancelLoudnessScan() {
   const scope = audioLibId === 'all' ? 'every library' : 'this library';
-  if (!confirm(`Cancel every queued or running loudness measurement job in ${scope}? `
-              + 'Files already measured keep their reading — this only stops what\'s left.')) return;
+  if (!await ask(`Cancel every queued or running loudness measurement job in ${scope}? `
+              + 'Files already measured keep their reading — this only stops what\'s left.',
+      {yes: 'Stop them'})) return;
   const body = audioLibId === 'all' ? {} : {library_id: Number(audioLibId) || audioLibId};
   try {
     const r = await (await fetch('/api/jobs/loudness/cancel', {method: 'POST',
       headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)})).json();
-    if (!r.cancelled) alert('Nothing to cancel — none are currently queued or running.');
+    if (!r.cancelled) notifyGood('Nothing to cancel — none are currently queued or running.');
   } catch (e) {
-    alert('Could not reach the server to cancel those.');
+    notifyBad('Could not reach the server to cancel those.');
   }
 }
 
@@ -3694,7 +3822,7 @@ function selectAllLoudness(checked) {
 }
 
 async function queueLoudnessSelected() {
-  if (!selectedLoudnessPaths.size) return alert('Select at least one file first.');
+  if (!selectedLoudnessPaths.size) return notifyInfo('Select at least one file first.');
   // level_only: loudness and nothing else. No codec change, no added
   // tracks, no container change — see the endpoint for why that's built
   // separately from the library's conversion profile.
@@ -3704,14 +3832,14 @@ async function queueLoudnessSelected() {
     r = await (await fetch('/api/stats/queue', {method: 'POST',
       headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)})).json();
   } catch (e) {
-    alert('Could not reach the server to queue those.');
+    notifyBad('Could not reach the server to queue those.');
     return;
   }
   if (r.skipped && r.skipped.length) {
-    alert(`${r.queued} queued. ${r.skipped.length} skipped:\n`
+    notifyGood(`${r.queued} queued. ${r.skipped.length} skipped:\n`
         + r.skipped.map(s => `${s.path} — ${s.reason}`).join('\n'));
   } else {
-    alert(`${r.queued} file${r.queued === 1 ? '' : 's'} queued for leveling.`);
+    notifyGood(`${r.queued} file${r.queued === 1 ? '' : 's'} queued for leveling.`);
   }
   selectedLoudnessPaths.clear();
   loadLoudness();
@@ -3758,8 +3886,9 @@ let missingSubFiles = [];
 // integration — Forge never touches a subtitle file itself.
 async function askBazarr() {
   if (!missingSubFiles.length) return;
-  if (!confirm(`Ask Bazarr to search for subtitles for all `
-             + `${missingSubFiles.length} of these files?`)) return;
+  if (!await ask(`Ask Bazarr to search for subtitles for all `
+             + `${missingSubFiles.length} of these files?`,
+      {yes: 'Search for them'})) return;
   const out = document.getElementById('bazarr-result');
   out.textContent = 'Asking Bazarr…'; out.style.color = 'var(--muted)';
   try {
@@ -3908,9 +4037,11 @@ async function replaceNoAudioSelected() {
     if (status) status.textContent = 'Select at least one file first.';
     return;
   }
-  if (!confirm(`Delete ${paths.length} file(s) through Radarr/Sonarr and ask it `
+  if (!await ask(`Delete ${paths.length} file(s) through Radarr/Sonarr and ask it `
              + `to search for replacements?\n\nIf nothing better is available `
-             + `to grab, you will be left without the file.`)) return;
+             + `to grab, you will be left without the file.`,
+      {yes: paths.length === 1 ? 'Delete and search' : 'Delete and search for all',
+       danger: true})) return;
   if (status) status.textContent = `Replacing ${paths.length}…`;
   let r;
   try {
@@ -4108,13 +4239,13 @@ function selectAllDrill(checked) {
 }
 
 async function queueDrillSelected() {
-  if (!selectedDrillPaths.size) return alert('Select at least one file first.');
+  if (!selectedDrillPaths.size) return notifyInfo('Select at least one file first.');
 
   const convertAudio = document.getElementById('drill-audio-on').checked;
   const convertVideo = document.getElementById('drill-video-on').checked;
   const container = document.getElementById('drill-container').value;
   if (!convertAudio && !convertVideo && !container) {
-    return alert('Choose at least one thing to convert — audio, video, or a container.');
+    return notifyInfo('Choose at least one thing to convert — audio, video, or a container.');
   }
 
   const body = {
@@ -4132,14 +4263,14 @@ async function queueDrillSelected() {
     r = await (await fetch('/api/stats/queue', {method: 'POST',
       headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)})).json();
   } catch (e) {
-    alert('Could not reach the server to queue those.');
+    notifyBad('Could not reach the server to queue those.');
     return;
   }
   if (r.skipped && r.skipped.length) {
-    alert(`${r.queued} queued. ${r.skipped.length} skipped:\n`
+    notifyGood(`${r.queued} queued. ${r.skipped.length} skipped:\n`
         + r.skipped.map(s => `${s.path} — ${s.reason}`).join('\n'));
   } else {
-    alert(`${r.queued} file${r.queued === 1 ? '' : 's'} queued for conversion.`);
+    notifyGood(`${r.queued} file${r.queued === 1 ? '' : 's'} queued for conversion.`);
   }
   closeDrilldown();
 }
@@ -5166,6 +5297,7 @@ document.addEventListener('keydown', e => {
   if (e.key !== 'Escape') return;
   // Innermost first, so Escape backs out one layer at a time rather than
   // closing everything at once.
+  if (askIsOpen()) { askClose(false); return; }
   const veils = ['fileinfo-veil', 'drill-veil', 'review-veil', 'originals-veil', 'explain-veil'];
   for (const id of veils) {
     const el = document.getElementById(id);
@@ -5177,7 +5309,7 @@ document.addEventListener('keydown', e => {
 async function scanRoots() {
   const r = await fetch('/api/scan', { method: 'POST' });
   const d = await r.json();
-  alert(`Scanned ${d.scanned} files.`);
+  notifyGood(`Scanned ${d.scanned} files.`);
 }
 
 function connect() {
