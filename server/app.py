@@ -597,6 +597,25 @@ async def progress(job_id: int, req: Request):
     # doing work, not just starting it — that's what real progress on a
     # healthy job looks like, so that's the only thing allowed to prove
     # this attempt isn't stuck.
+    # A heartbeat says "still here, and here's what I'm doing" during
+    # work that produces no percentage — fetching the file, or decoding
+    # every track to check it plays. Those can run for minutes, and with
+    # nothing reported the lease expired, the job bounced back to the
+    # queue, was re-leased, and started the same check from the
+    # beginning — five times, and then failed as stuck. Anything whose
+    # check outlasts the lease could never finish at all.
+    #
+    # It renews the lease and nothing else. Not progress, not
+    # progress_at, not the bounce count: a job wedged inside one of
+    # these phases keeps saying the same thing forever, so letting a
+    # heartbeat count as progress would make it immortal. The stall
+    # timer still runs from when it started, and still gives up.
+    if body.get("heartbeat"):
+        if job and job["state"] in ("leased", "running"):
+            db.update_job(job_id, phase=(body.get("phase") or "")[:120] or None)
+            scheduler.renew_lease(job_id, reset_bounces=False)
+        return {"ok": True}
+
     first_checkin = job["state"] == "leased" if job else False
 
     # Recorded only when the figure actually advances, so a worker that keeps
@@ -610,6 +629,7 @@ async def progress(job_id: int, req: Request):
         fps=float(body.get("fps", 0)),
         speed=float(body.get("speed", 0)),
         size_now=int(body.get("size_now") or 0) or None,
+        phase=(body.get("phase") or "")[:120] or None,
         encoder_used=body.get("encoder"),
         **({"outcome": body["note"]} if body.get("note") else {}),
     )
@@ -2530,7 +2550,8 @@ async def retry_job(job_id: int):
 
     try:
         db.update_job(job_id, state="queued", node_id=None, lease_expires=None,
-                      progress=0, fps=0, speed=0, error=None, outcome=None,
+                      progress=0, fps=0, speed=0, phase=None,
+                      error=None, outcome=None,
                       started_at=None, finished_at=None, bounces=0)
     except sqlite3.IntegrityError as exc:
         raise HTTPException(400, f"Couldn't queue that again: {exc}")

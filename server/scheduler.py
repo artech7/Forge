@@ -121,7 +121,8 @@ def requeue_expired():
                 conn.execute(
                     """UPDATE jobs
                        SET state='queued', node_id=NULL, lease_expires=NULL,
-                           progress=0, fps=0, speed=0, bounces=bounces+1
+                           progress=0, fps=0, speed=0, phase=NULL,
+                           bounces=bounces+1
                        WHERE id=?""",
                     (job["id"],),
                 )

@@ -116,6 +116,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     attempt       INTEGER NOT NULL DEFAULT 1,
     size_now      INTEGER,              -- bytes written so far, for a live ratio
     progress_at   REAL,                 -- when progress last actually moved
+    phase         TEXT,                 -- what the worker is doing right now
     outcome       TEXT,                 -- why it landed in the bloated list
     output_local  TEXT,                 -- where the worker wrote it, in node space
     final_path    TEXT,                 -- where the server put it, in server space
@@ -598,6 +599,7 @@ def requeue_jobs(states, library_id=None, q=None):
                 conn.execute(
                     """UPDATE jobs SET state='queued', node_id=NULL,
                        lease_expires=NULL, progress=0, fps=0, speed=0,
+                       phase=NULL,
                        error=NULL, started_at=NULL, finished_at=NULL,
                        bounces=0 WHERE id=?""", (job["id"],))
             moved += 1
@@ -1141,7 +1143,7 @@ def migrate():
                  ("final_path", "TEXT"),
                  ("attempt", "INTEGER NOT NULL DEFAULT 1"),
                  ("size_now", "INTEGER"), ("outcome", "TEXT"),
-                 ("progress_at", "REAL"),
+                 ("progress_at", "REAL"), ("phase", "TEXT"),
                  ("bounces", "INTEGER NOT NULL DEFAULT 0"),
                  ("queue_order", "REAL"),
                  ("kind", "TEXT NOT NULL DEFAULT 'convert'")],

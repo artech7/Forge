@@ -187,7 +187,7 @@ def measure_loudness(path):
         return None, "Could not read FFmpeg's measurement output"
 
 
-def health_check(path, info):
+def health_check(path, info, on_stream=None):
     """Decode every video and audio stream once, without re-encoding.
 
     This is the difference between finding out a track is damaged during a
@@ -210,10 +210,22 @@ def health_check(path, info):
              and not is_image(s)]
     audios = [s for s in streams if s.get("codec_type") == "audio"]
 
+    # on_stream(done, total, kind) is called before each pass so the
+    # caller can say which track is being read. Every pass decodes a
+    # whole stream, so on a long file this is minutes of work with
+    # nothing else to show for it.
     result = {"video": None, "audio": {}}
+    total = len(videos[:1]) + len(audios)
+    done = 0
     if videos:
+        done += 1
+        if on_stream:
+            on_stream(done, total, "track")
         result["video"] = _decode_check(path, videos[0]["index"])
     for stream in audios:
+        done += 1
+        if on_stream:
+            on_stream(done, total, "track")
         result["audio"][stream["index"]] = _decode_check(path, stream["index"])
     return result
 

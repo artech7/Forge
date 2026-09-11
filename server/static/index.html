@@ -533,6 +533,16 @@
             border-radius:10px;padding:10px 12px;margin:8px 0;
             word-break:break-all;line-height:1.6}
 
+  /* What a job is doing before there's a percentage to show. Some of
+     these steps run for minutes on a large file, and the queue used to
+     sit at 0% with nothing to say. */
+  .phase{display:flex;align-items:center;gap:7px;margin-top:5px;
+         font-size:12px;color:var(--signal);line-height:1.45}
+  .phase i{width:6px;height:6px;border-radius:50%;flex:none;
+           background:var(--signal);animation:phase-pulse 1.4s ease-in-out infinite}
+  @keyframes phase-pulse{0%,100%{opacity:.25}50%{opacity:1}}
+  @media (prefers-reduced-motion:reduce){.phase i{animation:none;opacity:.7}}
+
   .toasts{position:fixed;right:18px;bottom:18px;z-index:80;display:flex;
           flex-direction:column;gap:9px;align-items:flex-end;
           max-width:min(380px,calc(100vw - 36px));pointer-events:none}
@@ -1730,6 +1740,8 @@ function renderJobs(jobs, meta) {
       <div class="pct">${pct}</div>
       <div class="meta">${bits.filter(Boolean).join(' · ')}</div>
       ${sizes ? `<div class="sizes">${sizes}</div>` : ''}
+      ${j.phase && (j.state === 'running' || j.state === 'leased')
+        ? `<div class="phase"><i></i>${attr(j.phase)}</div>` : ''}
       ${(j.state === 'failed' || j.state === 'ignored') && j.error
         ? `<div class="err">${j.error}</div>` : ''}
       ${j.outcome && j.state !== 'failed'

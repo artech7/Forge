@@ -24,6 +24,13 @@ import naming, profiles, schedule, watcher       # noqa: E402
 import lookup, scheduler                         # noqa: E402
 import arr                                       # noqa: E402
 
+
+class _FakeReq:
+    """Enough of a Request for endpoints that only read the body."""
+    def __init__(self, body): self._body = body
+    async def json(self): return self._body
+
+
 failures = []
 
 
@@ -674,6 +681,59 @@ check("run-node.ps1 takes a -Token parameter",
 check("and passes it to the worker",
       lambda: "$env:FORGE_TOKEN = $Token" in _ps1, lambda r: r is True)
 
+print("\nSaying what a job is doing before there's a percentage:")
+_ph_lib = db.create_library("Phases", str(base / "ph"), "", profile, "archive")
+_ph_job = db.enqueue("/ph/big.mkv", {"codec": "hevc"}, 5_000_000_000, _ph_lib)
+db.upsert_node("ph-node", "ph-node", ["libx265"], [], 1)
+_leased = scheduler.lease_job("ph-node")
+check("the job leases", lambda: _leased and _leased["id"], lambda r: r == _ph_job)
+
+def _expire(job_id):
+    with db.connect() as conn:
+        conn.execute("UPDATE jobs SET lease_expires=? WHERE id=?",
+                     (time.time() - 1, job_id))
+
+# Without a heartbeat this is the old behaviour: a check that outlasts
+# the lease bounces the job back to the queue, and starts over forever.
+_expire(_ph_job)
+scheduler.requeue_expired()
+check("silence past the lease sends it back to the queue",
+      lambda: db.get_job(_ph_job)["state"], lambda r: r == "queued")
+check("and counts against it",
+      lambda: db.get_job(_ph_job)["bounces"], lambda r: r == 1)
+
+_release = scheduler.lease_job("ph-node")
+_run(app.progress(_ph_job, _FakeReq(
+    {"heartbeat": True, "phase": "checking every track plays — track 2 of 3"})))
+check("a heartbeat says what it's doing",
+      lambda: db.get_job(_ph_job)["phase"],
+      lambda r: r == "checking every track plays — track 2 of 3")
+check("and keeps the lease, so the check isn't restarted",
+      lambda: (scheduler.requeue_expired(), db.get_job(_ph_job)["state"])[1],
+      lambda r: r in ("leased", "running"))
+check("but never clears the bounces already counted",
+      lambda: db.get_job(_ph_job)["bounces"], lambda r: r == 1)
+check("nor invents progress",
+      lambda: db.get_job(_ph_job)["progress"], lambda r: not r)
+# The stall timer is what stops a job wedged in a phase from heartbeating
+# forever, so it has to still see this job as making no progress.
+check("a job stuck in a phase is still caught as stalled",
+      lambda: schedule.overrun_reason(
+          {**db.get_job(_ph_job), "state": "running",
+           "started_at": time.time() - 7200, "progress_at": None},
+          {"enabled": True, "stall_enabled": True, "stall_minutes": 30}),
+      lambda r: bool(r) and "no progress" in r)
+# Real progress behaves as before.
+_run(app.progress(_ph_job, _FakeReq({"progress": 12, "phase": "converting"})))
+check("real progress still records a percentage",
+      lambda: db.get_job(_ph_job)["progress"], lambda r: r == 12)
+check("requeueing clears the phase, so nothing describes stale work",
+      lambda: (db.requeue_jobs(["leased", "running"], library_id=_ph_lib),
+               db.get_job(_ph_job)["phase"])[1],
+      lambda r: r is None)
+db.delete_jobs(["queued"], library_id=_ph_lib)
+db.delete_library(_ph_lib)
+
 print("\nWhat the worker launchers probe before starting:")
 # Both scripts check the server is there first. Probing an address that
 # needs a session made a healthy Forge report "can't reach" as soon as a
@@ -916,11 +976,6 @@ check("and plan_conversion leaves the video copied",
 # eac3-to-AAC conversion show up in the queue as "leveling audio".
 check("plan_conversion does not stamp it itself",
       lambda: "action" in _std_spec, lambda r: r is False)
-class _FakeReq:
-    """Enough of a Request for endpoints that only read the body."""
-    def __init__(self, body): self._body = body
-    async def json(self): return self._body
-
 # stats_queue probes the file for real; this one is 2KB of padding.
 _real_probe = app.probe
 app.probe = lambda path: _std_info

@@ -54,6 +54,58 @@ DESIRED = {"slots": MAX_JOBS}
 SLOT_LOCK = threading.Lock()
 
 
+class Phase:
+    """Says what this job is doing while nothing measurable is happening.
+
+    Fetching a file and decoding every track to check it plays both
+    take minutes on a large file and produce no percentage at all. The
+    server saw silence, so the lease expired and the job bounced — and
+    a file whose check takes longer than the lease could never get past
+    it. This keeps saying the same short sentence until the work ends,
+    which both renews the lease and gives the queue something to show.
+
+    Used as a context manager so the thread can't outlive the step it
+    describes, including when that step raises.
+    """
+
+    EVERY = 30          # comfortably inside the server's 120s lease
+
+    def __init__(self, job_id, text):
+        self.job_id = job_id
+        self.text = text
+        self._stop = threading.Event()
+        self._thread = None
+
+    def say(self, text):
+        """Change the message mid-phase, e.g. moving to the next track."""
+        self.text = text
+        self._beat()
+
+    def _beat(self):
+        try:
+            requests.post(f"{SERVER}/api/jobs/{self.job_id}/progress",
+                          json={"heartbeat": True, "phase": self.text},
+                          headers=AUTH_HEADERS, timeout=10)
+        except requests.RequestException:
+            pass        # a missed heartbeat is not worth failing the job over
+
+    def _loop(self):
+        while not self._stop.wait(self.EVERY):
+            self._beat()
+
+    def __enter__(self):
+        self._beat()
+        self._thread = threading.Thread(target=self._loop, daemon=True)
+        self._thread.start()
+        return self
+
+    def __exit__(self, *exc):
+        self._stop.set()
+        if self._thread:
+            self._thread.join(timeout=2)
+        return False
+
+
 def explain_401():
     """Said plainly, because the cause is never obvious from a 401."""
     if TOKEN:
@@ -256,9 +308,10 @@ def run_job(job, caps):
     try:
         if job["transport"] == "stream":
             fetched = WORK_DIR / f"src-{job_id}{Path(job['source_path']).suffix}"
-            with requests.get(f"{SERVER}/api/jobs/{job_id}/source",
-                              headers=AUTH_HEADERS,
-                              stream=True, timeout=(15, 900)) as resp:
+            with Phase(job_id, "copying the file to this machine"), \
+                    requests.get(f"{SERVER}/api/jobs/{job_id}/source",
+                                 headers=AUTH_HEADERS,
+                                 stream=True, timeout=(15, 900)) as resp:
                 resp.raise_for_status()
                 with fetched.open("wb") as fh:
                     shutil.copyfileobj(resp.raw, fh)
@@ -285,7 +338,11 @@ def run_job(job, caps):
         # damage specifically, no retry would ever have fixed it anyway.
         # Skipped on a retry that's already been checked once.
         if info and not spec.get("health_checked"):
-            health = streams.health_check(src, info)
+            with Phase(job_id, "checking every track plays") as phase:
+                health = streams.health_check(
+                    src, info, on_stream=lambda done, total, kind: phase.say(
+                        f"checking every track plays \u2014 {kind} "
+                        f"{done} of {total}"))
             video_ok, video_msg = health["video"] or (True, None)
             if not video_ok:
                 report_fail(
@@ -315,6 +372,8 @@ def run_job(job, caps):
         depth_note = encoders.LAST_DEPTH_NOTE[0] if encoders.LAST_DEPTH_NOTE else None
         print(f"[job {job_id}] {encoder or 'remux'}: {Path(job['source_path']).name}")
 
+        post(f"/api/jobs/{job_id}/progress",
+             {"heartbeat": True, "phase": "starting the encoder"})
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
                                 stderr=subprocess.PIPE, text=True,
                                 encoding="utf-8", errors="replace", bufsize=1)
@@ -440,7 +499,8 @@ def report_measurement(job):
     # busy once it's "running", so a real measurement in progress would
     # otherwise still show the node as idle.
     post(f"/api/jobs/{job_id}/progress", {"progress": 1})
-    values, error = streams.measure_loudness(src)
+    with Phase(job_id, "measuring how loud it is"):
+        values, error = streams.measure_loudness(src)
     if not values:
         report_fail(job_id, f"Could not measure loudness: {error}")
         return
