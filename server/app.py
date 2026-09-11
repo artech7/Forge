@@ -44,7 +44,8 @@ REQUIRED = {
            "requeue_jobs", "record_completion", "original_for_path",
            "update_original", "move_job_to_top", "reorder_jobs",
            "set_housekeeping_slots", "node_active_jobs",
-           "paths_with_failed_measurement"],
+           "paths_with_failed_measurement", "files_without_audio",
+           "library_matcher"],
     "scheduler": ["lease_job", "reverse_path", "requeue_expired"],
     "watcher": ["scan_library", "scan_all", "destination_for", "sweep_originals",
                 "filter_verdict", "plan_conversion", "restore_original_row",
@@ -97,6 +98,7 @@ async def startup():
     asyncio.create_task(watch_loop())
     asyncio.create_task(originals_loop())
     asyncio.create_task(loudness_loop())
+    asyncio.create_task(missing_audio_loop())
 
 
 async def reaper():
@@ -197,6 +199,32 @@ async def loudness_loop():
                 await broadcast()
         except Exception as exc:   # a loop crash must not take the server down
             print(f"loudness loop: {exc}")
+
+
+async def missing_audio_loop():
+    """Replace audio-less files on their own, where a library asks for it.
+
+    Off unless a library turns it on, and deliberately so: this deletes
+    the copy you have and asks for another, which isn't something to do
+    behind someone's back. Batched and unhurried for the same reason —
+    switching it on with hundreds of broken files shouldn't fire
+    hundreds of searches at an indexer in one go.
+    """
+    BATCH = 10
+    while True:
+        await asyncio.sleep(900)
+        try:
+            for library in db.list_libraries():
+                conf = (library.get("profile") or {}).get("arr") or {}
+                if not (conf.get("auto_replace_missing_audio") and conf.get("url")):
+                    continue
+                files = await asyncio.to_thread(
+                    db.files_without_audio, library["id"])
+                for entry in files[:BATCH]:
+                    ok, message = await replace_missing_audio(entry["path"], library)
+                    print(f"missing audio: {entry['name']} — {message}")
+        except Exception as exc:   # a loop crash must not take the server down
+            print(f"missing audio loop: {exc}")
 
 
 async def originals_loop():
@@ -971,6 +999,42 @@ async def handle_unhealthy_video(job, error):
     return {"ok": True}
 
 
+async def replace_missing_audio(path, library):
+    """Hand one audio-less file to Radarr/Sonarr for a fresh copy.
+
+    Shared by the button on the Missing Audio list and the per-library
+    automatic setting, so both behave identically and there's only one
+    place deciding what "replace" means.
+
+    Same shape as handle_unhealthy_video(): the *arr deletes the file
+    through its own API so its database stays consistent, and the
+    outcome is recorded as a job in "removed" rather than a failure —
+    nothing went wrong here, the file was simply beyond fixing in place.
+    """
+    conf = ((library or {}).get("profile") or {}).get("arr") or {}
+    if not conf.get("url"):
+        return False, "No Radarr/Sonarr is set up for this library."
+
+    ok, message = await asyncio.to_thread(
+        arr.find_and_research, conf.get("kind"), conf.get("url"),
+        conf.get("api_key"), path,
+        conf.get("path_from", ""), conf.get("path_to", ""))
+    if not ok:
+        return False, message
+
+    # The cached probe describes the copy that's going away, not
+    # whatever lands here next — and leaving it would keep this file on
+    # the Missing Audio list after it's been dealt with.
+    db.forget_cached_file(path)
+    db.forget_processed(path)
+    job_id = db.enqueue(path, {"replace": "missing_audio"}, None, library["id"])
+    if job_id:
+        db.update_job(job_id, state="removed", progress=100,
+                      finished_at=time.time(),
+                      outcome=f"No audio track at all. {message}")
+    return True, message
+
+
 async def handle_audio_fail(job, error):
     """One automatic retry with this job's audio left untouched.
 
@@ -1499,6 +1563,43 @@ async def stats_language_check(kind: str, language: str = None, library_id: int 
     if kind not in ("audio", "subtitle"):
         raise HTTPException(400, "kind must be 'audio' or 'subtitle'")
     return {"files": db.files_missing_language(kind, language, library_id)}
+
+
+@app.get("/api/stats/no-audio")
+async def stats_no_audio(library_id: int = None):
+    """Files with no audio stream at all — nothing to convert or level,
+    only worth replacing."""
+    return {"files": await asyncio.to_thread(db.files_without_audio, library_id)}
+
+
+@app.post("/api/files/replace-missing-audio")
+async def replace_missing_audio_files(req: Request):
+    """Ask Radarr/Sonarr for fresh copies of audio-less files.
+
+    Reported per file rather than as one number: some of these are
+    extras or samples the *arr has never heard of, and "12 of 40 worked"
+    with no indication of which 28 didn't would be useless.
+    """
+    body = await req.json()
+    paths = body.get("paths") or []
+    if not paths:
+        raise HTTPException(400, "No files given to replace.")
+
+    libraries = db.list_libraries()
+    library_for = db.library_matcher(libraries)
+    results = []
+    for path in paths:
+        library = library_for(path)
+        if not library:
+            results.append({"path": path, "ok": False,
+                            "message": "No library watches this file."})
+            continue
+        ok, message = await replace_missing_audio(path, library)
+        results.append({"path": path, "ok": ok, "message": message})
+    if any(r["ok"] for r in results):
+        await broadcast()
+    return {"results": results,
+            "replaced": sum(1 for r in results if r["ok"])}
 
 
 @app.get("/api/stats/inventory")

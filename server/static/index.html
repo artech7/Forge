@@ -715,6 +715,25 @@
       <div id="missing-subs-detail" style="margin-top:14px"></div>
     </div>
 
+    <!-- No Audio At All -->
+    <div class="health-section" data-health="no-audio" hidden>
+      <div class="queue-head" style="margin-top:4px">
+        <h2 style="margin:0">No Audio At All</h2>
+        <div class="actions">
+          <button onclick="loadNoAudio()">Refresh</button>
+        </div>
+      </div>
+      <div class="note" style="margin:-4px 0 14px;color:var(--muted);font-size:12.5px">
+        Files with no audio stream whatsoever — nothing to convert, level or
+        measure, and no setting that fixes them. Read from scans already done,
+        so there's nothing to run here. Replacing one asks Radarr or Sonarr to
+        delete it and search again, which needs that library's Recovery step
+        filled in.
+      </div>
+      <div class="sec" id="no-audio-status"></div>
+      <div id="no-audio-detail"><div class="stats-empty">Loading…</div></div>
+    </div>
+
     <!-- Missing Chapters -->
     <div class="health-section" data-health="chapters" hidden>
       <div class="queue-head" style="margin-top:4px">
@@ -2814,7 +2833,8 @@ function blankDraft() {
     auto_measure_loudness:true, auto_level_loudness:true,
     loudness_range_threshold:15,
     loudness_target_i:-16, loudness_target_tp:-1.5, loudness_target_lra:11,
-    on_unhealthy_video:'ignore', arr_kind:'radarr', arr_url:'',
+    on_unhealthy_video:'ignore', auto_replace_missing_audio:false,
+    arr_kind:'radarr', arr_url:'',
     arr_api_key:'', arr_path_from:'', arr_path_to:'',
     auto_retry_steps:['small','smaller'], auto_retry_custom:'',
     filters:{ skip_extensions:[], skip_name_contains:[],
@@ -2854,6 +2874,7 @@ function draftFromLibrary(lib) {
 
   const a = p.arr || {};
   d.on_unhealthy_video = a.on_unhealthy_video || 'ignore';
+  d.auto_replace_missing_audio = !!a.auto_replace_missing_audio;
   d.arr_kind = a.kind || 'radarr';
   d.arr_url = a.url || '';
   d.arr_api_key = a.api_key || '';
@@ -3265,6 +3286,7 @@ let healthSection = 'loudness';
 const HEALTH_TABS = [
   ['loudness', 'Audio Leveling'],
   ['language', 'Missing Audio or Subtitles'],
+  ['no-audio', 'No Audio At All'],
   ['chapters', 'Missing Chapters'],
   ['standardize', 'Standardize'],
 ];
@@ -3287,6 +3309,7 @@ function switchHealthSection(id) {
   // once, and so each section is current when you actually look at it.
   if (id === 'loudness') loadLoudness();
   if (id === 'language') { renderLanguageControls(); loadLanguageChecks(); }
+  if (id === 'no-audio') loadNoAudio();
   if (id === 'chapters') loadChapterCheck();
   if (id === 'standardize') loadStandardize();
 }
@@ -3734,6 +3757,125 @@ function languageSection(kindLabel, files, offerBazarr) {
       </div>`).join('')}
     </div>
   </div>`;
+}
+
+// ------------------------------------------------------- no audio at all
+// Unlike the language check next door, this one does get a fix-it button:
+// a file with no audio stream isn't a preference unmet, it's broken, and
+// the only repair is a different copy of it.
+let noAudioFiles = [];
+let selectedNoAudio = new Set();
+
+async function loadNoAudio() {
+  const box = document.getElementById('no-audio-detail');
+  if (!box) return;
+  box.innerHTML = '<div class="stats-empty">Loading…</div>';
+  const params = new URLSearchParams();
+  if (audioLibId !== 'all') params.set('library_id', audioLibId);
+  try {
+    noAudioFiles = (await (await fetch('/api/stats/no-audio?' + params)).json()).files || [];
+  } catch (e) {
+    box.innerHTML = '<div class="stats-empty">Could not load this.</div>';
+    return;
+  }
+  selectedNoAudio.clear();
+  renderNoAudio();
+}
+
+function renderNoAudio() {
+  const box = document.getElementById('no-audio-detail');
+  if (!box) return;
+  if (!noAudioFiles.length) {
+    box.innerHTML = `<div class="stats-empty">Nothing found — every scanned
+      file has an audio track.</div>`;
+    return;
+  }
+  box.innerHTML = `
+    <p class="lead">${noAudioFiles.length} file${noAudioFiles.length === 1 ? '' : 's'}
+      with no audio stream at all</p>
+    <div class="glass drill-convert">
+      <label class="drill-selectall">
+        <input type="checkbox" id="na-selectall" onclick="selectAllNoAudio(this.checked)">
+        select all <span id="na-selcount">0 selected</span>
+      </label>
+      <div style="font-size:12.5px;color:var(--muted);line-height:1.5">
+        Replacing deletes the file through Radarr/Sonarr and asks it to search
+        again. If nothing better is available to grab, you'll be left without
+        the file — so check a few before doing the lot.
+      </div>
+      <button class="primary" onclick="replaceNoAudioSelected()">Replace selected</button>
+    </div>
+    <div class="drill-list">${noAudioFiles.map(f => `<div class="drill-row with-checkbox">
+      <input type="checkbox" data-path="${attr(f.path)}">
+      <div class="drill-row-body">
+        <div class="drill-name"><span class="clickable" title="Show file details"
+          data-fileinfo="${attr(f.path)}">${f.name}</span></div>
+        <div class="drill-meta">${f.library_name || 'no library'}${
+          f.video_codec ? ' &middot; ' + f.video_codec : ''}${
+          f.size ? ' &middot; ' + fmtSize(f.size) : ''}</div>
+        <div class="drill-path">${f.path}</div>
+      </div>
+    </div>`).join('')}</div>`;
+
+  box.querySelectorAll('.drill-row input[type=checkbox]').forEach(cb => {
+    cb.checked = selectedNoAudio.has(cb.dataset.path);
+    cb.onchange = () => {
+      if (cb.checked) selectedNoAudio.add(cb.dataset.path);
+      else selectedNoAudio.delete(cb.dataset.path);
+      updateNoAudioSelCount();
+    };
+  });
+  updateNoAudioSelCount();
+}
+
+function updateNoAudioSelCount() {
+  const el = document.getElementById('na-selcount');
+  if (el) el.textContent = `${selectedNoAudio.size} selected`;
+  const all = document.getElementById('na-selectall');
+  if (all) all.checked = noAudioFiles.length > 0
+    && noAudioFiles.every(f => selectedNoAudio.has(f.path));
+}
+
+function selectAllNoAudio(checked) {
+  noAudioFiles.forEach(f => {
+    if (checked) selectedNoAudio.add(f.path);
+    else selectedNoAudio.delete(f.path);
+  });
+  document.querySelectorAll('#no-audio-detail .drill-row input[type=checkbox]')
+    .forEach(cb => { cb.checked = checked; });
+  updateNoAudioSelCount();
+}
+
+async function replaceNoAudioSelected() {
+  const paths = [...selectedNoAudio];
+  const status = document.getElementById('no-audio-status');
+  if (!paths.length) {
+    if (status) status.textContent = 'Select at least one file first.';
+    return;
+  }
+  if (!confirm(`Delete ${paths.length} file(s) through Radarr/Sonarr and ask it `
+             + `to search for replacements?\n\nIf nothing better is available `
+             + `to grab, you will be left without the file.`)) return;
+  if (status) status.textContent = `Replacing ${paths.length}…`;
+  let r;
+  try {
+    r = await (await fetch('/api/files/replace-missing-audio', {method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({paths})})).json();
+  } catch (e) {
+    if (status) status.textContent = 'Could not reach the server.';
+    return;
+  }
+  // Say which ones didn't work rather than only how many did — the usual
+  // reason is the *arr not recognising an extra or a sample, and that's
+  // worth seeing per file.
+  const failed = (r.results || []).filter(x => !x.ok);
+  if (status) {
+    status.innerHTML = `Replaced ${r.replaced} of ${paths.length}.`
+      + (failed.length ? `<div class="tip">${failed.map(x =>
+          `${x.path.split(/[\\/]/).pop()} — ${x.message}`).join('<br>')}</div>` : '');
+  }
+  await loadNoAudio();
 }
 
 async function loadChapterCheck() {
@@ -4556,7 +4698,8 @@ async function drawStep() {
          + 'video and audio track once to check it actually works. This '
          + 'catches a damaged file in seconds instead of after a long '
          + 'encode fails.';
-    const arrChosen = draft.on_unhealthy_video === 'delete_and_research';
+    const arrChosen = draft.on_unhealthy_video === 'delete_and_research'
+                   || draft.auto_replace_missing_audio;
     body = `
       <div style="font-size:13px;font-weight:600;margin-bottom:3px">
         A damaged audio track</div>
@@ -4614,6 +4757,25 @@ async function drawStep() {
         onclick="pick('on_unhealthy_video','${o.id}')">
         <div class="t">${o.name}${o.recommended?'<span class="badge">recommended</span>':''}</div>
         <div class="w">${o.detail}</div></label>`).join('')}
+
+      <div style="font-size:13px;font-weight:600;margin:20px 0 3px">
+        No audio track at all</div>
+      <em style="display:block;font-style:normal;font-size:12px;color:var(--muted);
+        margin-bottom:9px;line-height:1.5">Usually a file that was stripped of
+        its audio by something else, long before Forge saw it. There's nothing
+        to convert, level or measure, and no setting that brings it back — only
+        a different copy of the file will do.</em>
+      <div class="toggle ${draft.auto_replace_missing_audio ? 'on' : ''}"
+           onclick="draft.auto_replace_missing_audio=!draft.auto_replace_missing_audio;drawStep()">
+        <div class="sw"></div>
+        <div><div class="tt">Replace them automatically</div>
+          <div class="td">Hands each one to Radarr/Sonarr to delete and search
+            again, a few at a time. Off by default, and worth leaving off until
+            you've looked: this throws away the copy you have, so if nothing
+            better is available to grab you'll be left without it. With this
+            off they're simply listed under Library Health → No Audio At All,
+            with a button there to replace the ones you choose.</div></div>
+      </div>
 
       ${arrChosen ? `
         <div style="font-size:13px;font-weight:600;margin:20px 0 9px">
@@ -4698,9 +4860,12 @@ async function drawStep() {
              ? ', retries automatically' : '')
           + (draft.salvage_when_stuck && draft.original_action === 'archive'
              ? ', keeps the picture if nothing helps' : '')],
-      [11, 'Recovery', draft.on_unhealthy_video === 'delete_and_research'
+      [11, 'Recovery', (draft.on_unhealthy_video === 'delete_and_research'
           ? `unrecoverable files removed via ${draft.arr_kind === 'radarr' ? 'Radarr' : 'Sonarr'}`
-          : 'unrecoverable files flagged for review'],
+          : 'unrecoverable files flagged for review')
+          + (draft.auto_replace_missing_audio
+              ? '; audio-less files replaced automatically'
+              : '; audio-less files listed for review')],
     ];
 
     body = warns.map(x => `<div class="warn">${x}</div>`).join('')
@@ -4916,6 +5081,7 @@ async function saveLibrary() {
       auto_retry_custom: draft.auto_retry_custom,
       arr: {
         on_unhealthy_video: draft.on_unhealthy_video,
+        auto_replace_missing_audio: !!draft.auto_replace_missing_audio,
         kind: draft.arr_kind, url: draft.arr_url.trim(),
         api_key: draft.arr_api_key.trim(),
         path_from: draft.arr_path_from.trim(), path_to: draft.arr_path_to.trim(),

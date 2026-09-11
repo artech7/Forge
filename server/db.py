@@ -729,6 +729,43 @@ def files_missing_language(kind, language=None, library_id=None):
     return out
 
 
+def files_without_audio(library_id=None):
+    """Files with no audio stream at all.
+
+    A different question from files_missing_language(): that asks whether
+    a wanted language is there, this asks whether there is any audio
+    whatsoever. Objectively broken rather than a preference unmet — the
+    only real fix is a different copy of the file, which is why this is
+    the one that gets an action attached to it.
+
+    Read from the probe cache, so only files actually probed can appear:
+    a file nobody has looked at yet has no audio codecs on record either,
+    and that is not the same thing as having none.
+    """
+    with connect() as conn:
+        libraries = [row_to_dict(r) for r in conn.execute(
+            "SELECT id, name, watch_path FROM libraries").fetchall()]
+        rows = [dict(r) for r in conn.execute(
+            """SELECT path, size, video_codec, audio_codecs FROM files
+               WHERE probed_at IS NOT NULL""").fetchall()]
+
+    library_for = library_matcher(libraries)
+    out = []
+    for f in rows:
+        if parse_json(f.get("audio_codecs"), []) or []:
+            continue
+        lib = library_for(f["path"]) or {}
+        if library_id is not None and lib.get("id") != library_id:
+            continue
+        out.append({
+            "path": f["path"], "name": Path(f["path"]).name,
+            "size": f.get("size"), "video_codec": f.get("video_codec"),
+            "library_id": lib.get("id"), "library_name": lib.get("name"),
+        })
+    out.sort(key=lambda f: f["name"].lower())
+    return out
+
+
 def library_inventory(library_id):
     """Every scanned file in one library with the bits Standardize needs.
 
