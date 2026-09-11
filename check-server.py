@@ -725,7 +725,8 @@ _hc_info = {"streams": [
 _hc_calls = []
 _real_decode = _st._decode_streams
 # A healthy file: the combined pass says yes and nothing else runs.
-_st._decode_streams = lambda path, idx: (_hc_calls.append(list(idx)), (True, None))[1]
+_st._decode_streams = lambda path, idx, mode="full": (
+    _hc_calls.append(list(idx)), (True, None))[1]
 _hc = _st.health_check(_hc_src, _hc_info)
 check("a healthy file is read once, not once per track",
       lambda: len(_hc_calls), lambda r: r == 1)
@@ -739,7 +740,7 @@ check("every checked track comes back healthy",
 
 # A file with something wrong: fall back to one pass per track to find it.
 _hc_calls.clear()
-_st._decode_streams = lambda path, idx: (
+_st._decode_streams = lambda path, idx, mode="full": (
     _hc_calls.append(list(idx)),
     (True, None) if idx == [1] else (False, "broken"))[1]
 _hc2 = _st.health_check(_hc_src, _hc_info)
