@@ -294,6 +294,28 @@ def _text(module, name, *args, fallback=""):
         return fallback
 
 
+def _libraries_with_originals():
+    """Libraries, plus where each one's archived originals actually land.
+
+    Worked out here with watcher.originals_dir() rather than again in the
+    interface: the answer depends on three settings interacting, and a
+    card claiming one thing while the scanner does another is the exact
+    confusion this is meant to end. originals_in_library flags the case
+    that causes duplicates in a media server — originals sitting inside
+    the very folder being watched.
+    """
+    libraries = db.list_libraries()
+    for library in libraries:
+        if library.get("original_action") != "archive":
+            continue
+        where = str(watcher.originals_dir(library))
+        watch = str(Path(library["watch_path"])).rstrip("/")
+        library["originals_location"] = where
+        library["originals_in_library"] = (
+            where == watch or where.startswith(watch + "/"))
+    return libraries
+
+
 async def build_state():
     now = time.time()
     nodes = db.list_nodes()
@@ -320,7 +342,7 @@ async def build_state():
         "active_kinds": db.count_active_by_kind(),
         "stats": db.stats(),
         "deep_scan": DEEP_SCAN_STATE,
-        "libraries": db.list_libraries(),
+        "libraries": _libraries_with_originals(),
         "settings": db.get_settings(),
         "schedule_open": _text(schedule, "is_open", db.get_settings(),
                                fallback=True),

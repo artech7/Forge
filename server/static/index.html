@@ -454,6 +454,7 @@
   .lib h3{margin:0 0 3px;font-size:16px;font-weight:600}
   .lib .flow{font-size:12.5px;color:var(--muted);line-height:1.65;margin:9px 0 0}
   .lib .flow b{color:var(--text);font-weight:500}
+  .lib .tip{font-size:11.5px;color:var(--amber);line-height:1.45;margin-top:8px}
   .lib .recipe{margin-top:11px;font-family:'Chivo Mono',monospace;font-size:10.5px;
                color:var(--muted);letter-spacing:.04em}
   .lib .row{display:flex;gap:8px;margin-top:13px}
@@ -1011,7 +1012,13 @@ function renderLibs(libs) {
       <h3>${l.name}</h3>
       <div class="sec">${l.enabled ? 'Watching' : 'Paused'}</div>
       <p class="flow">Watches <b>${l.watch_path}</b>, then ${dest}.<br>
-        Originals: <b>${ORIGINAL_LABEL[l.original_action] || l.original_action}</b></p>
+        Originals: <b>${l.originals_location
+          ? `kept in ${l.originals_location}`
+          : (ORIGINAL_LABEL[l.original_action] || l.original_action)}</b></p>
+      ${l.originals_in_library ? `<div class="tip">That's inside the folder
+        being watched, so a media server pointed at this library will list
+        every archived original alongside the file that replaced it. Set
+        "Where to keep them" to a path outside it.</div>` : ''}
       <div class="recipe">${recipe}</div>
       <div class="row">
         <button onclick="openWizard(${l.id})">Edit</button>
