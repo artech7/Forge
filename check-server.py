@@ -650,6 +650,29 @@ check("a successful *arr research clears the stale probe-cache row", lambda: (
       db.get_cached_file(_corrupt_path))[-1], lambda r: r is None)
 db.delete_library(_arr_lib)
 
+print("\nThe worker command shown for each platform:")
+# Two rounds of copy-paste failures came from this line, so it is
+# asserted rather than eyeballed. PowerShell has no "VAR=value command"
+# form, and the assignment must be a separate statement.
+_ui = (pathlib.Path(__file__).parent / "server" / "static" / "index.html").read_text()
+_runlines = _ui[_ui.index("function runLines("):_ui.index("function renderDeepScanBar(")]
+check("the Windows line separates the two statements",
+      lambda: '"; .\\\\run-node.ps1' in _runlines, lambda r: r is True)
+check("and never uses bash's VAR=value prefix form",
+      lambda: "FORGE_TOKEN=${NODE_TOKEN} .\\\\run-node" in _runlines,
+      lambda r: r is False)
+check("the Mac/Linux line does use it, which is correct there",
+      lambda: "FORGE_TOKEN=${NODE_TOKEN} ./run-node.sh" in _runlines,
+      lambda r: r is True)
+check("both platforms are labelled",
+      lambda: ("Windows (PowerShell)" in _runlines
+               and "Mac or Linux" in _runlines), lambda r: r is True)
+_ps1 = (pathlib.Path(__file__).parent / "run-node.ps1").read_text()
+check("run-node.ps1 takes a -Token parameter",
+      lambda: "[string]$Token" in _ps1, lambda r: r is True)
+check("and passes it to the worker",
+      lambda: "$env:FORGE_TOKEN = $Token" in _ps1, lambda r: r is True)
+
 print("\nThe out-of-date-files banner:")
 # A name in REQUIRED with no module behind it reported every one of its
 # functions as missing, which is a false alarm pointing at a file that
