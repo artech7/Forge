@@ -17,7 +17,12 @@ services:
     environment:
       MEDIA_ROOTS: /media
     volumes:
-      - ./data:/app/data
+      # Must match FORGE_DATA in server/Dockerfile (/data). Mounted
+      # anywhere else and the database lands in the container's own
+      # writable layer instead — which survives a restart but is thrown
+      # away on recreate, so every `up -d` after a pull would silently
+      # take the libraries, settings and history with it.
+      - ./data:/data
       # Your media. The paths you type into Forge are the paths inside the
       # container, so a watch folder here would be /media/inbox.
       - /volume1/media:/media
