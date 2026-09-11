@@ -4,6 +4,7 @@ This is the part that makes mixed hardware painless: the server sends
 "HEVC at quality 22" and each node figures out how to say that in its
 own encoder's dialect.
 """
+import re
 import subprocess
 import tempfile
 
@@ -446,12 +447,10 @@ def build_level_command(src, dst, spec, info=None):
         return cmd + [str(dst)]
 
     for position, stream in enumerate(audio_streams):
-        codec = stream.get("codec_name") or "aac"
-        # A few decoders have no matching encoder of the same name, and
-        # some formats can't be re-encoded at all. AAC is the safe
-        # landing place, and only for those.
-        if codec in NO_ENCODER_FOR:
-            codec = "aac"
+        # Keeps each track's own format where FFmpeg can write it, and
+        # lands on AAC where it can't. Levelling an Opus track used to
+        # ask for the experimental built-in encoder and fail the job.
+        codec = audio_encoder(stream.get("codec_name"))
         cmd += [f"-c:a:{position}", codec]
 
         channels = stream.get("channels")
@@ -476,6 +475,82 @@ NO_ENCODER_FOR = {
     "dts", "truehd", "mlp", "pcm_bluray", "pcm_dvd",
     "atrac3", "cook", "sipr", "wmapro", "wmav1", "wmav2",
 }
+
+# FFmpeg ships its own encoder for a few formats and marks it
+# experimental, so it refuses to run without -strict -2 and the job dies
+# with "Error sending frames to consumers: Experimental feature". There
+# is normally a library encoder for the same format that works fine, and
+# using it is what FFmpeg's own error message tells you to do. Passing
+# -strict -2 instead would also work, but it would quietly enable every
+# other experimental encoder for the same job.
+#
+# Only consulted when FFmpeg can't be asked directly; the real answer
+# comes from its own encoder list.
+PREFERRED_ENCODER = {"opus": "libopus", "vorbis": "libvorbis"}
+
+_encoder_table = None
+
+
+def available_encoders(refresh=False):
+    """What this FFmpeg can write: {codec: [(encoder, experimental)]}.
+
+    Asked once and remembered — which encoders a build has is a property
+    of the machine and can't change while the worker runs.
+
+    Keyed by codec rather than encoder name because the two differ in
+    both directions: "-c:a mp3" is accepted even though the encoder is
+    called libmp3lame, while "-c:a opus" names a real encoder that
+    refuses to run.
+    """
+    global _encoder_table
+    if _encoder_table is not None and not refresh:
+        return _encoder_table
+    table = {}
+    try:
+        out = subprocess.run(["ffmpeg", "-hide_banner", "-encoders"],
+                             capture_output=True, text=True, timeout=30)
+        for line in out.stdout.splitlines():
+            # " A..X.D opus  Opus" — six flags, the fourth is X when the
+            # encoder is experimental. A trailing "(codec mp3)" means
+            # this encoder writes a format of a different name.
+            match = re.match(r"\s*([VASFXBD.]{6})\s+(\S+)\s*(.*)", line)
+            if not match:
+                continue
+            flags, name, description = match.groups()
+            if flags[0] != "A":
+                continue                      # audio encoders only
+            codec = re.search(r"\(codec (\S+)\)", description)
+            table.setdefault(codec.group(1) if codec else name, []).append(
+                (name, flags[3] == "X"))
+    except (OSError, subprocess.SubprocessError):
+        table = {}
+    _encoder_table = table
+    return table
+
+
+def audio_encoder(codec):
+    """The encoder to actually use for this audio format.
+
+    Never returns one FFmpeg would refuse: an experimental built-in is
+    swapped for the library encoder that writes the same format, and
+    anything this build can't write at all lands on AAC, which plays
+    everywhere.
+    """
+    if not codec:
+        return "aac"
+    if codec in NO_ENCODER_FOR:
+        return "aac"
+    table = available_encoders()
+    if not table:
+        return PREFERRED_ENCODER.get(codec, codec)    # couldn't ask
+    options = table.get(codec) or []
+    usable = [name for name, experimental in options if not experimental]
+    if not usable:
+        return "aac"
+    # The plain codec name where that works, since FFmpeg resolves it to
+    # this same encoder and it's what reads back in a log.
+    return codec if codec in usable else usable[0]
+
 
 def build_command(src, dst, encoder, spec, info=None):
     """Turn an intent spec into an FFmpeg invocation for this encoder.
@@ -591,7 +666,7 @@ def build_command(src, dst, encoder, spec, info=None):
     elif audio == "flac":
         cmd += ["-c:a", "flac"]          # lossless, no bitrate to set
     else:
-        codec = audio if audio != "copy" else "aac"
+        codec = audio_encoder(audio if audio != "copy" else "aac")
         cmd += ["-c:a", codec]
         # An empty bitrate would become -b:a "" and FFmpeg refuses to open
         # the output at all, so a blank value falls back rather than passing
@@ -608,7 +683,7 @@ def build_command(src, dst, encoder, spec, info=None):
     # Per-stream flags override the global ones for just that index.
     stereo_at = streams.stereo_companion_position(info, spec) if info else None
     if stereo_at is not None:
-        stereo_codec = spec.get("stereo_track_codec") or "aac"
+        stereo_codec = audio_encoder(spec.get("stereo_track_codec") or "aac")
         cmd += [f"-c:a:{stereo_at}", stereo_codec,
                 f"-ac:a:{stereo_at}", "2",
                 f"-b:a:{stereo_at}", spec.get("stereo_track_bitrate") or "160k",

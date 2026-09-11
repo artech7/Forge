@@ -650,6 +650,61 @@ check("a successful *arr research clears the stale probe-cache row", lambda: (
       db.get_cached_file(_corrupt_path))[-1], lambda r: r is None)
 db.delete_library(_arr_lib)
 
+print("\nPicking an audio encoder FFmpeg will actually run:")
+import encoders as _enc                            # noqa: E402
+# A real slice of "ffmpeg -encoders". The fourth flag is X for
+# experimental; a trailing "(codec x)" means the encoder writes a
+# format of a different name.
+_enc._encoder_table = None
+_real_subprocess = _enc.subprocess
+_enc.subprocess = type("_S", (), {
+    "run": staticmethod(lambda *a, **k: type("_R", (), {"stdout": """\
+ A....D aac                  AAC (Advanced Audio Coding)
+ A..X.D opus                 Opus
+ A....D libopus              libopus Opus (codec opus)
+ A..X.D vorbis               Vorbis
+ A....D libmp3lame           libmp3lame MP3 (MPEG audio layer 3) (codec mp3)
+ A....D eac3                 ATSC A/52B (AC-3, E-AC-3)
+ A....D flac                 FLAC (Free Lossless Audio Codec)
+ V....D libx265              libx265 H.265 / HEVC
+"""})()),
+    "SubprocessError": Exception})
+_table = _enc.available_encoders(refresh=True)
+check("the encoder list is read as codec -> encoders",
+      lambda: sorted(_table), lambda r: r == ["aac", "eac3", "flac", "mp3",
+                                              "opus", "vorbis"])
+check("video encoders are left out of it",
+      lambda: "libx265" in _table, lambda r: r is False)
+check("an experimental built-in is swapped for the library encoder",
+      lambda: _enc.audio_encoder("opus"), lambda r: r == "libopus")
+check("a codec whose encoder has another name still resolves",
+      lambda: _enc.audio_encoder("mp3"), lambda r: r == "libmp3lame")
+check("an ordinary codec is passed through untouched",
+      lambda: _enc.audio_encoder("aac"), lambda r: r == "aac")
+check("experimental with no library encoder falls back to AAC",
+      lambda: _enc.audio_encoder("vorbis"), lambda r: r == "aac")
+check("so does a format this build cannot write",
+      lambda: _enc.audio_encoder("truehd"), lambda r: r == "aac")
+check("and a track with no codec at all",
+      lambda: _enc.audio_encoder(None), lambda r: r == "aac")
+# The failure Dylan hit: levelling a file with an Opus track asked for
+# the experimental built-in and killed the whole job.
+_opus_info = {"streams": [
+    {"codec_type": "video", "codec_name": "h264"},
+    {"codec_type": "audio", "codec_name": "aac", "channels": 2},
+    {"codec_type": "audio", "codec_name": "opus", "channels": 2}]}
+_level = _enc.build_level_command(
+    pathlib.Path("/in.mp4"), pathlib.Path("/out.mp4"),
+    {"level_only": True, "loudness_target_i": -16}, _opus_info)
+check("levelling never asks for the bare opus encoder",
+      lambda: "opus" in _level, lambda r: r is False)
+check("levelling asks for libopus instead",
+      lambda: "libopus" in _level, lambda r: r is True)
+check("and still keeps the AAC track as AAC",
+      lambda: _level[_level.index("-c:a:0") + 1], lambda r: r == "aac")
+_enc.subprocess = _real_subprocess                 # leave no fixture behind
+_enc._encoder_table = None
+
 print("\nThe schema can still be run against an older database:")
 # init() executes SCHEMA in full on every start, including on databases
 # made by earlier versions. CREATE TABLE IF NOT EXISTS is a no-op there,
