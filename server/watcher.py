@@ -238,6 +238,9 @@ def scan_library(library, probe_fn):
             if gone:
                 print(f"scan: removed {gone} leftover work file(s), "
                       f"{freed // (1024*1024)} MB reclaimed")
+            # Existing Originals folders predate these markers, so this is
+            # what gets them shielded rather than only newly created ones.
+            shield_originals_dir(library)
     except OSError as exc:
         print(f"scan: could not check for missing files ({exc})")
     queued, waiting, skipped, filtered = 0, 0, 0, 0
@@ -384,6 +387,39 @@ def originals_dir(library):
     if library.get("output_path"):
         return Path(library["output_path"]).parent / "Originals" / library["name"]
     return Path(library["watch_path"]) / "Originals"
+
+
+# Jellyfin and Emby skip any folder holding a ".ignore"; Kodi and anything
+# Android-ish honour ".nomedia". Both are empty marker files.
+IGNORE_MARKERS = (".ignore", ".nomedia")
+
+
+def shield_originals_dir(library, create=False):
+    """Keep a media server from indexing archived originals.
+
+    With no separate originals path set, a library converting in place
+    keeps them inside the watched folder — which is the same folder
+    Jellyfin is pointed at, so every archived original turns up as a
+    second copy of the very file that replaced it. Forge's own scanner
+    already skips the folder (see SKIP_DIRS); these markers say the same
+    thing to the media server, so the default location is merely untidy
+    rather than actively wrong.
+
+    Cheap enough to call on every scan: two stat calls against a folder
+    the scan is already walking.
+    """
+    root = originals_dir(library)
+    try:
+        if create:
+            root.mkdir(parents=True, exist_ok=True)
+        elif not root.is_dir():
+            return
+        for marker in IGNORE_MARKERS:
+            path = root / marker
+            if not path.exists():
+                path.touch()
+    except OSError:
+        pass        # never let tidiness stop a conversion being filed
 
 
 def sweep_originals(settings):

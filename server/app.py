@@ -46,7 +46,8 @@ REQUIRED = {
            "set_housekeeping_slots", "node_active_jobs"],
     "scheduler": ["lease_job", "reverse_path", "requeue_expired"],
     "watcher": ["scan_library", "scan_all", "destination_for", "sweep_originals",
-                "filter_verdict", "plan_conversion", "restore_original_row"],
+                "filter_verdict", "plan_conversion", "restore_original_row",
+                "shield_originals_dir"],
     "profiles": ["catalog", "resolve", "warnings_for"],
     "naming": ["parse", "format_path", "preview", "resolve"],
     "schedule": ["is_open", "describe", "cleanup_due", "describe_cleanup",
@@ -817,6 +818,9 @@ def handle_original(job, library, final):
             relative = Path(".")
         target_dir = dest_dir / relative
         target_dir.mkdir(parents=True, exist_ok=True)
+        # Before anything lands in here, make sure a media server pointed
+        # at this same folder won't index it as a duplicate.
+        watcher.shield_originals_dir(library, create=True)
         archived = _dedupe_archive_path(target_dir / source.name)
         size = source.stat().st_size
         shutil.move(str(source), str(archived))
