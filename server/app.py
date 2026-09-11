@@ -45,7 +45,7 @@ REQUIRED = {
            "update_original", "move_job_to_top", "reorder_jobs",
            "set_housekeeping_slots", "node_active_jobs",
            "paths_with_failed_measurement", "files_without_audio",
-           "library_matcher"],
+           "library_matcher", "next_queued", "job_kind"],
     "scheduler": ["lease_job", "reverse_path", "requeue_expired"],
     "watcher": ["scan_library", "scan_all", "destination_for", "sweep_originals",
                 "filter_verdict", "plan_conversion", "restore_original_row",

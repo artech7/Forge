@@ -1713,7 +1713,7 @@ function renderJobs(jobs, meta) {
       <div class="pct">${pct}</div>
       <div class="meta">${bits.filter(Boolean).join(' · ')}</div>
       ${sizes ? `<div class="sizes">${sizes}</div>` : ''}
-      ${j.state === 'failed' && j.error
+      ${(j.state === 'failed' || j.state === 'ignored') && j.error
         ? `<div class="err">${j.error}</div>` : ''}
       ${j.outcome && j.state !== 'failed'
         ? `<div class="note" ${j.state === 'bloated'

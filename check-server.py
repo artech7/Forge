@@ -649,6 +649,37 @@ check("a successful *arr research clears the stale probe-cache row", lambda: (
       db.get_cached_file(_corrupt_path))[-1], lambda r: r is None)
 db.delete_library(_arr_lib)
 
+print("\nConversions always outrank loudness work:")
+_tier_lib = db.create_library("Tiers", str(base / "tiers"), "", profile, "archive")
+_before = db.queued_by_kind()          # earlier tests leave jobs behind
+# More measuring work than the scheduler's old fixed window, queued
+# first — exactly the shape that starved conversions in production.
+for _i in range(2100):
+    db.enqueue(f"/tiers/m{_i}.mkv", {"measure": "loudness"}, 1, _tier_lib)
+for _i in range(20):
+    db.enqueue(f"/tiers/l{_i}.mkv", {"level_only": True, "codec": "copy"},
+               1, _tier_lib)
+for _i in range(30):
+    db.enqueue(f"/tiers/c{_i}.mkv", {"codec": "copy", "audio": "aac"},
+               1, _tier_lib)
+check("each kind is counted separately",
+      lambda: {k: db.queued_by_kind()[k] - _before.get(k, 0)
+               for k in ("measure", "level", "convert")},
+      lambda r: r == {"measure": 2100, "level": 20, "convert": 30})
+check("a conversion is found behind a backlog deeper than any one window",
+      lambda: len(db.next_queued("convert", 200)) - len(
+          [j for j in db.next_queued("convert", 200)
+           if j["library_id"] != _tier_lib]),
+      lambda r: r == 30)
+check("next_queued returns only the kind asked for",
+      lambda: {db.job_kind(j["spec"]) for j in db.next_queued("level", 50)},
+      lambda r: r == {"level"})
+check("and hands them back oldest-first",
+      lambda: [j["id"] for j in db.next_queued("convert", 3)],
+      lambda r: r == sorted(r))
+db.delete_jobs(["queued"], library_id=_tier_lib)
+db.delete_library(_tier_lib)
+
 print("\nStandardize records the same fields a scan does:")
 _std_lib = db.create_library(
     "Standardize", str(watch), "", {**profile, "video_codec": "hevc",

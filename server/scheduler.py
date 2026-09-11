@@ -19,6 +19,11 @@ LEASE_SECONDS = 120
 # regardless of auto_fail being configured at all.
 BOUNCE_LIMIT = 5
 
+# How many jobs of one kind to consider per lease. Only the first one
+# this node can actually run is taken, so this is just enough headroom
+# to skip past jobs it can't (wrong encoder, file not reachable).
+TIER_LIMIT = 200
+
 # Intent codec -> encoder ids that satisfy it, in preference order.
 # Hardware first: on a homelab, wall-clock beats the marginal quality gain.
 CODEC_FAMILIES = {
@@ -133,24 +138,26 @@ def lease_job(node_id):
     if slots < 1 or active_job_count(node_id) >= slots:
         return None
 
-    # Housekeeping work exists to use capacity a real conversion would
-    # otherwise leave idle, and should never sit in front of one. The
-    # queue is otherwise strictly oldest-first, so without this a batch
-    # of loudness work would make every slot grab it first and leave
-    # real transcodes waiting behind the whole backlog.
+    # Three tiers, strictly in this order:
     #
-    # Both loudness passes count: measuring (which only reads) and
-    # levelling (which rewrites audio). Levelling is real encoding work,
-    # but it's still tidying an already-correct file — a file that hasn't
-    # been converted at all is the more useful thing to spend a slot on.
-    queued = db.list_jobs(states=["queued"], limit=2000)
+    #   conversions  what was actually asked for
+    #   levelling    housekeeping, but it does rewrite the audio
+    #   measuring    housekeeping, and it only reads — always last
+    #
+    # Read one tier at a time rather than taking a slice of the whole
+    # queue and sorting it out here. A single window is ordered
+    # oldest-first, so a measuring backlog deeper than the window filled
+    # it completely and the conversions behind it were never even
+    # considered — the queue showed them waiting while every node kept
+    # picking up measurements. Moving one to the top by hand worked
+    # because that dragged it into the window; nothing else did.
+    tiers = [db.next_queued(kind, limit=TIER_LIMIT)
+             for kind in ("convert", "level", "measure")]
+    real_work = tiers[0]
+    housekeeping = tiers[1] + tiers[2]
 
     def is_housekeeping(job):
-        spec = job["spec"] or {}
-        return bool(spec.get("measure") or spec.get("level_only"))
-
-    real_work = [j for j in queued if not is_housekeeping(j)]
-    housekeeping = [j for j in queued if is_housekeeping(j)]
+        return db.job_kind(job.get("spec")) != "convert"
 
     # What this node has been set up to do at all.
     role = node.get("role") or "both"

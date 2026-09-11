@@ -122,10 +122,18 @@ CREATE TABLE IF NOT EXISTS jobs (
     started_at    REAL,
     finished_at   REAL,
     bounces       INTEGER NOT NULL DEFAULT 0, -- consecutive lease expiries with no check-in
-    queue_order   REAL                        -- manual position; NULL means "natural (by id)"
+    queue_order   REAL,                       -- manual position; NULL means "natural (by id)"
+    -- convert|level|measure, derived from spec by job_kind() at enqueue.
+    -- Denormalised deliberately: the scheduler has to ask "is there a
+    -- conversion waiting?" without pulling a backlog of loudness work
+    -- into memory first, and that has to stay cheap with a queue
+    -- thousands deep.
+    kind          TEXT NOT NULL DEFAULT 'convert'
 );
 
 CREATE INDEX IF NOT EXISTS idx_jobs_state ON jobs(state);
+CREATE INDEX IF NOT EXISTS idx_jobs_queue
+    ON jobs(state, kind, queue_order, id);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_jobs_active
     ON jobs(path) WHERE state IN ('queued','leased','running');
 """
@@ -279,10 +287,11 @@ def enqueue(path, spec, size_before=None, library_id=None, attempt=1):
     def insert(conn):
         cur = conn.execute(
             """INSERT INTO jobs
-               (path, library_id, spec, state, size_before, attempt, created_at)
-               VALUES (?, ?, ?, 'queued', ?, ?, ?)""",
+               (path, library_id, spec, state, size_before, attempt,
+                created_at, kind)
+               VALUES (?, ?, ?, 'queued', ?, ?, ?, ?)""",
             (path, library_id, json.dumps(spec), size_before, attempt,
-             time.time()),
+             time.time(), job_kind(spec)),
         )
         return cur.lastrowid
 
@@ -377,6 +386,23 @@ def queued_by_kind(library_id=None):
         out[job_kind(j.get("spec"))] += 1
     out["all"] = len(jobs)
     return out
+
+
+def next_queued(kind, limit=200):
+    """The oldest queued jobs of one kind, in the order they'd be run.
+
+    Separate from list_jobs() so that asking "is there a conversion
+    waiting?" costs one indexed lookup rather than reading a window of
+    the whole queue and sorting it out afterwards. With a measuring
+    backlog thousands deep, that window filled up with measuring work
+    and conversions behind it were never even considered.
+    """
+    with connect() as conn:
+        rows = conn.execute(
+            """SELECT * FROM jobs WHERE state='queued' AND kind=?
+               ORDER BY COALESCE(queue_order, id) ASC, id ASC LIMIT ?""",
+            (kind, limit)).fetchall()
+    return [row_to_dict(r) for r in rows]
 
 
 def list_jobs(states=None, limit=200, offset=0, library_id=None, q=None,
@@ -1052,7 +1078,8 @@ def migrate():
                  ("size_now", "INTEGER"), ("outcome", "TEXT"),
                  ("progress_at", "REAL"),
                  ("bounces", "INTEGER NOT NULL DEFAULT 0"),
-                 ("queue_order", "REAL")],
+                 ("queue_order", "REAL"),
+                 ("kind", "TEXT NOT NULL DEFAULT 'convert'")],
         "libraries": [("filters", "TEXT NOT NULL DEFAULT '{}'"),
                       ("naming", "TEXT NOT NULL DEFAULT '{}'"),
                       ("originals_path", "TEXT")],
@@ -1065,6 +1092,7 @@ def migrate():
         "files": [("video_bitrate", "INTEGER"), ("bit_depth", "INTEGER"),
                   ("detail", "TEXT")],
     }
+    added = set()
     with connect() as conn:
         for table, cols in additions.items():
             existing = {r["name"] for r in
@@ -1072,6 +1100,23 @@ def migrate():
             for name, decl in cols:
                 if name not in existing:
                     conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {decl}")
+                    added.add((table, name))
+        # Every existing row defaulted to 'convert' when the column was
+        # added. Left that way, a queue full of older loudness jobs would
+        # all look like conversions and jump the priority order they were
+        # meant to sit behind.
+        if ("jobs", "kind") in added:
+            rows = conn.execute("SELECT id, spec FROM jobs").fetchall()
+            fixed = [(job_kind(parse_json(r["spec"], {})), r["id"])
+                     for r in rows]
+            fixed = [(k, i) for k, i in fixed if k != "convert"]
+            conn.executemany("UPDATE jobs SET kind=? WHERE id=?", fixed)
+            if fixed:
+                print(f"migrate: labelled {len(fixed)} existing loudness job(s)")
+        # The index is only in SCHEMA, which CREATE TABLE IF NOT EXISTS
+        # skips entirely on a database that already has the table.
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_queue "
+                     "ON jobs(state, kind, queue_order, id)")
 
 
 # -------------------------------------------------------------- libraries
