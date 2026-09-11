@@ -43,7 +43,8 @@ REQUIRED = {
            "count_jobs", "job_counts", "delete_job", "delete_jobs",
            "requeue_jobs", "record_completion", "original_for_path",
            "update_original", "move_job_to_top", "reorder_jobs",
-           "set_housekeeping_slots", "node_active_jobs"],
+           "set_housekeeping_slots", "node_active_jobs",
+           "paths_with_failed_measurement"],
     "scheduler": ["lease_job", "reverse_path", "requeue_expired"],
     "watcher": ["scan_library", "scan_all", "destination_for", "sweep_originals",
                 "filter_verdict", "plan_conversion", "restore_original_row",
@@ -1455,10 +1456,19 @@ def _find_unmeasured(libraries):
     run off the event loop anyway since a big library is still a lot of
     small operations in a row.
     """
+    # A measurement that already failed is waiting on a person, not on
+    # another go — without this the automatic loop picks the same file up
+    # every cycle forever, and since a measurement that hangs burns its
+    # whole lease timeout before giving up, that quietly eats a slot on a
+    # loop. Fetched once rather than per file: this walks a whole library.
+    # Retrying one is still a button away on the Failed list.
+    failed = db.paths_with_failed_measurement()
     targets = []
     for lib in libraries:
         for path in Path(lib["watch_path"]).rglob("*"):
             if not (path.is_file() and path.suffix.lower() in VIDEO_EXT):
+                continue
+            if str(path) in failed:
                 continue
             cached = db.get_cached_file(str(path)) or {}
             try:

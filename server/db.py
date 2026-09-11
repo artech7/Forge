@@ -1291,6 +1291,26 @@ def unresolved_job_for(path):
     return row_to_dict(row)
 
 
+def paths_with_failed_measurement():
+    """Files whose loudness measurement already failed and is waiting on
+    a person.
+
+    The same memory unresolved_job_for() gives the scanner, but for the
+    automatic loudness loop and as one set rather than a query per file —
+    that loop walks an entire library, so asking per file would double
+    its database work for no reason.
+
+    Measurement jobs only: a file whose *conversion* failed may still
+    measure perfectly well, and shouldn't be written off for it.
+    """
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT path, spec FROM jobs WHERE state IN ('failed','ignored')"
+        ).fetchall()
+    return {row["path"] for row in rows
+            if (parse_json(row["spec"], {}) or {}).get("measure")}
+
+
 def has_job_for(path, states=None, exclude_id=None):
     """True if a job already exists for this path in any of these states."""
     query = "SELECT 1 FROM jobs WHERE path=?"
