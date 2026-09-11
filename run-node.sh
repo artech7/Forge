@@ -105,13 +105,13 @@ case "$SERVER" in
     ;;
 esac
 
-if ! curl -s -o /dev/null --max-time 5 "$SERVER/api/state"; then
+if ! curl -s -o /dev/null --max-time 5 "$SERVER/api/auth/state"; then
   # Usually the wrong scheme, so try the other one before giving up.
   case "$SERVER" in
     https://*) OTHER="http://${SERVER#https://}" ;;
     *)         OTHER="https://${SERVER#http://}" ;;
   esac
-  if curl -s -o /dev/null --max-time 5 "$OTHER/api/state"; then
+  if curl -s -o /dev/null --max-time 5 "$OTHER/api/auth/state"; then
     echo "$SERVER didn't answer, but $OTHER does. Using that."
     echo
     SERVER="$OTHER"
@@ -127,9 +127,23 @@ if ! curl -s -o /dev/null --max-time 5 "$SERVER/api/state"; then
     echo "  - Ping working but the port not usually means a firewall on the"
     echo "    NAS, or the container bound to a different address."
     echo
-    echo "From here, try:  curl $SERVER/api/state"
+    echo "From here, try:  curl $SERVER/api/auth/state"
     exit 1
   fi
+fi
+
+# A login on the server means this worker needs its token. Said here so
+# it's one clear message, rather than a worker that starts up fine and
+# then silently leases nothing.
+if curl -s --max-time 5 "$SERVER/api/auth/state" 2>/dev/null \
+     | grep -q '"configured": *true' && [ -z "${FORGE_TOKEN:-}" ]; then
+  echo "Forge at $SERVER has a login set up, so this worker needs its token."
+  echo
+  echo "Open Forge, look at the node card, and copy the line it shows for"
+  echo "Mac or Linux. It looks like this:"
+  echo
+  echo "  FORGE_TOKEN=... ./run-node.sh $SERVER"
+  exit 1
 fi
 
 # MOUNTS may be given as a plain path, which is what people actually type.

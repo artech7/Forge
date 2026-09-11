@@ -147,8 +147,14 @@ if ($Server -match "^https://" -or $Server -match "synology\.me|duckdns\.org|ddn
     if ($answer -notmatch "^[yY]") { exit 1 }
 }
 
+# Asks /api/auth/state rather than /api/state: it answers whether or not
+# anyone is signed in, so a server with a login set up still counts as
+# reachable. Probing a protected address instead made a perfectly healthy
+# Forge report "can't reach" the moment a password was set, because
+# Invoke-WebRequest treats 401 as a thrown error like any other failure.
+$probe = "$Server/api/auth/state"
 try {
-    Invoke-WebRequest -Uri "$Server/api/state" -TimeoutSec 5 -UseBasicParsing | Out-Null
+    Invoke-WebRequest -Uri $probe -TimeoutSec 5 -UseBasicParsing | Out-Null
 }
 catch {
     # Before giving up, see whether the other scheme answers — that is the
@@ -156,7 +162,7 @@ catch {
     $other = if ($Server -match "^https://") { $Server -replace "^https://", "http://" }
              else { $Server -replace "^http://", "https://" }
     try {
-        Invoke-WebRequest -Uri "$other/api/state" -TimeoutSec 5 -UseBasicParsing | Out-Null
+        Invoke-WebRequest -Uri "$other/api/auth/state" -TimeoutSec 5 -UseBasicParsing | Out-Null
         Write-Host ""
         Write-Host "$Server didn't answer, but $other does." -ForegroundColor Yellow
         Write-Host "Using that."
@@ -176,9 +182,33 @@ Things to check:
     NAS, or the container is bound to a different address.
 
 From here, try:
-  curl http://192.168.1.163:58420/api/state
+  curl $Server/api/auth/state
 "@
     }
+}
+
+# A login on the server means this worker needs its token. Checked here
+# so it's said once, plainly, instead of the worker starting up and
+# failing to lease anything for reasons only visible in its log.
+try {
+    $state = Invoke-RestMethod -Uri "$Server/api/auth/state" -TimeoutSec 5
+    if ($state.configured -and -not $Token) {
+        Fail @"
+Forge at $Server has a login set up, so this worker needs its token.
+
+Open Forge, look at the node card, and copy the line it shows for
+Windows. It looks like this:
+
+  `$env:FORGE_TOKEN="..."; .\run-node.ps1 -Server $Server
+
+Or pass it directly:
+
+  .\run-node.ps1 -Server $Server -Token <the token>
+"@
+    }
+}
+catch {
+    # An older server has no such address. Nothing to check, carry on.
 }
 
 # Accept the thing a person would actually type. A bare path is by far the

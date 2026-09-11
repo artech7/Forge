@@ -7,6 +7,7 @@ code imports and parses fine, then fails at runtime on a specific call.
 """
 import inspect
 import pathlib
+import re
 import sys
 import tempfile
 import time
@@ -672,6 +673,30 @@ check("run-node.ps1 takes a -Token parameter",
       lambda: "[string]$Token" in _ps1, lambda r: r is True)
 check("and passes it to the worker",
       lambda: "$env:FORGE_TOKEN = $Token" in _ps1, lambda r: r is True)
+
+print("\nWhat the worker launchers probe before starting:")
+# Both scripts check the server is there first. Probing an address that
+# needs a session made a healthy Forge report "can't reach" as soon as a
+# login existed — PowerShell raises on 401 like any other failure.
+_root = pathlib.Path(__file__).parent
+_sh = (_root / "run-node.sh").read_text()
+_ps1 = (_root / "run-node.ps1").read_text()
+# Comments stripped first: both files explain in prose which address
+# they deliberately avoid, and naming it there isn't using it.
+_code = "\n".join(line for line in (_sh + "\n" + _ps1).splitlines()
+                  if not line.lstrip().startswith("#"))
+_probed = set(re.findall(r"/api/[a-z/-]+", _code))
+check("every address the launchers touch is reachable signed out",
+      lambda: sorted(_probed - app.OPEN_PATHS), lambda r: r == [])
+check("both probe the address that answers either way",
+      lambda: ("/api/auth/state" in _sh, "/api/auth/state" in _ps1),
+      lambda r: r == (True, True))
+check("and the probed address really is open",
+      lambda: "/api/auth/state" in app.OPEN_PATHS, lambda r: r is True)
+check("each launcher stops early when a token is needed",
+      lambda: ("FORGE_TOKEN" in _sh and "needs its token" in _sh,
+               "Token" in _ps1 and "needs its token" in _ps1),
+      lambda r: r == (True, True))
 
 print("\nThe out-of-date-files banner:")
 # A name in REQUIRED with no module behind it reported every one of its
