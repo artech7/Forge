@@ -157,7 +157,25 @@ def measure_loudness(path):
         # copy. The genuinely useful line is usually the last one, not
         # a generic "didn't report anything" that explains nothing.
         lines = [l for l in stderr.strip().splitlines() if l.strip()]
-        return None, (lines[-1] if lines else f"exit code {out.returncode}")
+        # A file with no audio track says so plainly — "Output file does
+        # not contain any stream" — and then trails two generic lines
+        # about failing to open the output. Reporting the last of those
+        # called it "Error opening output files: Invalid argument", which
+        # reads like something is broken rather than there simply being
+        # nothing in the file to measure.
+        if any("does not contain any stream" in l for l in lines):
+            return None, "no audio track to measure"
+        # Otherwise take the first real error, not the last line. FFmpeg
+        # states the cause once and then trails consequences of it, so
+        # the last line is the least specific thing it said — but the
+        # first line isn't right either, since warnings ("misdetection
+        # possible") come first and explain nothing. These two prefixes
+        # also match their plural forms.
+        generic = ("error opening output file", "error opening input file")
+        errors = [l for l in lines if "error" in l.lower()
+                  and not any(g in l.lower() for g in generic)]
+        fallback = lines[-1] if lines else f"exit code {out.returncode}"
+        return None, errors[0] if errors else fallback
     try:
         parsed = json.loads(stderr[start:end + 1])
         return {

@@ -1475,8 +1475,17 @@ def _find_unmeasured(libraries):
                 detail = json.loads(cached.get("detail") or "{}")
             except (json.JSONDecodeError, TypeError):
                 detail = {}
-            if not detail.get("loudness"):
-                targets.append((lib, path))
+            if detail.get("loudness"):
+                continue
+            # Nothing to measure in a file with no audio track, and
+            # queueing one only ever buys a failure. Decided on the
+            # strength of an actual probe: a file nobody has probed yet
+            # has no audio_codecs on record either, which isn't the same
+            # thing as having no audio.
+            if cached.get("probed_at") and not db.parse_json(
+                    cached.get("audio_codecs"), []):
+                continue
+            targets.append((lib, path))
     return targets
 
 
