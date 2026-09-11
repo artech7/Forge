@@ -20,6 +20,7 @@ from fastapi import HTTPException                # noqa: E402
 import app                                       # noqa: E402
 import naming, profiles, schedule, watcher       # noqa: E402
 import lookup, scheduler                         # noqa: E402
+import arr                                       # noqa: E402
 
 failures = []
 
@@ -647,6 +648,24 @@ check("a successful *arr research clears the stale probe-cache row", lambda: (
       _run(app.handle_unhealthy_video(db.get_job(_corrupt_job), "decode error")),
       db.get_cached_file(_corrupt_path))[-1], lambda r: r is None)
 db.delete_library(_arr_lib)
+
+print("\nTranslating a path for Radarr/Sonarr:")
+_tv = "/media/TV Shows/Naruto/S01E01.mkv"
+check("a plain prefix swap",
+      lambda: arr.remap_path(_tv, "/media/TV Shows", "/tvshows"),
+      lambda r: r == "/tvshows/Naruto/S01E01.mkv")
+check("a trailing slash typed into either box is forgiven",
+      lambda: arr.remap_path(_tv, "/media/TV Shows/", "/tvshows/"),
+      lambda r: r == "/tvshows/Naruto/S01E01.mkv")
+check("no mapping set leaves the path alone",
+      lambda: arr.remap_path(_tv, "", ""), lambda r: r == _tv)
+check("a prefix that doesn't match leaves the path alone",
+      lambda: arr.remap_path(_tv, "/media/Anime", "/anime"), lambda r: r == _tv)
+check("two libraries on one Sonarr translate independently",
+      lambda: (arr.remap_path("/media/Anime/Bleach/S01E01.mkv",
+                              "/media/Anime", "/anime"),
+               arr.remap_path(_tv, "/media/TV Shows", "/tvshows")),
+      lambda r: r == ("/anime/Bleach/S01E01.mkv", "/tvshows/Naruto/S01E01.mkv"))
 
 print("\nWhere a library's *arr address comes from:")
 _lib_only = {"profile": {"arr": {"kind": "radarr", "url": "http://on-library",

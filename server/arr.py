@@ -56,6 +56,12 @@ def remap_path(path, path_from, path_to):
     mount versus Radarr/Sonarr's own. A plain prefix swap covers every
     real case without needing per-library special-casing.
     """
+    # Trailing slashes are stripped from both sides first. Typing
+    # "/media/Movies/" into the box is the natural thing to do, and
+    # without this it swallows the separator and yields
+    # "/nasroot/MoviesFilm.mkv" — a lookup that fails for no visible
+    # reason.
+    path_from = path_from.rstrip("/")
     if not path_from:
         return path
     if path.startswith(path_from):
