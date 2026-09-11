@@ -649,6 +649,54 @@ check("a successful *arr research clears the stale probe-cache row", lambda: (
       db.get_cached_file(_corrupt_path))[-1], lambda r: r is None)
 db.delete_library(_arr_lib)
 
+print("\nStandardize records the same fields a scan does:")
+_std_lib = db.create_library(
+    "Standardize", str(watch), "", {**profile, "video_codec": "hevc",
+                                    "audio_codec": "aac", "container": "mkv"},
+    "delete")
+_std_path = str(watch / "Spy.mkv")
+pathlib.Path(_std_path).write_bytes(b"x" * 2048)
+_std_info = {"video_codec": "hevc", "audio_codecs": ["eac3", "eac3"],
+             "streams": [], "duration": 60.0, "size": 2048}
+_std_action, _std_spec, _std_why = watcher.plan_conversion(
+    pathlib.Path(_std_path), _std_info,
+    profiles.resolve(db.get_library(_std_lib)["profile"]), {})
+check("an HEVC file with EAC3 audio is an audio-only job",
+      lambda: _std_action, lambda r: r == "audio_only")
+check("and plan_conversion leaves the video copied",
+      lambda: (_std_spec.get("codec"), _std_spec.get("audio")),
+      lambda r: r == ("copy", "aac"))
+# plan_conversion itself doesn't stamp the action — both callers do, and
+# the standardize endpoint used to forget, which is what made an
+# eac3-to-AAC conversion show up in the queue as "leveling audio".
+check("plan_conversion does not stamp it itself",
+      lambda: "action" in _std_spec, lambda r: r is False)
+class _FakeReq:
+    """Enough of a Request for endpoints that only read the body."""
+    def __init__(self, body): self._body = body
+    async def json(self): return self._body
+
+# stats_queue probes the file for real; this one is 2KB of padding.
+_real_probe = app.probe
+app.probe = lambda path: _std_info
+_queued = _run(app.stats_queue(_FakeReq({"paths": [_std_path],
+                                         "use_library_defaults": True})))
+app.probe = _real_probe
+check("queueing it through Standardize works",
+      lambda: _queued["queued"], lambda r: r == 1)
+_std_job = db.list_jobs(states=["queued"], limit=50)
+_std_job = [j for j in _std_job if j["path"] == _std_path]
+check("the job records what the work actually is",
+      lambda: _std_job[0]["spec"].get("action"), lambda r: r == "audio_only")
+check("it records why, as a scan would",
+      lambda: bool(_std_job[0]["spec"].get("why")), lambda r: r is True)
+check("and the library's own original handling, not the default",
+      lambda: _std_job[0]["spec"].get("original_action"), lambda r: r == "delete")
+for _j in _std_job:
+    db.delete_job(_j["id"])
+db.delete_library(_std_lib)
+pathlib.Path(_std_path).unlink(missing_ok=True)
+
 print("\nTranslating a path for Radarr/Sonarr:")
 _tv = "/media/TV Shows/Naruto/S01E01.mkv"
 check("a plain prefix swap",

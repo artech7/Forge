@@ -1613,11 +1613,16 @@ function renderJobs(jobs, meta) {
     // name — "COPY" — plus a quality number that means nothing when the
     // video isn't being re-encoded. Describe the work instead.
     const copyingVideo = (j.spec.codec || '') === 'copy';
+    // Re-encoding the audio is the headline when both are happening:
+    // levelling rides along inside that same pass, so calling the job
+    // "leveling audio" hides the codec change that's the actual point.
+    const convertingAudio = (j.spec.audio || 'copy') !== 'copy';
     const bits = j.spec.measure === 'loudness' ? ['measuring loudness']
+      : j.spec.level_only ? ['leveling audio']
       : ACTION_LABEL[j.spec.action] ? [ACTION_LABEL[j.spec.action]]
       : copyingVideo
-        ? [j.spec.normalise_loudness ? 'leveling audio'
-           : (j.spec.audio || 'copy') === 'copy' ? 'repackaging' : 'audio only']
+        ? [convertingAudio ? 'audio only'
+           : j.spec.normalise_loudness ? 'leveling audio' : 'repackaging']
       : [(j.spec.codec || '').toUpperCase()];
     // Quality only describes a video re-encode, so it's noise otherwise.
     const reEncodingVideo = !copyingVideo && j.spec.measure !== 'loudness'

@@ -1895,12 +1895,21 @@ async def stats_queue(req: Request):
             info = await asyncio.to_thread(probe, path)
             spec = profiles.resolve(lib.get("profile") or {})
             if info:
-                action, spec, _why = watcher.plan_conversion(
+                action, spec, why = watcher.plan_conversion(
                     Path(path), info, spec, lib.get("filters") or {})
                 if action == "skip":
                     skipped.append({"path": path,
                                     "reason": "already matches this library"})
                     continue
+                # The same three fields a normal scan records. Without
+                # "action" the queue can't say what the job is: an
+                # eac3-to-AAC conversion reads as "leveling audio",
+                # because the label falls back to guessing from a
+                # copied video stream plus the library's levelling
+                # setting. They describe the work, they don't change it.
+                spec["action"] = action
+                spec["why"] = why
+            spec["original_action"] = lib.get("original_action", "archive")
             cached = db.get_cached_file(path)
             if db.enqueue(path, spec, (cached or {}).get("size"), lib["id"]):
                 queued += 1
