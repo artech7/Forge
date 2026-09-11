@@ -220,12 +220,12 @@ def health_check(path, info, on_stream=None):
     if videos:
         done += 1
         if on_stream:
-            on_stream(done, total, "track")
+            on_stream(done, total, "video")
         result["video"] = _decode_check(path, videos[0]["index"])
     for stream in audios:
         done += 1
         if on_stream:
-            on_stream(done, total, "track")
+            on_stream(done, total, "audio")
         result["audio"][stream["index"]] = _decode_check(path, stream["index"])
     return result
 

@@ -341,8 +341,8 @@ def run_job(job, caps):
             with Phase(job_id, "checking every track plays") as phase:
                 health = streams.health_check(
                     src, info, on_stream=lambda done, total, kind: phase.say(
-                        f"checking every track plays \u2014 {kind} "
-                        f"{done} of {total}"))
+                        f"reading the whole {kind} track to check it "
+                        f"decodes \u2014 {done} of {total}"))
             video_ok, video_msg = health["video"] or (True, None)
             if not video_ok:
                 report_fail(
