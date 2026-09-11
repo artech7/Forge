@@ -408,18 +408,29 @@ def shield_originals_dir(library, create=False):
     Cheap enough to call on every scan: two stat calls against a folder
     the scan is already walking.
     """
-    root = originals_dir(library)
-    try:
-        if create:
-            root.mkdir(parents=True, exist_ok=True)
-        elif not root.is_dir():
-            return
-        for marker in IGNORE_MARKERS:
-            path = root / marker
-            if not path.exists():
-                path.touch()
-    except OSError:
-        pass        # never let tidiness stop a conversion being filed
+    roots = [(originals_dir(library), create)]
+
+    # Pointing a library at a separate originals path doesn't move what it
+    # already archived — those files stay inside the watched folder, still
+    # visible to the media server, until the sweep ages them out. So the
+    # old default location gets marked too. Never created, only marked if
+    # it's genuinely there, and skipped when it IS the current location.
+    legacy = Path(library["watch_path"]) / "Originals"
+    if legacy != roots[0][0]:
+        roots.append((legacy, False))
+
+    for root, make in roots:
+        try:
+            if make:
+                root.mkdir(parents=True, exist_ok=True)
+            elif not root.is_dir():
+                continue
+            for marker in IGNORE_MARKERS:
+                path = root / marker
+                if not path.exists():
+                    path.touch()
+        except OSError:
+            pass    # never let tidiness stop a conversion being filed
 
 
 def sweep_originals(settings):
