@@ -67,10 +67,16 @@ REQUIRED = {
 def check_modules():
     modules = {"db": db, "scheduler": scheduler, "watcher": watcher,
                "profiles": profiles, "naming": naming, "schedule": schedule,
-               "lookup": lookup, "explain": explain}
+               "lookup": lookup, "explain": explain, "auth": auth}
     problems = []
     for name, needed in REQUIRED.items():
         module = modules.get(name)
+        if module is None:
+            # A name in REQUIRED with nothing to check it against reads
+            # as "every function is missing", which sent people looking
+            # for a stale file that was actually fine.
+            problems.append(f"{name}.py is not loaded at all")
+            continue
         for attribute in needed:
             if not hasattr(module, attribute):
                 problems.append(f"{name}.py is missing {attribute}()")

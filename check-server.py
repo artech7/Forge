@@ -650,6 +650,13 @@ check("a successful *arr research clears the stale probe-cache row", lambda: (
       db.get_cached_file(_corrupt_path))[-1], lambda r: r is None)
 db.delete_library(_arr_lib)
 
+print("\nThe out-of-date-files banner:")
+# A name in REQUIRED with no module behind it reported every one of its
+# functions as missing, which is a false alarm pointing at a file that
+# was never wrong.
+check("every module the check demands is actually loaded",
+      lambda: app.check_modules(), lambda r: r == [])
+
 print("\nPasswords:")
 import auth as _auth                               # noqa: E402
 _hash = _auth.hash_password("correct horse battery")

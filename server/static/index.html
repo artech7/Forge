@@ -916,18 +916,11 @@ function render(state) {
         Forge doesn't convert anything itself \u2014 it watches folders, works
         out what needs doing, and files the results. The converting happens on
         whichever computers you connect to it.
-        <div style="margin-top:12px">On a Mac or Linux machine, copy the Forge
-        folder across and run:</div>
-        <div style="font-family:'Chivo Mono',monospace;font-size:12px;
-             background:rgba(0,0,0,.3);padding:9px 12px;border-radius:8px;
-             margin:8px 0;word-break:break-all">${
-               NODE_TOKEN ? `FORGE_TOKEN=${attr(NODE_TOKEN)} ` : ''
-             }./run-node.sh ${location.origin}</div>
-        ${NODE_TOKEN ? `<div style="font-size:12.5px;line-height:1.55;
-             color:var(--muted)">The token is there because this Forge has a
-             login. Workers can't sign in, so they use it instead — it only
-             opens the addresses a worker needs. On Windows, set FORGE_TOKEN
-             as an environment variable before running run-node.ps1.</div>` : ''}
+        <div style="margin-top:12px">Copy the Forge folder across, then run
+        the line for that machine. ${NODE_TOKEN ? `The token is there because
+        this Forge has a login: workers can't sign in, so they use it
+        instead, and it only opens the addresses a worker needs.` : ''}</div>
+        ${runLines(location.origin)}
         ${location.protocol === 'https:' || !/^(\d+\.|localhost|127\.)/.test(location.hostname)
           ? `<div style="color:var(--amber);font-size:12.5px;line-height:1.55">
               You're viewing this through a proxy or public address. That's
@@ -2711,7 +2704,10 @@ async function drawAccess() {
   let token = '';
   try { token = (await (await fetch('/api/auth/node-token')).json()).token || ''; }
   catch (e) {}
-  const runLine = `FORGE_TOKEN=${token} ./run-node.sh ${location.origin}`;
+  const previous = NODE_TOKEN;
+  NODE_TOKEN = token;                      // runLines() reads it
+  const both = runLines(location.origin);
+  NODE_TOKEN = AUTH.configured ? token : previous;
 
   host.innerHTML = AUTH.configured ? `
     <h3 style="font-size:15px;margin:22px 0 4px">Signed in as ${attr(AUTH.username)}</h3>
@@ -2737,10 +2733,10 @@ async function drawAccess() {
     <div class="gate-note">Workers can't sign in, so they use this
       instead. It only opens the handful of addresses a worker needs —
       leasing jobs and reporting on them — and nothing else. Start each
-      worker with it:</div>
-    <div class="tokenbox">${attr(runLine)}</div>
+      worker with the line for its machine:</div>
+    ${both}
     <div class="actions" style="margin:0 0 6px">
-      <button onclick="copyText('${attr(runLine)}','tok-msg')">Copy</button>
+      <button onclick="copyToken()">Copy the token</button>
       <button onclick="newNodeToken()">Issue a new token</button>
       <span id="tok-msg" style="align-self:center;font-size:12.5px;
             color:var(--muted)"></span>
@@ -2779,6 +2775,8 @@ function accMsg(id, text, good) {
   el.textContent = text;
   el.style.color = good ? 'var(--signal)' : 'var(--fault)';
 }
+
+function copyToken() { copyText(NODE_TOKEN, 'tok-msg'); }
 
 async function copyText(text, msgId) {
   try {
@@ -3303,6 +3301,25 @@ function switchTopTab(name) {
 // ------------------------------------------------------------ Stats tab
 
 let deepScanWasActive = false;
+
+function runLines(server) {
+  const mono = `font-family:'Chivo Mono',monospace;font-size:12px;
+      background:rgba(0,0,0,.3);padding:9px 12px;border-radius:8px;
+      margin:6px 0 10px;word-break:break-all;white-space:pre-line`;
+  const label = `font-size:12px;color:var(--muted);margin-top:8px`;
+  // PowerShell has no "VAR=value command" form — written that way it
+  // reads the whole assignment as the name of a program to run.
+  const win = NODE_TOKEN
+    ? `$env:FORGE_TOKEN="${NODE_TOKEN}"\n.\\run-node.ps1 -Server ${server}`
+    : `.\\run-node.ps1 -Server ${server}`;
+  const nix = NODE_TOKEN
+    ? `FORGE_TOKEN=${NODE_TOKEN} ./run-node.sh ${server}`
+    : `./run-node.sh ${server}`;
+  return `<div style="${label}">Windows (PowerShell)</div>
+    <div style="${mono}">${attr(win)}</div>
+    <div style="${label}">Mac or Linux</div>
+    <div style="${mono}">${attr(nix)}</div>`;
+}
 
 function renderDeepScanBar(scan) {
   const bar = document.getElementById('deepscanbar');
