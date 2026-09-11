@@ -8,7 +8,21 @@ const el = id => els[id] || (els[id] = {innerHTML:'', textContent:'', scrollTop:
   parentNode:{insertBefore(){}}, scrollIntoView(){},
   querySelector: () => null, querySelectorAll: () => []});
 
+// A real page always has a body; code that toggles a class on it (the
+// sign-in screen does) would otherwise only fail here, never in a
+// browser. Tracks its classes so an assertion can read them back.
+const bodyClasses = new Set();
+const body = {
+  classList: {
+    add: c => bodyClasses.add(c), remove: c => bodyClasses.delete(c),
+    toggle: c => bodyClasses.has(c) ? bodyClasses.delete(c) : bodyClasses.add(c),
+    contains: c => bodyClasses.has(c),
+  },
+  style: {}, appendChild(){}, removeChild(){}, children: [],
+};
+
 global.document = {
+  body,
   getElementById: id => (id === 'wizerr' ? null : el(id)),
   querySelector: sel => (sel === '.wiz-nav' ? el('wiznav') : null),
   querySelectorAll: () => [], addEventListener: () => {},

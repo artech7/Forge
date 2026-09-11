@@ -8,6 +8,9 @@
 # software encoding. On Linux with an NVIDIA or Intel GPU either works.
 #
 # Optional settings:
+#   FORGE_TOKEN needed once the server has a login set up. Forge shows
+#               the whole line, token included, on its node card:
+#                 FORGE_TOKEN=... ./run-node.sh http://nas.lan:8420
 #   NODE_NAME   what to call this machine in the interface
 #   MOUNTS      how this machine's paths line up with the server's
 #   WORK_DIR    where to put temporary files

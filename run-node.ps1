@@ -2,6 +2,8 @@
 #
 #   .\run-node.ps1 -Server http://your-nas:58420 -Mounts '{"server":"/media","local":"Z:/Media"}'
 #
+# Add -Token <token from Forge's node card> once the server has a login.
+#
 # Runs natively so NVENC and QuickSync work directly. Docker Desktop can do
 # GPU work through WSL2, but it needs the NVIDIA Container Toolkit and adds a
 # layer for no benefit when the machine is sitting right here.
@@ -25,6 +27,11 @@ param(
     # What the Forge server calls the same share. Matches MEDIA_ROOTS and
     # the paths you typed into your libraries.
     [string]$ServerPath = "/media",
+
+    # Needed once the Forge server has a login set up. Forge shows the
+    # token on its node card; pass it here or set FORGE_TOKEN yourself.
+    #   .\run-node.ps1 -Server http://nas:8420 -Token abc123...
+    [string]$Token = $env:FORGE_TOKEN,
 
     [string]$NodeName = $env:COMPUTERNAME,
     [int]$MaxJobs = 1,
@@ -243,6 +250,7 @@ Write-Host "Press Ctrl-C to stop."
 Write-Host ""
 
 $env:SERVER = $Server
+$env:FORGE_TOKEN = $Token
 $env:NODE_NAME = $NodeName
 $env:MOUNTS = $Mounts
 $env:MAX_JOBS = "$MaxJobs"

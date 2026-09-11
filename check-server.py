@@ -650,6 +650,82 @@ check("a successful *arr research clears the stale probe-cache row", lambda: (
       db.get_cached_file(_corrupt_path))[-1], lambda r: r is None)
 db.delete_library(_arr_lib)
 
+print("\nPasswords:")
+import auth as _auth                               # noqa: E402
+_hash = _auth.hash_password("correct horse battery")
+check("the right password verifies",
+      lambda: _auth.verify_password("correct horse battery", _hash),
+      lambda r: r is True)
+check("a wrong one does not",
+      lambda: _auth.verify_password("Correct horse battery", _hash),
+      lambda r: r is False)
+check("an empty one does not",
+      lambda: _auth.verify_password("", _hash), lambda r: r is False)
+check("the password itself is never in the stored value",
+      lambda: "correct horse" in _hash, lambda r: r is False)
+check("the same password hashes differently each time (salted)",
+      lambda: _auth.hash_password("x") == _auth.hash_password("x"),
+      lambda r: r is False)
+check("a corrupt stored hash is refused, not an error",
+      lambda: _auth.verify_password("x", "nonsense"), lambda r: r is False)
+check("tokens are long enough to be worth having",
+      lambda: len(_auth.new_token()), lambda r: r >= 32)
+check("two tokens are never the same",
+      lambda: _auth.new_token() == _auth.new_token(), lambda r: r is False)
+
+print("\nSlowing down password guessing:")
+_att = _auth.Attempts()
+check("a few fumbles cost nothing",
+      lambda: [(_att.record_failure(), _att.blocked_for())[1]
+               for _ in range(_auth.BACKOFF_AFTER)],
+      lambda r: r == [0] * _auth.BACKOFF_AFTER)
+check("then it starts making you wait",
+      lambda: (_att.record_failure(), _att.blocked_for())[1],
+      lambda r: r > 0)
+check("the wait never becomes a lockout",
+      lambda: ([_att.record_failure() for _ in range(40)],
+               _att.blocked_for())[1],
+      lambda r: 0 < r <= _auth.BACKOFF_CAP + 1)
+check("and getting it right clears it at once",
+      lambda: (_att.clear(), _att.blocked_for())[1], lambda r: r == 0)
+
+print("\nSessions:")
+_sess = db.create_session("a browser")
+check("a new session is valid", lambda: db.session_valid(_sess),
+      lambda r: r is True)
+check("a made-up one is not", lambda: db.session_valid("not-a-session"),
+      lambda r: r is False)
+check("and neither is nothing at all", lambda: db.session_valid(""),
+      lambda r: r is False)
+check("signing out ends it",
+      lambda: (db.end_session(_sess), db.session_valid(_sess))[1],
+      lambda r: r is False)
+_expired = db.create_session("old", days=-1)
+check("an expired session is refused", lambda: db.session_valid(_expired),
+      lambda r: r is False)
+check("changing the password ends every session",
+      lambda: (db.create_session("a"), db.create_session("b"),
+               db.end_all_sessions(), db.count_sessions())[-1],
+      lambda r: r == 0)
+
+print("\nWhat a worker's token may reach:")
+_open = ["/api/nodes/register", "/api/nodes/desktop/lease",
+         "/api/jobs/12/progress", "/api/jobs/12/complete",
+         "/api/jobs/12/fail", "/api/jobs/12/measured", "/api/jobs/12/source"]
+_shut = ["/api/state", "/api/libraries", "/api/settings", "/api/jobs/bulk",
+         "/api/originals/sweep", "/api/scan", "/api/auth/change",
+         "/api/nodes/desktop/housekeeping-slots", "/api/files/replace-missing-audio"]
+check("everything a worker needs is reachable with it",
+      lambda: [p for p in _open if not app.WORKER_PATHS.match(p)],
+      lambda r: r == [])
+check("and nothing else is",
+      lambda: [p for p in _shut if app.WORKER_PATHS.match(p)],
+      lambda r: r == [])
+check("the login screen is reachable signed out",
+      lambda: sorted(app.OPEN_PATHS),
+      lambda r: r == ["/", "/api/auth/login", "/api/auth/setup",
+                      "/api/auth/state", "/favicon.ico"])
+
 print("\nPicking an audio encoder FFmpeg will actually run:")
 import encoders as _enc                            # noqa: E402
 # A real slice of "ffmpeg -encoders". The fourth flag is X for

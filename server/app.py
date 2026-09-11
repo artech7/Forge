@@ -2,6 +2,7 @@
 import asyncio
 import json
 import os
+import re
 import shutil
 import sqlite3
 import subprocess
@@ -11,9 +12,10 @@ from datetime import datetime
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request, UploadFile, File, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
+import auth
 import db
 import scheduler
 import lookup
@@ -45,7 +47,10 @@ REQUIRED = {
            "update_original", "move_job_to_top", "reorder_jobs",
            "set_housekeeping_slots", "node_active_jobs",
            "paths_with_failed_measurement", "files_without_audio",
-           "library_matcher", "next_queued", "job_kind"],
+           "library_matcher", "next_queued", "job_kind", "create_session",
+           "session_valid", "end_session", "end_all_sessions"],
+    "auth": ["hash_password", "verify_password", "new_token", "same",
+             "Attempts"],
     "scheduler": ["lease_job", "reverse_path", "requeue_expired"],
     "watcher": ["scan_library", "scan_all", "destination_for", "sweep_originals",
                 "filter_verdict", "plan_conversion", "restore_original_row",
@@ -2529,6 +2534,13 @@ async def retry_job(job_id: int):
 
 @app.websocket("/ws")
 async def ws_endpoint(ws: WebSocket):
+    # HTTP middleware never sees a websocket, so the check has to happen
+    # here too. Without it the live feed — every path, every job, every
+    # library — would stay readable to anyone who knew the URL, with a
+    # login screen sitting uselessly in front of it.
+    if auth_configured() and not db.session_valid(ws.cookies.get(COOKIE)):
+        await ws.close(code=1008)          # policy violation
+        return
     await ws.accept()
     listeners.add(ws)
     try:
@@ -2559,6 +2571,204 @@ async def ws_endpoint(ws: WebSocket):
         pass
     finally:
         listeners.discard(ws)
+
+
+# ------------------------------------------------------------------ auth
+#
+# Nothing here is enforced until a username and password are actually
+# set. Before that Forge behaves exactly as it always has, so updating
+# the server can't lock anyone out, and turning it on is a deliberate
+# act with a screen that explains what happens to the workers.
+
+COOKIE = "forge_session"
+_attempts = auth.Attempts()
+
+# Reachable signed out: the login screen itself, what it posts to, and
+# the static files it's built from. Everything else needs a session.
+OPEN_PATHS = {"/", "/favicon.ico", "/api/auth/state", "/api/auth/login",
+              "/api/auth/setup"}
+
+# What a node token opens, and nothing else. A worker needs exactly
+# these to do its job, so a leaked token can't also read the library,
+# change settings or delete anything.
+WORKER_PATHS = re.compile(
+    r"^/api/(?:nodes/register"
+    r"|nodes/[^/]+/(?:lease|ping)"
+    r"|jobs/\d+/(?:source|progress|complete|fail|measured))$")
+
+
+def auth_configured():
+    return bool((db.get_settings().get("auth") or {}).get("username"))
+
+
+def node_token():
+    """The workers' shared secret, made on first use."""
+    conf = dict(db.get_settings().get("auth") or {})
+    if not conf.get("node_token"):
+        conf["node_token"] = auth.new_token()
+        db.save_settings({"auth": conf})
+    return conf["node_token"]
+
+
+async def _body(request):
+    """The JSON body, or {} — a malformed one is a bad request, not a 500."""
+    try:
+        return await request.json()
+    except (json.JSONDecodeError, ValueError, TypeError):
+        return {}
+
+
+def _client_of(request):
+    """Who is asking, as well as can be told behind a reverse proxy."""
+    forwarded = request.headers.get("x-forwarded-for", "")
+    if forwarded:
+        return forwarded.split(",")[0].strip()[:64]
+    return (request.client.host if request.client else "?")[:64]
+
+
+def _is_secure(request):
+    """Whether the browser reached us over HTTPS.
+
+    Read from the proxy's header as well as the direct scheme: Forge
+    usually sits behind one, so the connection it sees is plain HTTP
+    even when the browser's is not. Marking the cookie Secure on a
+    plain-HTTP LAN setup would stop it being sent at all.
+    """
+    if request.headers.get("x-forwarded-proto", "").split(",")[0].strip() == "https":
+        return True
+    return request.url.scheme == "https"
+
+
+def _set_cookie(response, token, request):
+    response.set_cookie(
+        COOKIE, token, max_age=auth.SESSION_DAYS * 86400, httponly=True,
+        samesite="lax", secure=_is_secure(request), path="/")
+
+
+@app.middleware("http")
+async def guard(request: Request, call_next):
+    path = request.url.path
+    if (not auth_configured() or path in OPEN_PATHS
+            or path.startswith("/static/")):
+        return await call_next(request)
+
+    if db.session_valid(request.cookies.get(COOKIE)):
+        return await call_next(request)
+
+    supplied = (request.headers.get("x-forge-token")
+                or request.headers.get("authorization", "")[7:])
+    if supplied and WORKER_PATHS.match(path) and auth.same(supplied, node_token()):
+        return await call_next(request)
+
+    return JSONResponse({"detail": "Not signed in."}, status_code=401)
+
+
+@app.get("/api/auth/state")
+async def auth_state(request: Request):
+    """What the page needs before it can draw anything."""
+    return {
+        "configured": auth_configured(),
+        "signed_in": (not auth_configured()
+                      or db.session_valid(request.cookies.get(COOKIE))),
+        "username": (db.get_settings().get("auth") or {}).get("username", ""),
+    }
+
+
+@app.post("/api/auth/setup")
+async def auth_setup(request: Request):
+    """Create the one admin account. Only ever works once."""
+    if auth_configured():
+        raise HTTPException(409, "A login is already set up.")
+    body = await _body(request)
+    username = (body.get("username") or "").strip()
+    password = body.get("password") or ""
+    if len(username) < 2:
+        raise HTTPException(400, "Pick a username of at least 2 characters.")
+    if len(password) < 8:
+        raise HTTPException(400, "Use a password of at least 8 characters.")
+    conf = dict(db.get_settings().get("auth") or {})
+    conf.update({"username": username, "password": auth.hash_password(password),
+                 "node_token": conf.get("node_token") or auth.new_token()})
+    db.save_settings({"auth": conf})
+    response = JSONResponse({"ok": True, "node_token": conf["node_token"]})
+    _set_cookie(response, db.create_session(request.headers.get("user-agent")),
+                request)
+    return response
+
+
+@app.post("/api/auth/login")
+async def auth_login(request: Request):
+    body = await _body(request)
+    client = _client_of(request)
+    wait = _attempts.blocked_for(client)
+    if wait:
+        raise HTTPException(429, f"Too many attempts. Try again in {wait}s.")
+    conf = db.get_settings().get("auth") or {}
+    # One message for both halves, so this can't be used to find out
+    # which usernames exist.
+    ok = (auth.same((body.get("username") or "").strip(), conf.get("username"))
+          and auth.verify_password(body.get("password") or "",
+                                   conf.get("password")))
+    if not ok:
+        _attempts.record_failure(client)
+        raise HTTPException(401, "That username and password don't match.")
+    _attempts.clear(client)
+    response = JSONResponse({"ok": True})
+    _set_cookie(response, db.create_session(request.headers.get("user-agent")),
+                request)
+    return response
+
+
+@app.post("/api/auth/logout")
+async def auth_logout(request: Request):
+    db.end_session(request.cookies.get(COOKIE))
+    response = JSONResponse({"ok": True})
+    response.delete_cookie(COOKIE, path="/")
+    return response
+
+
+@app.post("/api/auth/change")
+async def auth_change(request: Request):
+    """Change the username or password, current password required."""
+    if not auth_configured():
+        raise HTTPException(409, "No login is set up yet.")
+    body = await _body(request)
+    conf = dict(db.get_settings().get("auth") or {})
+    if not auth.verify_password(body.get("current") or "", conf.get("password")):
+        raise HTTPException(403, "That isn't the current password.")
+    username = (body.get("username") or conf["username"]).strip()
+    password = body.get("password") or ""
+    if len(username) < 2:
+        raise HTTPException(400, "Pick a username of at least 2 characters.")
+    if password and len(password) < 8:
+        raise HTTPException(400, "Use a password of at least 8 characters.")
+    conf["username"] = username
+    if password:
+        conf["password"] = auth.hash_password(password)
+    db.save_settings({"auth": conf})
+    if password:
+        # Every other browser signed in with the old password loses its
+        # session — the main reason to change a password at all.
+        db.end_all_sessions()
+    response = JSONResponse({"ok": True})
+    _set_cookie(response, db.create_session(request.headers.get("user-agent")),
+                request)
+    return response
+
+
+@app.get("/api/auth/node-token")
+async def auth_node_token():
+    """The token workers use. Shown on the node card."""
+    return {"token": node_token(), "configured": auth_configured()}
+
+
+@app.post("/api/auth/node-token")
+async def auth_new_node_token():
+    """Issue a fresh one. Every worker must be updated to match."""
+    conf = dict(db.get_settings().get("auth") or {})
+    conf["node_token"] = auth.new_token()
+    db.save_settings({"auth": conf})
+    return {"token": conf["node_token"]}
 
 
 @app.get("/favicon.ico", include_in_schema=False)

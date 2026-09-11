@@ -1,4 +1,5 @@
 """SQLite storage for Forge. Single file, WAL mode, no ORM."""
+import auth
 import json
 import os
 import sqlite3
@@ -130,6 +131,15 @@ CREATE TABLE IF NOT EXISTS jobs (
     -- thousands deep.
     kind          TEXT NOT NULL DEFAULT 'convert'
 );
+
+CREATE TABLE IF NOT EXISTS sessions (
+    token      TEXT PRIMARY KEY,
+    created_at REAL NOT NULL,
+    expires_at REAL NOT NULL,
+    label      TEXT                  -- which browser this was, roughly
+);
+
+CREATE INDEX IF NOT EXISTS idx_sessions_expiry ON sessions(expires_at);
 
 CREATE INDEX IF NOT EXISTS idx_jobs_state ON jobs(state);
 -- NOTE: idx_jobs_queue is deliberately NOT here. It indexes "kind",
@@ -391,6 +401,56 @@ def queued_by_kind(library_id=None):
         out[job_kind(j.get("spec"))] += 1
     out["all"] = len(jobs)
     return out
+
+
+def create_session(label=None, days=30):
+    """A new signed-in browser. Returns the cookie value."""
+    token = auth.new_token()
+    now = time.time()
+    with connect() as conn:
+        conn.execute(
+            "INSERT INTO sessions (token, created_at, expires_at, label) "
+            "VALUES (?,?,?,?)",
+            (token, now, now + days * 86400, (label or "")[:200]))
+    return token
+
+
+def session_valid(token):
+    """True if this cookie is a live session. Expired ones are swept."""
+    if not token:
+        return False
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT expires_at FROM sessions WHERE token=?", (token,)).fetchone()
+        if not row:
+            return False
+        if row["expires_at"] < time.time():
+            conn.execute("DELETE FROM sessions WHERE token=?", (token,))
+            return False
+    return True
+
+
+def end_session(token):
+    with connect() as conn:
+        conn.execute("DELETE FROM sessions WHERE token=?", (token,))
+
+
+def end_all_sessions():
+    """Sign every browser out — used when the password changes."""
+    with connect() as conn:
+        conn.execute("DELETE FROM sessions")
+
+
+def purge_expired_sessions():
+    with connect() as conn:
+        conn.execute("DELETE FROM sessions WHERE expires_at < ?", (time.time(),))
+
+
+def count_sessions():
+    with connect() as conn:
+        return conn.execute(
+            "SELECT COUNT(*) FROM sessions WHERE expires_at >= ?",
+            (time.time(),)).fetchone()[0]
 
 
 def next_queued(kind, limit=200):
@@ -1239,6 +1299,15 @@ DEFAULT_SETTINGS = {
     # Sonarr routinely sees two libraries at two different paths
     # (/tvshows and /anime, say) and a single global mapping couldn't
     # describe both.
+    # Empty username means no login has been set up, and Forge stays
+    # open — exactly as it was before this existed. That's deliberate:
+    # updating the server should never lock someone out of their own
+    # queue, and the person has to choose to turn it on.
+    #
+    # "password" holds a scrypt hash, never the password itself.
+    # node_token is what workers authenticate with, since a worker
+    # can't type a password and shouldn't be trusted with the admin's.
+    "auth": {"username": "", "password": "", "node_token": ""},
     "radarr": {"url": "", "api_key": ""},
     "sonarr": {"url": "", "api_key": ""},
     "schedule": {

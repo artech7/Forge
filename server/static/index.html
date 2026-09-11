@@ -520,6 +520,19 @@
      sitting on top of a red destructive button */
   .ask-acts .go.danger:focus-visible{outline-color:var(--fault)}
 
+  /* The login screen sits above every other layer, including the
+     wizard, since nothing behind it should be reachable. */
+  #gate-veil{z-index:120}
+  /* Signed out there is nothing to show behind it: every request
+     comes back 401, so the page underneath is empty furniture. */
+  body.signed-out .wrap{display:none}
+  #gate-veil .fld{margin-bottom:12px}
+  .gate-note{font-size:12.5px;color:var(--muted);line-height:1.6;margin:0 0 16px}
+  .tokenbox{font-family:'Chivo Mono',monospace;font-size:11.5px;
+            background:rgba(255,255,255,.05);border:1px solid var(--edge);
+            border-radius:10px;padding:10px 12px;margin:8px 0;
+            word-break:break-all;line-height:1.6}
+
   .toasts{position:fixed;right:18px;bottom:18px;z-index:80;display:flex;
           flex-direction:column;gap:9px;align-items:flex-end;
           max-width:min(380px,calc(100vw - 36px));pointer-events:none}
@@ -577,10 +590,11 @@
   label.fld span{display:block;font-size:13px;font-weight:600;margin-bottom:3px}
   label.fld em{display:block;font-style:normal;font-size:12px;color:var(--muted);
                margin-bottom:7px;line-height:1.5}
-  input[type=text],select{width:100%;padding:11px 13px;font-size:14px;
+  input[type=text],input[type=password],select{width:100%;padding:11px 13px;font-size:14px;
     font-family:Archivo,sans-serif;color:var(--text);
     background:rgba(255,255,255,.06);border:1px solid var(--edge);border-radius:11px}
-  input[type=text]:focus,select:focus{outline:2px solid var(--signal);outline-offset:1px}
+  input[type=text]:focus,input[type=password]:focus,select:focus{
+    outline:2px solid var(--signal);outline-offset:1px}
   select option{background:#141b26}
 
   .choice{display:block;padding:13px 15px;border:1px solid var(--edge);
@@ -828,6 +842,9 @@
   <div class="glass wiz" id="originals-box"></div>
 </div>
 
+<div class="veil" id="gate-veil">
+  <div class="glass ask" id="gate-box"></div>
+</div>
 <div class="veil" id="ask-veil" onclick="if(event.target===this)askClose(false)">
   <div class="glass ask" id="ask-box"></div>
 </div>
@@ -903,7 +920,14 @@ function render(state) {
         folder across and run:</div>
         <div style="font-family:'Chivo Mono',monospace;font-size:12px;
              background:rgba(0,0,0,.3);padding:9px 12px;border-radius:8px;
-             margin:8px 0;word-break:break-all">./run-node.sh ${location.origin}</div>
+             margin:8px 0;word-break:break-all">${
+               NODE_TOKEN ? `FORGE_TOKEN=${attr(NODE_TOKEN)} ` : ''
+             }./run-node.sh ${location.origin}</div>
+        ${NODE_TOKEN ? `<div style="font-size:12.5px;line-height:1.55;
+             color:var(--muted)">The token is there because this Forge has a
+             login. Workers can't sign in, so they use it instead — it only
+             opens the addresses a worker needs. On Windows, set FORGE_TOKEN
+             as an environment variable before running run-node.ps1.</div>` : ''}
         ${location.protocol === 'https:' || !/^(\d+\.|localhost|127\.)/.test(location.hostname)
           ? `<div style="color:var(--amber);font-size:12.5px;line-height:1.55">
               You're viewing this through a proxy or public address. That's
@@ -2392,6 +2416,7 @@ const SETTINGS_TABS = [
   ['naming', 'Naming & lookup'],
   ['subtitles', 'Subtitles'],
   ['arrs', 'Radarr & Sonarr'],
+  ['access', 'Access'],
   ['originals', 'Originals'],
 ];
 let settingsSection = 'work';
@@ -2550,6 +2575,10 @@ function drawSettings() {
 
         </div>
 
+    <div ${settingsSection === 'access' ? '' : 'hidden'}>
+      <div id="access-panel"></div>
+    </div>
+
     <div ${settingsSection === 'arrs' ? '' : 'hidden'}>
 ${['radarr', 'sonarr'].map(kind => {
   const name = kind === 'radarr' ? 'Radarr' : 'Sonarr';
@@ -2649,6 +2678,10 @@ ${['radarr', 'sonarr'].map(kind => {
       <span class="grow"></span>
       <button class="primary" onclick="saveSettings()">Save</button>
     </div>`;
+  // The panel is rebuilt empty by the render above, and its contents
+  // come from the server, so it's filled in after the fact rather than
+  // making every settings redraw wait on a request.
+  if (settingsSection === 'access') drawAccess();
 }
 
 function toggleSched() {
@@ -2669,6 +2702,139 @@ function toggleTmdb() {
   SET.tmdb = SET.tmdb || {key:'', enabled:false};
   SET.tmdb.enabled = !SET.tmdb.enabled;
   drawSettings();
+}
+
+async function drawAccess() {
+  const host = document.getElementById('access-panel');
+  if (!host) return;
+  await refreshAuth();
+  let token = '';
+  try { token = (await (await fetch('/api/auth/node-token')).json()).token || ''; }
+  catch (e) {}
+  const runLine = `FORGE_TOKEN=${token} ./run-node.sh ${location.origin}`;
+
+  host.innerHTML = AUTH.configured ? `
+    <h3 style="font-size:15px;margin:22px 0 4px">Signed in as ${attr(AUTH.username)}</h3>
+    <div class="gate-note">Forge asks for this before showing anything.
+      Change either part below; you'll need your current password, and
+      changing the password signs out every other browser.</div>
+    <label class="fld"><span>Current password</span>
+      <input type="password" id="acc-current" autocomplete="current-password"></label>
+    <label class="fld"><span>Username</span>
+      <input type="text" id="acc-user" value="${attr(AUTH.username)}"
+             autocomplete="username"></label>
+    <label class="fld"><span>New password</span>
+      <em>Leave empty to keep the one you have.</em>
+      <input type="password" id="acc-pass" autocomplete="new-password"></label>
+    <div class="actions" style="margin:-4px 0 6px">
+      <button onclick="saveAccess()">Save changes</button>
+      <button onclick="signOut()">Sign out</button>
+      <span id="acc-msg" style="align-self:center;font-size:12.5px;
+            color:var(--muted)"></span>
+    </div>
+
+    <h3 style="font-size:15px;margin:28px 0 4px">Worker token</h3>
+    <div class="gate-note">Workers can't sign in, so they use this
+      instead. It only opens the handful of addresses a worker needs —
+      leasing jobs and reporting on them — and nothing else. Start each
+      worker with it:</div>
+    <div class="tokenbox">${attr(runLine)}</div>
+    <div class="actions" style="margin:0 0 6px">
+      <button onclick="copyText('${attr(runLine)}','tok-msg')">Copy</button>
+      <button onclick="newNodeToken()">Issue a new token</button>
+      <span id="tok-msg" style="align-self:center;font-size:12.5px;
+            color:var(--muted)"></span>
+    </div>
+    <div class="gate-note" style="margin-top:4px">Issuing a new one stops
+      every worker still using the old token until it's restarted with
+      the new one.</div>`
+  : `
+    <h3 style="font-size:15px;margin:22px 0 4px">No login is set up</h3>
+    <div class="gate-note">Anyone who can reach this address can use
+      Forge, including deleting files and asking Radarr or Sonarr to
+      replace them. That's fine on a private network. It isn't if this
+      is reachable from the internet.
+      <br><br>Setting a password also locks the workers out until each
+      one is restarted with the token shown here afterwards — so do this
+      when you can restart them.</div>
+    <label class="fld"><span>Username</span>
+      <em>Whatever you like — it's the only account.</em>
+      <input type="text" id="acc-user" placeholder="Dylan"
+             autocomplete="username"></label>
+    <label class="fld"><span>Password</span>
+      <em>At least 8 characters.</em>
+      <input type="password" id="acc-pass" autocomplete="new-password"></label>
+    <label class="fld"><span>Password again</span>
+      <input type="password" id="acc-pass2" autocomplete="new-password"></label>
+    <div class="actions" style="margin:-4px 0 6px">
+      <button class="primary" onclick="setupAccess()">Turn on the login</button>
+      <span id="acc-msg" style="align-self:center;font-size:12.5px;
+            color:var(--muted)"></span>
+    </div>`;
+}
+
+function accMsg(id, text, good) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.textContent = text;
+  el.style.color = good ? 'var(--signal)' : 'var(--fault)';
+}
+
+async function copyText(text, msgId) {
+  try {
+    await navigator.clipboard.writeText(text);
+    accMsg(msgId, 'Copied.', true);
+  } catch (e) {
+    accMsg(msgId, 'Select the line above and copy it.', false);
+  }
+}
+
+async function setupAccess() {
+  const username = (document.getElementById('acc-user').value || '').trim();
+  const password = document.getElementById('acc-pass').value || '';
+  const again = document.getElementById('acc-pass2').value || '';
+  if (password !== again) return accMsg('acc-msg', 'The two passwords differ.');
+  if (username.length < 2) return accMsg('acc-msg', 'Pick a longer username.');
+  if (password.length < 8) return accMsg('acc-msg', 'Use at least 8 characters.');
+  if (!await ask(`Turn on the login for Forge?\n\nEvery worker stops until `
+      + `it's restarted with the token, which is shown here once this is on.`,
+      {yes: 'Turn it on'})) return;
+  try {
+    const r = await fetch('/api/auth/setup', {method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({username, password})});
+    if (!r.ok) return accMsg('acc-msg', (await r.json()).detail || 'Could not.');
+  } catch (e) { return accMsg('acc-msg', 'Could not reach the server.'); }
+  notifyGood('Login turned on. Restart each worker with the token below.');
+  drawAccess();
+}
+
+async function saveAccess() {
+  const current = document.getElementById('acc-current').value || '';
+  const username = (document.getElementById('acc-user').value || '').trim();
+  const password = document.getElementById('acc-pass').value || '';
+  if (!current) return accMsg('acc-msg', 'Enter your current password.');
+  if (password && password.length < 8)
+    return accMsg('acc-msg', 'Use at least 8 characters.');
+  try {
+    const r = await fetch('/api/auth/change', {method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({current, username, password})});
+    if (!r.ok) return accMsg('acc-msg', (await r.json()).detail || 'Could not.');
+  } catch (e) { return accMsg('acc-msg', 'Could not reach the server.'); }
+  notifyGood(password ? 'Password changed. Other browsers are signed out.'
+                      : 'Saved.');
+  drawAccess();
+}
+
+async function newNodeToken() {
+  if (!await ask('Issue a new worker token?\n\nEvery worker stops until it '
+      + 'is restarted with the new one.', {yes: 'Issue a new one', danger: true}))
+    return;
+  try { await fetch('/api/auth/node-token', {method: 'POST'}); }
+  catch (e) { return accMsg('tok-msg', 'Could not reach the server.'); }
+  notifyGood('New token issued. Restart each worker with it.');
+  drawAccess();
 }
 
 async function testArr(kind) {
@@ -5345,15 +5511,106 @@ function setTheme(name) {
 setTheme((() => { try { return localStorage.getItem('forge-theme'); }
                   catch (e) { return null; } })() || 'ironforge');
 
-connect();
+// ------------------------------------------------------- signing in
+//
+// One screen, drawn over everything. The page still loads normally when
+// no login has been set up, which is how Forge behaved before this
+// existed and how it stays until someone chooses otherwise.
 
-// Used by both the per-job and batch "convert again, smaller" pickers —
-// fetched once up front so the first render of either doesn't show an
-// empty dropdown while it loads.
+let AUTH = {configured: false, signed_in: true, username: ''};
+let NODE_TOKEN = '';      // shown in the worker's run command
+
+async function refreshAuth() {
+  try {
+    AUTH = await (await fetch('/api/auth/state')).json();
+  } catch (e) {
+    AUTH = {configured: false, signed_in: true, username: ''};
+  }
+  return AUTH;
+}
+
+function showGate(message) {
+  const box = document.getElementById('gate-box');
+  box.innerHTML = `
+    <h4>Sign in to Forge</h4>
+    <label class="fld"><span>Username</span>
+      <input type="text" id="gate-user" autocomplete="username"
+             onkeydown="if(event.key==='Enter')doLogin()"></label>
+    <label class="fld"><span>Password</span>
+      <input type="password" id="gate-pass" autocomplete="current-password"
+             onkeydown="if(event.key==='Enter')doLogin()"></label>
+    <div id="gate-msg" style="font-size:12.5px;color:var(--fault);
+         min-height:17px;margin-bottom:4px">${message ? attr(message) : ''}</div>
+    <div class="ask-acts" style="margin-top:6px">
+      <button class="go" onclick="doLogin()">Sign in</button></div>`;
+  document.body.classList.add('signed-out');
+  document.getElementById('gate-veil').classList.add('open');
+  const user = document.getElementById('gate-user');
+  if (user && user.focus) user.focus();
+}
+
+function hideGate() {
+  document.body.classList.remove('signed-out');
+  document.getElementById('gate-veil').classList.remove('open');
+}
+
+async function doLogin() {
+  const msg = document.getElementById('gate-msg');
+  const username = (document.getElementById('gate-user').value || '').trim();
+  const password = document.getElementById('gate-pass').value || '';
+  if (!username || !password) {
+    msg.textContent = 'Enter your username and password.'; return;
+  }
+  msg.style.color = 'var(--muted)';
+  msg.textContent = 'Checking\u2026';
+  try {
+    const r = await fetch('/api/auth/login', {method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({username, password})});
+    if (!r.ok) {
+      msg.style.color = 'var(--fault)';
+      msg.textContent = ((await r.json()).detail) || 'That did not work.';
+      return;
+    }
+  } catch (e) {
+    msg.style.color = 'var(--fault)';
+    msg.textContent = 'Could not reach the server.';
+    return;
+  }
+  // A full reload is the honest way back in: every panel fetched its
+  // data while signed out and got a 401, so re-running them one by one
+  // would be re-implementing startup by hand.
+  location.reload();
+}
+
+async function signOut() {
+  if (!await ask('Sign out of Forge?', {yes: 'Sign out'})) return;
+  try { await fetch('/api/auth/logout', {method: 'POST'}); } catch (e) {}
+  location.reload();
+}
+
+// Nothing else starts until this settles: the websocket is refused
+// while signed out, and every panel would otherwise fire a request
+// that comes straight back as 401.
 (async () => {
+  await refreshAuth();
+  if (AUTH.configured && !AUTH.signed_in) { showGate(); return; }
+  hideGate();
+  if (AUTH.configured) {
+    // Only meaningful once a login exists, and the node card needs it
+    // before the first render of the "no machines" instructions.
+    try {
+      NODE_TOKEN = (await (await fetch('/api/auth/node-token')).json()).token || '';
+    } catch (e) { NODE_TOKEN = ''; }
+  }
+  connect();
   try { CAT_SCALE = (await (await fetch('/api/catalog')).json()).quality_scale; }
   catch (e) { CAT_SCALE = []; }
 })();
+
+// "convert again, smaller" pickers get their quality scale from the
+// same startup block above, so the first render of either never shows
+// an empty dropdown.
 </script>
 </body>
 </html>

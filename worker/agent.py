@@ -27,6 +27,10 @@ import streams
 SERVER = os.environ.get("SERVER", "http://localhost:8420").rstrip("/")
 NAME = os.environ.get("NODE_NAME", socket.gethostname())
 MOUNTS = json.loads(os.environ.get("MOUNTS", "[]"))
+# Set once a login is configured on the server. Copy it from the node
+# card in Forge, which shows the whole command ready to paste.
+TOKEN = os.environ.get("FORGE_TOKEN", "").strip()
+AUTH_HEADERS = {"X-Forge-Token": TOKEN} if TOKEN else {}
 MAX_JOBS = int(os.environ.get("MAX_JOBS", "1"))
 WORK_DIR = Path(os.environ.get("WORK_DIR", tempfile.gettempdir())) / "forge"
 
@@ -50,14 +54,27 @@ DESIRED = {"slots": MAX_JOBS}
 SLOT_LOCK = threading.Lock()
 
 
+def explain_401():
+    """Said plainly, because the cause is never obvious from a 401."""
+    if TOKEN:
+        return ("the server rejected this node's token. Get the current one "
+                "from the node card in Forge and restart with it.")
+    return ("this Forge has a login set up, so the node needs its token. "
+            "Open Forge, look at the node card for the run command, and "
+            "start this worker with FORGE_TOKEN set to the value it shows.")
+
+
 def register(nid, caps):
-    resp = requests.post(f"{SERVER}/api/nodes/register", timeout=15, json={
+    resp = requests.post(f"{SERVER}/api/nodes/register", timeout=15,
+                         headers=AUTH_HEADERS, json={
         "id": nid, "name": NAME, "encoders": caps,
         "mounts": MOUNTS, "max_jobs": MAX_JOBS, "cpus": os.cpu_count(),
         "recipes": {e: n for e, (n, _b) in encoders.WORKING_RECIPE.items()},
         "benchmarks": encoders.BENCHMARKS,
         "benchmarks_10bit": encoders.BENCHMARKS_10BIT,
     })
+    if resp.status_code == 401:
+        raise PermissionError(explain_401())
     resp.raise_for_status()
     try:
         slots = int((resp.json() or {}).get("slots", MAX_JOBS))
@@ -240,6 +257,7 @@ def run_job(job, caps):
         if job["transport"] == "stream":
             fetched = WORK_DIR / f"src-{job_id}{Path(job['source_path']).suffix}"
             with requests.get(f"{SERVER}/api/jobs/{job_id}/source",
+                              headers=AUTH_HEADERS,
                               stream=True, timeout=(15, 900)) as resp:
                 resp.raise_for_status()
                 with fetched.open("wb") as fh:
@@ -355,6 +373,7 @@ def run_job(job, caps):
         if job["transport"] == "stream":
             with scratch.open("rb") as fh:
                 requests.post(f"{SERVER}/api/jobs/{job_id}/complete",
+                              headers=AUTH_HEADERS,
                               files={"result": (scratch.name, fh)},
                               params=params, timeout=(15, 1800)).raise_for_status()
             scratch.unlink(missing_ok=True)
@@ -382,8 +401,11 @@ def run_job(job, caps):
 def post(path, payload, params=None):
     """POST and return the decoded reply, or None if it didn't get through."""
     try:
-        resp = requests.post(f"{SERVER}{path}", json=payload,
-                             params=params, timeout=30)
+        resp = requests.post(f"{SERVER}{path}", json=payload, params=params,
+                             headers=AUTH_HEADERS, timeout=30)
+        if resp.status_code == 401:
+            print(f"post {path} refused: {explain_401()}")
+            return None
         return resp.json() if resp.content else {}
     except (requests.RequestException, ValueError) as exc:
         print(f"post {path} failed: {exc}")
@@ -450,7 +472,12 @@ def runner(index, nid, caps):
             if index >= DESIRED["slots"]:
                 return
         try:
-            resp = requests.post(f"{SERVER}/api/nodes/{nid}/lease", timeout=20)
+            resp = requests.post(f"{SERVER}/api/nodes/{nid}/lease", timeout=20,
+                                 headers=AUTH_HEADERS)
+            if resp.status_code == 401:
+                print(f"[slot {index}] {explain_401()}")
+                time.sleep(30)      # no point asking quickly; nothing changes
+                continue
             job = resp.json()
             if job:
                 run_job(job, caps)
