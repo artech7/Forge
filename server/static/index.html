@@ -3196,6 +3196,7 @@ function blankDraft() {
     loudness_range_threshold:15,
     loudness_target_i:-16, loudness_target_tp:-1.5, loudness_target_lra:11,
     on_unhealthy_video:'ignore', auto_replace_missing_audio:false,
+    health_check:'full',
     arr_kind:'none', arr_url:'',
     arr_api_key:'', arr_path_from:'', arr_path_to:'',
     auto_retry_steps:['small','smaller'], auto_retry_custom:'',
@@ -3236,6 +3237,7 @@ function draftFromLibrary(lib) {
 
   const a = p.arr || {};
   d.on_unhealthy_video = a.on_unhealthy_video || 'ignore';
+  d.health_check = p.health_check || 'full';
   d.auto_replace_missing_audio = !!a.auto_replace_missing_audio;
   d.arr_kind = a.kind || 'none';
   d.arr_url = a.url || '';
@@ -5109,14 +5111,21 @@ async function drawStep() {
   }
 
   if (step === 11) {
-    lead = 'Before any real encoding time is spent, Forge decodes every '
-         + 'video and audio track once to check it actually works. This '
-         + 'catches a damaged file in seconds instead of after a long '
-         + 'encode fails.';
+    lead = 'Before spending time converting, Forge can read the file to '
+         + 'make sure it actually plays. A broken file found now costs a '
+         + 'minute; found later it costs the whole conversion.';
     const arrChosen = draft.on_unhealthy_video === 'delete_and_research'
                    || draft.auto_replace_missing_audio;
     body = `
       <div style="font-size:13px;font-weight:600;margin-bottom:3px">
+        How much to check before converting</div>
+      <em style="display:block;font-style:normal;font-size:12px;color:var(--muted);
+        margin-bottom:9px;line-height:1.5">This is the pause before the
+        percentage starts moving. The more Forge reads, the longer that
+        pause, and the less likely a bad file wastes a full conversion.</em>
+      ${opt(CAT.health_checks || [], 'health_check')}
+
+      <div style="font-size:13px;font-weight:600;margin:20px 0 3px">
         A damaged audio track</div>
       <em style="display:block;font-style:normal;font-size:12px;color:var(--muted);
         margin-bottom:9px;line-height:1.5">Handled automatically, always: that
@@ -5259,6 +5268,10 @@ async function drawStep() {
              ? ', retries automatically' : '')
           + (draft.salvage_when_stuck && draft.original_action === 'archive'
              ? ', keeps the picture if nothing helps' : '')],
+      [11, 'Checking', {full: 'whole file read before converting',
+                        quick: 'start and end checked before converting',
+                        off: 'no check — converts straight away'
+                       }[draft.health_check || 'full']],
       [11, 'Recovery', (draft.on_unhealthy_video === 'delete_and_research'
           ? `unrecoverable files removed via ${arrName(draft.arr_kind)}`
           : 'unrecoverable files flagged for review')
@@ -5435,6 +5448,7 @@ async function saveLibrary() {
       audio_language_mode: draft.audio_language_mode,
       audio_languages_list: draft.audio_languages_list,
       remove_images: draft.remove_images,
+      health_check: draft.health_check,
       keep_forced_subs: draft.keep_forced_subs,
       default_first_subtitle: draft.default_first_subtitle,
       keep_chapters: draft.keep_chapters, clean_metadata: draft.clean_metadata,

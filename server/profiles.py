@@ -258,6 +258,28 @@ QUALITY_SCALE = [
      "else."},
 ]
 
+HEALTH_CHECKS = [
+    {"id": "full", "name": "Check the whole file first", "recommended": True,
+     "detail": "Reads the picture and every soundtrack all the way through "
+               "before converting anything, to be sure the file plays. A "
+               "damaged file is caught in a minute or two instead of after a "
+               "long conversion that then has to be thrown away. On a big "
+               "file this is the pause you see before the percentage starts "
+               "moving."},
+    {"id": "quick", "name": "Just check the beginning and end",
+     "detail": "Reads the first and last thirty seconds instead of all of "
+               "it, so it starts converting much sooner. This still catches "
+               "the usual problem — a download that stopped early, or a file "
+               "that was cut short. Damage buried in the middle slips "
+               "through and turns up later as a failed conversion."},
+    {"id": "off", "name": "Don't check, just convert",
+     "detail": "Starts straight away, with no waiting at all. Nothing looks "
+               "at the file first, so a broken one isn't noticed until its "
+               "conversion fails — which on a long film can be a wasted "
+               "hour. Reasonable if your files come from somewhere you "
+               "trust."},
+]
+
 ORIGINAL_ACTIONS = [
     {"id": "archive", "name": "Move it to an Originals folder", "recommended": True,
      "detail": "The source file is kept next to the library in an 'Originals' "
@@ -308,6 +330,7 @@ def catalog():
         "quality_scale": QUALITY_SCALE,
         "unhealthy_video": UNHEALTHY_VIDEO_ACTIONS,
         "arr_kinds": ARR_KINDS,
+        "health_checks": HEALTH_CHECKS,
     }
 
 
@@ -462,6 +485,9 @@ def resolve(profile):
         "audio_languages": profile.get("audio_languages_list") or ["eng"],
         "remove_other_audio":
             profile.get("audio_language_mode") == "preferred_only",
+        # full | quick | off. Absent means full, which is what every
+        # library did before this was a choice.
+        "health_check": profile.get("health_check") or "full",
         "keep_forced_subs": profile.get("keep_forced_subs", True),
         "keep_chapters": profile.get("keep_chapters", True),
         "tidy_track_names": profile.get("tidy_track_names", True),

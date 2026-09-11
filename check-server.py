@@ -681,6 +681,39 @@ check("run-node.ps1 takes a -Token parameter",
 check("and passes it to the worker",
       lambda: "$env:FORGE_TOKEN = $Token" in _ps1, lambda r: r is True)
 
+print("\nHow much of a file to check, per library:")
+check("three choices are offered",
+      lambda: [m["id"] for m in profiles.catalog()["health_checks"]],
+      lambda r: r == ["full", "quick", "off"])
+check("exactly one is marked recommended",
+      lambda: [m["id"] for m in profiles.catalog()["health_checks"]
+               if m.get("recommended")], lambda r: r == ["full"])
+check("each explains itself without jargon",
+      lambda: [m["id"] for m in profiles.catalog()["health_checks"]
+               if len(m.get("detail", "")) < 80], lambda r: r == [])
+for _mode in ("full", "quick", "off"):
+    check(f"a library set to {_mode!r} passes that to the worker",
+          lambda m=_mode: profiles.resolve({"health_check": m})["health_check"],
+          lambda r, m=_mode: r == m)
+check("a library saved before the choice existed still reads the whole file",
+      lambda: profiles.resolve({})["health_check"], lambda r: r == "full")
+check("and so does one with a value that means nothing",
+      lambda: profiles.resolve({"health_check": ""})["health_check"],
+      lambda r: r == "full")
+# The sampled check seeks to the end, which makes the throwaway muxer
+# complain about timestamps on every packet. Counting that as damage
+# failed perfectly healthy files.
+check("muxer timestamp noise is not mistaken for damage",
+      lambda: _st._decode_complaints(
+          "[null @ 0x1] Application provided invalid, non monotonically "
+          "increasing dts to muxer in stream 0: 1 >= 1"),
+      lambda r: r == [])
+check("but a real decode error still counts",
+      lambda: len(_st._decode_complaints(
+          "[null @ 0x1] non monotonically increasing dts\n"
+          "[h264 @ 0x2] Invalid data found when processing input")),
+      lambda r: r == 1)
+
 print("\nChecking a file's tracks decode:")
 _hc_src = str(base / "hc.mkv")
 pathlib.Path(_hc_src).write_bytes(b"not really a video")

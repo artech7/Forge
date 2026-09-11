@@ -187,7 +187,13 @@ def measure_loudness(path):
         return None, "Could not read FFmpeg's measurement output"
 
 
-def health_check(path, info, on_stream=None):
+# How much of each track a "quick" check reads, from each end. Damage
+# that matters is nearly always a file that stopped early or was cut
+# short, and both ends show that up.
+QUICK_SECONDS = 30
+
+
+def health_check(path, info, on_stream=None, mode="full"):
     """Decode every video and audio stream once, without re-encoding.
 
     This is the difference between finding out a track is damaged during a
@@ -224,8 +230,8 @@ def health_check(path, info, on_stream=None):
     # on a worker reading from a network share that is most of the wall
     # clock. A healthy file, which is nearly all of them, stops here.
     if on_stream:
-        on_stream(0, total, "all")
-    if _decode_streams(path, [s["index"] for s in checked])[0]:
+        on_stream(0, total, "all" if mode == "full" else "sample")
+    if _decode_streams(path, [s["index"] for s in checked], mode)[0]:
         if videos:
             result["video"] = (True, None)
         for stream in audios:
@@ -241,17 +247,18 @@ def health_check(path, info, on_stream=None):
         done += 1
         if on_stream:
             on_stream(done, total, "video")
-        result["video"] = _decode_streams(path, [videos[0]["index"]])
+        result["video"] = _decode_streams(
+            path, [videos[0]["index"]], mode)
     for stream in audios:
         done += 1
         if on_stream:
             on_stream(done, total, "audio")
         result["audio"][stream["index"]] = _decode_streams(
-            path, [stream["index"]])
+            path, [stream["index"]], mode)
     return result
 
 
-def _decode_streams(path, indexes):
+def _decode_streams(path, indexes, mode="full"):
     """Decode these streams to nothing, reporting whether FFmpeg complained.
 
     -v error means the only output possible is an actual decode problem —
@@ -262,21 +269,42 @@ def _decode_streams(path, indexes):
     maps = []
     for index in indexes:
         maps += ["-map", f"0:{index}"]
+    # "quick" reads the first and last stretch rather than all of it:
+    # two short runs, both of which have to come back clean.
+    runs = ([["-i", path, *maps, "-t", str(QUICK_SECONDS)],
+             ["-sseof", f"-{QUICK_SECONDS}", "-i", path, *maps]]
+            if mode == "quick" else [["-i", path, *maps]])
     try:
-        out = subprocess.run(
-            ["ffmpeg", "-v", "error", "-xerror", "-i", path,
-             *maps, "-f", "null", "-"],
-            capture_output=True, text=True, encoding="utf-8", errors="replace",
-            timeout=HEALTH_CHECK_TIMEOUT)
+        for args in runs:
+            out = subprocess.run(
+                ["ffmpeg", "-v", "error", "-xerror", *args, "-f", "null", "-"],
+                capture_output=True, text=True, encoding="utf-8",
+                errors="replace", timeout=HEALTH_CHECK_TIMEOUT)
+            complaints = _decode_complaints(out.stderr)
+            if out.returncode != 0 or complaints:
+                break
     except (subprocess.TimeoutExpired, OSError):
         # Inconclusive, not a failure — a health check that can't finish
         # shouldn't be treated the same as one that finished and found
         # damage. The real encode attempt will surface a genuine problem.
         return (True, None)
-    if out.returncode == 0 and not (out.stderr or "").strip():
+    if out.returncode == 0 and not complaints:
         return (True, None)
-    message = (out.stderr or "").strip().splitlines()
-    return (False, message[-1] if message else f"exited {out.returncode}")
+    return (False, complaints[-1] if complaints
+            else f"exited {out.returncode}")
+
+
+def _decode_complaints(stderr):
+    """The lines that actually say a track won't decode.
+
+    Seeking into the middle of a file to sample the end leaves the
+    output muxer with timestamps that no longer start at zero, and it
+    says so on every packet. That is a complaint about the throwaway
+    output, not about the file, and treating it as damage failed
+    perfectly healthy files.
+    """
+    return [line for line in (stderr or "").strip().splitlines()
+            if line.strip() and not line.lstrip().startswith("[null @")]
 
 
 def _lang(stream):

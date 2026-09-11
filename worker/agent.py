@@ -337,12 +337,16 @@ def run_job(job, caps):
         # discovering it after a long encode fails outright — and for video
         # damage specifically, no retry would ever have fixed it anyway.
         # Skipped on a retry that's already been checked once.
-        if info and not spec.get("health_checked"):
-            with Phase(job_id, "checking every track plays") as phase:
+        check_mode = spec.get("health_check") or "full"
+        if info and check_mode != "off" and not spec.get("health_checked"):
+            with Phase(job_id, "checking the file plays") as phase:
                 health = streams.health_check(
-                    src, info, on_stream=lambda done, total, kind: phase.say(
-                        f"reading the file once to check all {total} tracks "
-                        f"decode" if kind == "all" else
+                    src, info, mode=check_mode,
+                    on_stream=lambda done, total, kind: phase.say(
+                        f"reading all {total} tracks through to check the "
+                        f"file plays" if kind == "all" else
+                        f"checking the start and end of all {total} tracks"
+                        if kind == "sample" else
                         f"finding the bad track \u2014 reading the {kind} "
                         f"track on its own, {done} of {total}"))
             video_ok, video_msg = health["video"] or (True, None)
