@@ -1182,6 +1182,15 @@ DEFAULT_SETTINGS = {
     # tracks are missing. Stored globally rather than per library since
     # one Bazarr instance normally covers everything.
     "bazarr": {"url": "", "api_key": "", "path_from": "", "path_to": ""},
+    # Same reasoning as Bazarr: one Radarr and one Sonarr normally cover
+    # everything, so the connection belongs here rather than being
+    # retyped into every library. Which of them a library belongs to —
+    # and how its paths translate — stays on the library, because one
+    # Sonarr routinely sees two libraries at two different paths
+    # (/tvshows and /anime, say) and a single global mapping couldn't
+    # describe both.
+    "radarr": {"url": "", "api_key": ""},
+    "sonarr": {"url": "", "api_key": ""},
     "schedule": {
         "enabled": False,
         # Each window: days 0=Monday .. 6=Sunday, 24-hour clock.

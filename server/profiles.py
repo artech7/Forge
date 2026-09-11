@@ -285,6 +285,8 @@ UNHEALTHY_VIDEO_ACTIONS = [
 ]
 
 ARR_KINDS = [
+    {"id": "none", "name": "Neither",
+     "detail": "Forge won't ask anything to re-download files for this library."},
     {"id": "radarr", "name": "Radarr", "detail": "For a movie library."},
     {"id": "sonarr", "name": "Sonarr", "detail": "For a TV library."},
 ]
@@ -426,6 +428,21 @@ def warnings_for(profile):
             "Downmixing applies to every audio track that's kept, including "
             "each language. Removing languages you don't want first keeps the "
             "file smaller.")
+
+    # The wizard sends its own flat draft here, while a saved library keeps
+    # these three under "arr" — read whichever shape turned up.
+    arr = profile.get("arr") or {}
+    field = lambda name, alt: profile.get(alt, arr.get(name))
+    wants_replacing = (field("on_unhealthy_video", "on_unhealthy_video")
+                       == "delete_and_research"
+                       or field("auto_replace_missing_audio",
+                                "auto_replace_missing_audio"))
+    if wants_replacing and field("kind", "arr_kind") not in ("radarr", "sonarr"):
+        out.append(
+            "Replacing a broken file needs something to replace it with, and "
+            "this library isn't managed by Radarr or Sonarr. Pick one under "
+            "\"Managed by\" on the Basics step, or those files will just be "
+            "listed for you instead.")
 
     return out
 

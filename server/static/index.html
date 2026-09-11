@@ -2261,6 +2261,7 @@ const SETTINGS_TABS = [
   ['work', 'When Forge works'],
   ['naming', 'Naming & lookup'],
   ['subtitles', 'Subtitles'],
+  ['arrs', 'Radarr & Sonarr'],
   ['originals', 'Originals'],
 ];
 let settingsSection = 'work';
@@ -2419,6 +2420,40 @@ function drawSettings() {
 
         </div>
 
+    <div ${settingsSection === 'arrs' ? '' : 'hidden'}>
+${['radarr', 'sonarr'].map(kind => {
+  const name = kind === 'radarr' ? 'Radarr' : 'Sonarr';
+  const port = kind === 'radarr' ? '7878' : '8989';
+  return `
+    <h3 style="font-size:15px;margin:26px 0 4px">${name}</h3>
+    <div class="note" style="margin:0 0 12px;color:var(--muted);font-size:12.5px">
+      Optional. Set up here once and any library can use it — a library says
+      which one manages it on its own Basics step. Forge uses this to replace
+      a file it can't repair: one whose video won't decode, or one with no
+      audio track at all. Nothing is deleted unless a library asks for it.
+    </div>
+    <label class="fld"><span>Address</span>
+      <em>Wherever ${name}'s web page loads, without a trailing slash.</em>
+      <input type="text" value="${attr((SET[kind]||{}).url || '')}"
+        placeholder="http://192.168.1.10:${port}"
+        oninput="SET['${kind}']=SET['${kind}']||{};SET['${kind}'].url=this.value"></label>
+    <label class="fld"><span>API key</span>
+      <em>Settings &rarr; General in ${name}.</em>
+      <input type="text" value="${attr((SET[kind]||{}).api_key || '')}"
+        oninput="SET['${kind}']=SET['${kind}']||{};SET['${kind}'].api_key=this.value"></label>
+    <div class="actions" style="margin:-6px 0 16px">
+      <button onclick="testArr('${kind}')">Test connection</button>
+      <span id="${kind}result" style="align-self:center;font-size:12.5px;
+            color:var(--muted)"></span>
+    </div>`;
+}).join('')}
+    <div class="note" style="margin:4px 0 0;color:var(--muted);font-size:12.5px">
+      Path translation stays on each library rather than living here: one
+      Sonarr commonly covers two libraries at two different paths, so a
+      single mapping couldn't describe both.
+    </div>
+        </div>
+
     <div ${settingsSection === 'originals' ? '' : 'hidden'}>
 <div class="toggle ${og.enabled ? 'on' : ''}" onclick="toggleOrig()"
          style="margin-top:22px">
@@ -2504,6 +2539,26 @@ function toggleTmdb() {
   SET.tmdb = SET.tmdb || {key:'', enabled:false};
   SET.tmdb.enabled = !SET.tmdb.enabled;
   drawSettings();
+}
+
+async function testArr(kind) {
+  const out = document.getElementById(kind + 'result');
+  const conf = SET[kind] || {};
+  if (!conf.url || !conf.api_key) {
+    out.textContent = 'Enter an address and API key first.';
+    out.style.color = 'var(--muted)'; return;
+  }
+  out.textContent = 'Testing…'; out.style.color = 'var(--muted)';
+  try {
+    const r = await (await fetch('/api/arr/test', {method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({kind, url: conf.url, api_key: conf.api_key})})).json();
+    out.textContent = r.message || (r.ok ? 'Connected.' : 'Could not connect.');
+    out.style.color = r.ok ? 'var(--signal)' : 'var(--fault)';
+  } catch (e) {
+    out.textContent = 'Could not reach the server to test this.';
+    out.style.color = 'var(--fault)';
+  }
 }
 
 async function testBazarr() {
@@ -2834,7 +2889,7 @@ function blankDraft() {
     loudness_range_threshold:15,
     loudness_target_i:-16, loudness_target_tp:-1.5, loudness_target_lra:11,
     on_unhealthy_video:'ignore', auto_replace_missing_audio:false,
-    arr_kind:'radarr', arr_url:'',
+    arr_kind:'none', arr_url:'',
     arr_api_key:'', arr_path_from:'', arr_path_to:'',
     auto_retry_steps:['small','smaller'], auto_retry_custom:'',
     filters:{ skip_extensions:[], skip_name_contains:[],
@@ -2875,7 +2930,7 @@ function draftFromLibrary(lib) {
   const a = p.arr || {};
   d.on_unhealthy_video = a.on_unhealthy_video || 'ignore';
   d.auto_replace_missing_audio = !!a.auto_replace_missing_audio;
-  d.arr_kind = a.kind || 'radarr';
+  d.arr_kind = a.kind || 'none';
   d.arr_url = a.url || '';
   d.arr_api_key = a.api_key || '';
   d.arr_path_from = a.path_from || '';
@@ -4162,6 +4217,8 @@ function pick(key, val) {
 }
 function setField(key, val) { draft[key] = val; }
 
+function arrName(kind) { return kind === 'sonarr' ? 'Sonarr' : 'Radarr'; }
+
 function bar() {
   const current = groupIndexOf(step);
   const groupRow = GROUPS.map((g, gi) => `
@@ -4229,7 +4286,31 @@ async function drawStep() {
             right where they are, without moving them.</em>
         <input type="text" value="${draft.output_path}"
                placeholder="/media/Movies  (optional)"
-               oninput="setField('output_path',this.value)"></label>`;
+               oninput="setField('output_path',this.value)"></label>
+
+      <label class="fld"><span>Managed by (optional)</span>
+        <em>If Radarr or Sonarr looks after this folder, say so here and Forge
+            can ask it for a fresh copy of a file that turns out to be broken
+            or to have no audio at all. Leave it on "Neither" and nothing
+            changes. The address and API key live under Settings &rarr;
+            Radarr &amp; Sonarr, set once for every library.</em>
+        <select onchange="setField('arr_kind',this.value);drawStep()">
+          ${(CAT.arr_kinds || []).map(o => `<option value="${o.id}" ${
+            draft.arr_kind === o.id ? 'selected' : ''}>${o.name}</option>`).join('')}
+        </select></label>
+      ${draft.arr_kind === 'radarr' || draft.arr_kind === 'sonarr' ? `
+        <label class="fld"><span>Path translation (only if needed)</span>
+          <em>Leave both blank unless Forge and ${arrName(draft.arr_kind)} see
+              this folder at different paths &mdash; for example Forge at
+              /media/Movies while ${arrName(draft.arr_kind)} sees /movies for
+              the same folder. It's per library because one ${
+              arrName(draft.arr_kind)} often covers several.</em>
+          <input type="text" value="${attr(draft.arr_path_from)}"
+            placeholder="What Forge sees, e.g. /media/Movies"
+            oninput="draft.arr_path_from=this.value" style="margin-bottom:8px">
+          <input type="text" value="${attr(draft.arr_path_to)}"
+            placeholder="What ${arrName(draft.arr_kind)} sees, e.g. /movies"
+            oninput="draft.arr_path_to=this.value"></label>` : ''}`;
   }
 
   if (step === 1) {
@@ -4778,36 +4859,18 @@ async function drawStep() {
       </div>
 
       ${arrChosen ? `
-        <div style="font-size:13px;font-weight:600;margin:20px 0 9px">
-          Connect Radarr or Sonarr</div>
-        ${(CAT.arr_kinds || []).map(o => `<label class="choice ${
-            draft.arr_kind===o.id?'sel':''}" onclick="pick('arr_kind','${o.id}')">
-          <div class="t">${o.name}</div>
-          <div class="d">${o.detail}</div></label>`).join('')}
-        <label class="fld"><span>Address</span>
-          <em>Wherever its web page loads, without a trailing slash.</em>
-          <input type="text" value="${draft.arr_url}"
-            placeholder="http://192.168.1.10:7878"
-            oninput="draft.arr_url=this.value"></label>
-        <label class="fld"><span>API key</span>
-          <em>Settings \u2192 General in ${draft.arr_kind === 'radarr' ? 'Radarr' : 'Sonarr'}.</em>
-          <input type="text" value="${draft.arr_api_key}"
-            oninput="draft.arr_api_key=this.value"></label>
-        <div style="margin:10px 0">
-          <button onclick="testArrConnection()">Test connection</button>
-          <span id="arr-test-result" style="margin-left:10px;font-size:12.5px"></span>
-        </div>
-        <label class="fld"><span>Path mapping (only if needed)</span>
-          <em>Leave both blank unless Forge and ${draft.arr_kind === 'radarr' ? 'Radarr' : 'Sonarr'}
-              see this library at different paths — for example Forge at
-              /media/Movies while ${draft.arr_kind === 'radarr' ? 'Radarr' : 'Sonarr'} sees
-              /movies for the same folder.</em>
-          <input type="text" value="${draft.arr_path_from}"
-            placeholder="What Forge sees, e.g. /media/Movies"
-            oninput="draft.arr_path_from=this.value" style="margin-bottom:8px">
-          <input type="text" value="${draft.arr_path_to}"
-            placeholder="What ${draft.arr_kind === 'radarr' ? 'Radarr' : 'Sonarr'} sees, e.g. /movies"
-            oninput="draft.arr_path_to=this.value"></label>` : ''}`;
+        <div class="review" style="font-size:12.5px;margin-top:20px;color:${
+          draft.arr_kind === 'radarr' || draft.arr_kind === 'sonarr'
+            ? 'var(--muted)' : 'var(--warn)'}">
+          ${draft.arr_kind === 'radarr' || draft.arr_kind === 'sonarr'
+            ? `Replacements go through ${arrName(draft.arr_kind)}, chosen on the
+               Basics step. Its address and API key live under Settings &rarr;
+               Radarr &amp; Sonarr, where you can test the connection at any
+               time.`
+            : `Nothing can be replaced yet: this library isn't managed by
+               Radarr or Sonarr. Pick one on the Basics step, then set its
+               address under Settings &rarr; Radarr &amp; Sonarr.`}
+        </div>` : ''}`;
   }
 
   if (step === 12) {
@@ -4825,6 +4888,8 @@ async function drawStep() {
       [0, 'Name', draft.name || '—'],
       [0, 'Watches', draft.watch_path || '—'],
       [0, 'Moves to', draft.output_path || 'stays in the watch folder'],
+      [0, 'Managed by', draft.arr_kind === 'radarr' || draft.arr_kind === 'sonarr'
+          ? arrName(draft.arr_kind) : 'nothing — no re-downloads'],
       [1, 'Video', `${n('video','video_codec')}, ${
           draft.quality_level === 'advanced' && draft.crf_override
             ? (CAT.quality_scale.find(q => String(q.value) === String(draft.crf_override)) || {}).name
@@ -4861,7 +4926,7 @@ async function drawStep() {
           + (draft.salvage_when_stuck && draft.original_action === 'archive'
              ? ', keeps the picture if nothing helps' : '')],
       [11, 'Recovery', (draft.on_unhealthy_video === 'delete_and_research'
-          ? `unrecoverable files removed via ${draft.arr_kind === 'radarr' ? 'Radarr' : 'Sonarr'}`
+          ? `unrecoverable files removed via ${arrName(draft.arr_kind)}`
           : 'unrecoverable files flagged for review')
           + (draft.auto_replace_missing_audio
               ? '; audio-less files replaced automatically'
@@ -4905,29 +4970,6 @@ function toggleRetryStep(id) {
   const at = list.indexOf(id);
   if (at >= 0) list.splice(at, 1); else list.push(id);
   drawStep();
-}
-
-async function testArrConnection() {
-  const el = document.getElementById('arr-test-result');
-  if (!el) return;
-  if (!draft.arr_url.trim() || !draft.arr_api_key.trim()) {
-    el.textContent = 'Enter an address and API key first.';
-    el.style.color = 'var(--muted)';
-    return;
-  }
-  el.textContent = 'Testing…';
-  el.style.color = 'var(--muted)';
-  try {
-    const r = await (await fetch('/api/arr/test', {method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({kind: draft.arr_kind, url: draft.arr_url.trim(),
-                            api_key: draft.arr_api_key.trim()})})).json();
-    el.textContent = r.message || (r.ok ? 'Connected.' : 'Could not connect.');
-    el.style.color = r.ok ? 'var(--signal)' : 'var(--fault)';
-  } catch (e) {
-    el.textContent = 'Could not reach the server to test this.';
-    el.style.color = 'var(--fault)';
-  }
 }
 
 function toggleCeiling() {

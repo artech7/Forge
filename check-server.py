@@ -648,6 +648,50 @@ check("a successful *arr research clears the stale probe-cache row", lambda: (
       db.get_cached_file(_corrupt_path))[-1], lambda r: r is None)
 db.delete_library(_arr_lib)
 
+print("\nWhere a library's *arr address comes from:")
+_lib_only = {"profile": {"arr": {"kind": "radarr", "url": "http://on-library",
+                                 "api_key": "old", "path_to": "/movies"}}}
+check("with nothing set globally, an address on the library is still used",
+      lambda: app.arr_for(_lib_only)["url"], lambda r: r == "http://on-library")
+db.save_settings({"radarr": {"url": "http://global-radarr", "api_key": "new"}})
+check("once set in Settings, the global address wins",
+      lambda: app.arr_for(_lib_only)["url"], lambda r: r == "http://global-radarr")
+check("and brings its own key, not the stale one",
+      lambda: app.arr_for(_lib_only)["api_key"], lambda r: r == "new")
+check("the library's own path mapping survives the swap",
+      lambda: app.arr_for(_lib_only)["path_to"], lambda r: r == "/movies")
+check("a Sonarr library doesn't pick up the Radarr address",
+      lambda: app.arr_for({"profile": {"arr": {"kind": "sonarr"}}}).get("url"),
+      lambda r: not r)
+check("a library managed by neither resolves to no address",
+      lambda: app.arr_for({"profile": {"arr": {"kind": "none",
+                                               "url": "http://ignored"}}}),
+      lambda r: r.get("kind") == "none")
+check("and a library with no *arr section at all is handled",
+      lambda: app.arr_for({}), lambda r: r == {})
+db.save_settings({"radarr": {"url": "", "api_key": ""}})
+_warn = lambda arr: [w for w in profiles.warnings_for(
+    {**profile, "arr": arr}) if "Managed by" in w]
+check("asking to replace files with no *arr chosen is called out",
+      lambda: _warn({"kind": "none", "auto_replace_missing_audio": True}),
+      lambda r: len(r) == 1)
+check("so is researching a corrupt file with no *arr chosen",
+      lambda: _warn({"kind": "none", "on_unhealthy_video": "delete_and_research"}),
+      lambda r: len(r) == 1)
+check("but not once one is chosen",
+      lambda: _warn({"kind": "sonarr", "auto_replace_missing_audio": True}),
+      lambda r: r == [])
+check("and not when nothing asks for a replacement",
+      lambda: _warn({"kind": "none"}), lambda r: r == [])
+_wdraft = lambda **d: [w for w in profiles.warnings_for({**profile, **d})
+                       if "Managed by" in w]
+check("the wizard's own flat draft is read the same way",
+      lambda: _wdraft(arr_kind="none", auto_replace_missing_audio=True),
+      lambda r: len(r) == 1)
+check("and clears once the draft picks an *arr",
+      lambda: _wdraft(arr_kind="sonarr", auto_replace_missing_audio=True),
+      lambda r: r == [])
+
 print("\nTolerating odd stored values:")
 check("parse_json handles NULL", lambda: db.parse_json(None, {}),
       lambda r: r == {})

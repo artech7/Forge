@@ -962,6 +962,32 @@ async def auto_retry_failed(job, error, attempt):
     return {"ok": True, "auto_retrying": attempt + 1}
 
 
+def arr_for(library):
+    """The Radarr/Sonarr connection a library should use.
+
+    Split deliberately: the connection lives in global settings, since
+    there's normally one Radarr and one Sonarr for a whole setup and
+    retyping them into every library is just a way to get them wrong.
+    Which of the two a library belongs to, and how its paths translate,
+    stay on the library — one Sonarr routinely covers two libraries at
+    two different paths (/tvshows and /anime), so those can't be global.
+
+    The global address wins where one is set, so editing it in one place
+    really does change every library. A url left on the library from
+    before that split is the fallback, so an existing setup that never
+    visits the new screen keeps working untouched.
+    """
+    conf = dict(((library or {}).get("profile") or {}).get("arr") or {})
+    kind = conf.get("kind")
+    if kind not in ("radarr", "sonarr"):
+        return conf            # not managed by either; nothing to resolve
+    shared = db.get_settings().get(kind) or {}
+    if shared.get("url"):
+        conf["url"] = shared["url"]
+        conf["api_key"] = shared.get("api_key", "")
+    return conf
+
+
 async def handle_unhealthy_video(job, error):
     """A file whose video stream can't be decoded at all.
 
@@ -973,7 +999,7 @@ async def handle_unhealthy_video(job, error):
     """
     library = db.get_library(job["library_id"]) if job.get("library_id") else None
     profile = (library or {}).get("profile") or {}
-    conf = profile.get("arr") or {}
+    conf = arr_for(library)
     note = ("The video stream itself won't decode — this file is corrupt, "
            "not just this attempt.")
 
@@ -1011,9 +1037,10 @@ async def replace_missing_audio(path, library):
     outcome is recorded as a job in "removed" rather than a failure —
     nothing went wrong here, the file was simply beyond fixing in place.
     """
-    conf = ((library or {}).get("profile") or {}).get("arr") or {}
+    conf = arr_for(library)
     if not conf.get("url"):
-        return False, "No Radarr/Sonarr is set up for this library."
+        return False, ("No Radarr/Sonarr set up — pick one on this library's "
+                       "Basics step and set its address under Settings.")
 
     ok, message = await asyncio.to_thread(
         arr.find_and_research, conf.get("kind"), conf.get("url"),
