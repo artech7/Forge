@@ -132,8 +132,13 @@ CREATE TABLE IF NOT EXISTS jobs (
 );
 
 CREATE INDEX IF NOT EXISTS idx_jobs_state ON jobs(state);
-CREATE INDEX IF NOT EXISTS idx_jobs_queue
-    ON jobs(state, kind, queue_order, id);
+-- NOTE: idx_jobs_queue is deliberately NOT here. It indexes "kind",
+-- which migrate() adds to databases made before that column existed --
+-- and init() runs this whole script first, on every start. On an
+-- existing database CREATE TABLE IF NOT EXISTS is a no-op but the index
+-- statement still runs, against a table with no such column, and the
+-- server cannot start at all. Anything indexing a migrated column
+-- belongs in migrate(), after the ALTER that adds it.
 CREATE UNIQUE INDEX IF NOT EXISTS idx_jobs_active
     ON jobs(path) WHERE state IN ('queued','leased','running');
 """
@@ -1113,8 +1118,8 @@ def migrate():
             conn.executemany("UPDATE jobs SET kind=? WHERE id=?", fixed)
             if fixed:
                 print(f"migrate: labelled {len(fixed)} existing loudness job(s)")
-        # The index is only in SCHEMA, which CREATE TABLE IF NOT EXISTS
-        # skips entirely on a database that already has the table.
+        # Created here rather than in SCHEMA: it indexes a column that
+        # only exists after the ALTER above. See the note in SCHEMA.
         conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_queue "
                      "ON jobs(state, kind, queue_order, id)")
 

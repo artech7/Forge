@@ -5,6 +5,7 @@ Catches the class of bug where an edit lands in the wrong function — the
 code imports and parses fine, then fails at runtime on a specific call.
     python3 check-server.py
 """
+import inspect
 import pathlib
 import sys
 import tempfile
@@ -648,6 +649,33 @@ check("a successful *arr research clears the stale probe-cache row", lambda: (
       _run(app.handle_unhealthy_video(db.get_job(_corrupt_job), "decode error")),
       db.get_cached_file(_corrupt_path))[-1], lambda r: r is None)
 db.delete_library(_arr_lib)
+
+print("\nThe schema can still be run against an older database:")
+# init() executes SCHEMA in full on every start, including on databases
+# made by earlier versions. CREATE TABLE IF NOT EXISTS is a no-op there,
+# but every other statement still runs — so an index in SCHEMA naming a
+# column that migrate() adds fails outright and the server won't boot.
+# That shipped once; this makes it impossible to ship twice.
+def _schema_indexes_only_touch_original_columns():
+    import re
+    # Read the column list straight out of migrate()'s own source, so a
+    # column added there in future is covered without touching this test.
+    src = inspect.getsource(db.migrate)
+    additions = eval(src[src.index("additions = {") + len("additions = "):
+                         src.index("}\n    added")] + "}")
+    offenders = []
+    for stmt in re.findall(r"CREATE INDEX[^;]+;", db.SCHEMA, re.I | re.S):
+        m = re.search(r"ON\s+(\w+)\s*\(([^)]*)\)", stmt, re.I | re.S)
+        if not m:
+            continue
+        table, cols = m.group(1), m.group(2)
+        named = {c.strip().split()[0] for c in cols.split(",") if c.strip()}
+        migrated = {n for n, _ in additions.get(table, [])}
+        for col in named & migrated:
+            offenders.append(f"{table}.{col}")
+    return offenders
+check("no index in SCHEMA names a column migrate() adds later",
+      _schema_indexes_only_touch_original_columns, lambda r: r == [])
 
 print("\nConversions always outrank loudness work:")
 _tier_lib = db.create_library("Tiers", str(base / "tiers"), "", profile, "archive")
