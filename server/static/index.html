@@ -3246,6 +3246,17 @@ function draftFromLibrary(lib) {
     ...((lib.filters || {}).bitrate_ceiling || {})};
   d.naming = {...d.naming, ...(lib.naming || {})};
 
+  // A column on the libraries table rather than a profile key, so the
+  // loop above — which only ever reads the profile — could never find
+  // it. The box came up empty every time a library was reopened, and
+  // because saveLibrary() sends an empty string as null, saving any
+  // unrelated change quietly cleared it and sent that library's
+  // originals back to landing inside the watched folder.
+  // Column first, profile second: nothing writes it into the profile
+  // today, but preferring the column is the right way round if anything
+  // ever did.
+  d.originals_path = lib.originals_path || p.originals_path || '';
+
   const a = p.arr || {};
   d.on_unhealthy_video = a.on_unhealthy_video || 'ignore';
   d.health_check = p.health_check || 'full';

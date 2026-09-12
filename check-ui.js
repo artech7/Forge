@@ -105,7 +105,7 @@ try { eval(src + '\nglobal.__x = {render, renderLibs, renderTabs, renderJobs, sl
   'loadView, openWizard, drawSettings, refreshPreview, scanOne, scanAll, ' +
   'toggleLib, removeLib, splitList, describeFilters, wizardError, jumpTo, ' +
   'backToReview, nextStep, validateFirstStep, STEPS, GROUPS, groupIndexOf, ' +
-  'SETTINGS_TABS, duplicateLib, watchInterval, everyPhrase, ' +
+  'SETTINGS_TABS, duplicateLib, watchInterval, everyPhrase, saveLibrary, ' +
   'set SET(v){SET = v;}, ' +
   'get settingsSection(){return settingsSection;}, ' +
   'set settingsSection(v){settingsSection = v;}, ' +
@@ -284,6 +284,44 @@ check('slot control at limits', () => {
   });
   check('starts at the first step, not review', () => {
     if (__x.step !== 0) throw new Error('at step ' + __x.step);
+  });
+
+  // originals_path is a column on the libraries table, not a profile key,
+  // so draftFromLibrary's "copy everything the profile has" loop was never
+  // going to find it. Reopening a library showed the box empty, and
+  // saveLibrary sends '' as null -- so changing anything else silently
+  // cleared where that library keeps its originals, and they went back to
+  // landing inside the watched folder.
+  console.log('\nWhere originals are kept survives a round trip:');
+  const kept = {id:7, name:'Films', watch_path:'/w', output_path:'',
+    original_action:'archive', originals_path:'/originals',
+    profile:{video_codec:'hevc'}, filters:{}, naming:{}};
+  global.window.__state = {libraries:[kept]};
+  await __x.openWizard(7);
+  check('reopening shows the path that was saved', () => {
+    if (__x.draft.originals_path !== '/originals')
+      throw new Error('got ' + JSON.stringify(__x.draft.originals_path));
+  });
+  await check('saving an unrelated change does not clear it', async () => {
+    let sent = null;
+    const realFetch = global.fetch;
+    global.fetch = async (url, opts) => {
+      if (opts && opts.method === 'PATCH') sent = JSON.parse(opts.body);
+      return {ok:true, json: async () => ({})};
+    };
+    try {
+      __x.draft.audio_bitrate = '192k';        // change something else
+      await __x.saveLibrary();
+    } finally { global.fetch = realFetch; }
+    if (!sent) throw new Error('no PATCH was sent');
+    if (sent.originals_path !== '/originals')
+      throw new Error('sent ' + JSON.stringify(sent.originals_path));
+  });
+  await check('duplicating carries the originals path over', async () => {
+    global.window.__state = {libraries:[kept]};
+    await __x.duplicateLib(7);
+    if (__x.draft.originals_path !== '/originals')
+      throw new Error('got ' + JSON.stringify(__x.draft.originals_path));
   });
 
   console.log('\nHints quote the setting rather than a fixed number:');
