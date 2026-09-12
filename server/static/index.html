@@ -760,15 +760,18 @@
       <div id="loudness-detail"><div class="stats-empty">Not scanned yet.</div></div>
     </div>
 
-    <!-- Missing Audio or Subtitles -->
+    <!-- Missing Preferred Languages -->
     <div class="health-section" data-health="language" hidden>
       <div class="queue-head" style="margin-top:4px">
-        <h2 style="margin:0">Missing Audio or Subtitles</h2>
+        <h2 style="margin:0">Missing Preferred Languages</h2>
         <div class="actions">
           <button onclick="loadLanguageChecks()">Refresh</button>
         </div>
       </div>
       <div class="note" style="margin:-4px 0 14px;color:var(--muted);font-size:12.5px">
+        Files that do have sound and subtitles, just not in a language this
+        library asked for — an English library holding a Japanese-only
+        release, say. For files with no sound at all, see No Audio Track.
         Read straight from your regular scans — nothing to run or wait on.
         Informational only: Forge can't create a track that was never
         there, so this is a list to act on yourself (Bazarr, a different
@@ -779,10 +782,10 @@
       <div id="missing-subs-detail" style="margin-top:14px"></div>
     </div>
 
-    <!-- No Audio At All -->
+    <!-- No Audio Track -->
     <div class="health-section" data-health="no-audio" hidden>
       <div class="queue-head" style="margin-top:4px">
-        <h2 style="margin:0">No Audio At All</h2>
+        <h2 style="margin:0">No Audio Track</h2>
         <div class="actions">
           <button onclick="loadNoAudio()">Refresh</button>
         </div>
@@ -3748,10 +3751,16 @@ async function queueStandardize() {
 
 let healthSection = 'loudness';
 
+// "Missing Audio or Subtitles" sat next to "No Audio At All" and read as
+// the same thing twice — the first is about a file having tracks but not
+// in a language you want, the second about there being no audio stream
+// at all. Naming the first after languages rather than after audio is
+// what separates them; the word "audio" now appears only on the tab
+// that is genuinely about audio being absent.
 const HEALTH_TABS = [
   ['loudness', 'Audio Leveling'],
-  ['language', 'Missing Audio or Subtitles'],
-  ['no-audio', 'No Audio At All'],
+  ['language', 'Missing Preferred Languages'],
+  ['no-audio', 'No Audio Track'],
   ['chapters', 'Missing Chapters'],
   ['standardize', 'Standardize'],
 ];
@@ -5275,7 +5284,7 @@ async function drawStep() {
             again, a few at a time. Off by default, and worth leaving off until
             you've looked: this throws away the copy you have, so if nothing
             better is available to grab you'll be left without it. With this
-            off they're simply listed under Library Health → No Audio At All,
+            off they're simply listed under Library Health → No Audio Track,
             with a button there to replace the ones you choose.</div></div>
       </div>
 

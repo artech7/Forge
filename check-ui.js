@@ -105,7 +105,7 @@ try { eval(src + '\nglobal.__x = {render, renderLibs, renderTabs, renderJobs, sl
   'loadView, openWizard, drawSettings, refreshPreview, scanOne, scanAll, ' +
   'toggleLib, removeLib, splitList, describeFilters, wizardError, jumpTo, ' +
   'backToReview, nextStep, validateFirstStep, STEPS, GROUPS, groupIndexOf, ' +
-  'SETTINGS_TABS, duplicateLib, watchInterval, everyPhrase, saveLibrary, ' +
+  'SETTINGS_TABS, HEALTH_TABS, duplicateLib, watchInterval, everyPhrase, saveLibrary, ' +
   'set SET(v){SET = v;}, ' +
   'get settingsSection(){return settingsSection;}, ' +
   'set settingsSection(v){settingsSection = v;}, ' +
@@ -292,6 +292,33 @@ check('slot control at limits', () => {
   // saveLibrary sends '' as null -- so changing anything else silently
   // cleared where that library keeps its originals, and they went back to
   // landing inside the watched folder.
+  // A tab renamed in one place and referenced by its old name in
+  // another reads as a pointer to a screen that isn't there. Every
+  // "Library Health -> X" in the interface must name a real tab.
+  check('cross-references name a Library Health tab that exists', () => {
+    const src = require('fs').readFileSync(
+      __dirname + '/server/static/index.html', 'utf8');
+    const labels = new Set(__x.HEALTH_TABS.map(([, l]) => l));
+    for (const m of src.matchAll(/Library Health → ([^<,.]+)/g)) {
+      const named = m[1].trim();
+      if (!labels.has(named))
+        throw new Error(`points at "${named}", which is not a tab`);
+    }
+  });
+  check('no two health tabs read as the same thing', () => {
+    // The pair that prompted this: one tab about tracks being in the
+    // wrong language, one about there being no audio stream at all.
+    // Both were named after audio, so both read as "audio is missing".
+    const labels = __x.HEALTH_TABS.map(([, l]) => l);
+    const audio = labels.filter(l => /audio/i.test(l));
+    if (audio.length > 2)
+      throw new Error('too many tabs named after audio: ' + audio.join(', '));
+    const lang = labels.find(l => /language/i.test(l));
+    if (!lang) throw new Error('nothing names the language check');
+    if (/audio/i.test(lang))
+      throw new Error(`"${lang}" is about languages but named after audio`);
+  });
+
   console.log('\nWhere originals are kept survives a round trip:');
   const kept = {id:7, name:'Films', watch_path:'/w', output_path:'',
     original_action:'archive', originals_path:'/originals',
