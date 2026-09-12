@@ -1112,6 +1112,7 @@ function renderLibs(libs) {
       <div class="recipe">${recipe}</div>
       <div class="row">
         <button onclick="openWizard(${l.id})">Edit</button>
+        <button onclick="duplicateLib(${l.id})">Duplicate</button>
         <button onclick="scanOne(${l.id})" ${libScanBusy[l.id] ? 'disabled' : ''}>Check now</button>
         <button onclick="toggleLib(${l.id},${l.enabled ? 0 : 1})">${l.enabled ? 'Pause' : 'Resume'}</button>
         <button onclick="removeLib(${l.id},'${safeName}')">Remove</button>
@@ -2416,13 +2417,18 @@ async function openSettings() {
   drawSettings();
 }
 
+// Three of these used to be separate tabs — "Naming & lookup", which
+// held one TMDB key, "Subtitles", which held Bazarr's address, and
+// "Radarr & Sonarr". Each was named after a decision but contained only
+// the plumbing, because the decisions themselves live on each library.
+// That made the split look arbitrary when it isn't: addresses and keys
+// are entered once and shared, choices belong to a library. Collapsing
+// them into one Connections tab lets the tab say that outright.
 const SETTINGS_TABS = [
   ['work', 'When Forge works'],
-  ['naming', 'Naming & lookup'],
-  ['subtitles', 'Subtitles'],
-  ['arrs', 'Radarr & Sonarr'],
-  ['access', 'Access'],
+  ['connections', 'Connections'],
   ['originals', 'Originals'],
+  ['access', 'Access'],
 ];
 let settingsSection = 'work';
 
@@ -2465,7 +2471,10 @@ function drawSettings() {
       </div>` : ''}
 
     <label class="fld"><span>How often to check folders</span>
-      <em>Seconds between automatic checks. 30 is a good default.</em>
+      <em>Seconds between automatic checks. Each one walks every library
+          folder in full, so the larger your collection the more it costs:
+          60 suits a small library, 300 or more a large one. Every library
+          card has a "Check now" button for when you don't want to wait.</em>
       <input type="text" value="${SET.scan_seconds ?? 30}"
              oninput="SET.scan_seconds=parseInt(this.value)||30"></label>
 
@@ -2519,39 +2528,50 @@ function drawSettings() {
 
         </div>
 
-    <div ${settingsSection === 'naming' ? '' : 'hidden'}>
-<div class="toggle ${(SET.tmdb||{}).enabled ? 'on' : ''}"
-         onclick="toggleTmdb()" style="margin-top:22px">
-      <div class="sw"></div>
-      <div><div class="tt">Look up film and show names online</div>
-        <div class="td">Uses The Movie Database to confirm titles, so
-          "moviename1_H264_1080p" can become the film's real name and year.
-          Free key, and Forge only reads — nothing about your library is
-          sent beyond the title it's trying to identify.</div></div>
+    <div ${settingsSection === 'connections' ? '' : 'hidden'}>
+    <p class="lead" style="margin:18px 0 4px">Other services Forge can talk
+      to. Addresses and keys are entered here once and shared by every
+      library; which library actually uses which is set on that library's
+      own steps. All of it is optional — Forge converts perfectly well
+      with none of it filled in.</p>
+
+${['radarr', 'sonarr'].map(kind => {
+  const name = kind === 'radarr' ? 'Radarr' : 'Sonarr';
+  const port = kind === 'radarr' ? '7878' : '8989';
+  return `
+    <h3 style="font-size:15px;margin:26px 0 4px">${name}</h3>
+    <div class="note" style="margin:0 0 12px;color:var(--muted);font-size:12.5px">
+      Forge uses this to replace a file it can't repair: one whose video
+      won't decode, or one with no audio track at all. A library says
+      whether ${name} manages it on its own Basics step, and nothing is
+      deleted unless that library asks for it.
+    </div>
+    <label class="fld"><span>Address</span>
+      <em>Wherever ${name}'s web page loads, without a trailing slash.</em>
+      <input type="text" value="${attr((SET[kind]||{}).url || '')}"
+        placeholder="http://192.168.1.10:${port}"
+        oninput="SET['${kind}']=SET['${kind}']||{};SET['${kind}'].url=this.value"></label>
+    <label class="fld"><span>API key</span>
+      <em>Settings &rarr; General in ${name}.</em>
+      <input type="text" value="${attr((SET[kind]||{}).api_key || '')}"
+        oninput="SET['${kind}']=SET['${kind}']||{};SET['${kind}'].api_key=this.value"></label>
+    <div class="actions" style="margin:-6px 0 16px">
+      <button onclick="testArr('${kind}')">Test connection</button>
+      <span id="${kind}result" style="align-self:center;font-size:12.5px;
+            color:var(--muted)"></span>
+    </div>`;
+}).join('')}
+    <div class="note" style="margin:4px 0 0;color:var(--muted);font-size:12.5px">
+      Path translation stays on each library rather than living here: one
+      Sonarr commonly covers two libraries at two different paths, so a
+      single mapping couldn't describe both.
     </div>
 
-    ${(SET.tmdb||{}).enabled ? `
-      <label class="fld"><span>TMDB key</span>
-        <em>Sign up at themoviedb.org, then Settings &rarr; API and request a
-            Developer key. Either the API Key or the Read Access Token works.
-            Use a desktop browser — the signup isn't mobile friendly.</em>
-        <input type="text" value="${(SET.tmdb||{}).key || ''}"
-          placeholder="paste your key here"
-          oninput="SET.tmdb.key=this.value"></label>
-      <div class="actions" style="margin:-6px 0 16px">
-        <button onclick="testTmdb()">Test connection</button>
-        <span id="tmdbresult" style="align-self:center;font-size:12.5px;
-              color:var(--muted)"></span>
-      </div>` : ''}
-
-        </div>
-
-    <div ${settingsSection === 'subtitles' ? '' : 'hidden'}>
-<h3 style="font-size:15px;margin:26px 0 4px">Bazarr</h3>
+    <h3 style="font-size:15px;margin:26px 0 4px">Bazarr</h3>
     <div class="note" style="margin:0 0 12px;color:var(--muted);font-size:12.5px">
-      Optional. Library Health lists files with no subtitle track in your
-      preferred languages, but Forge can't find subtitles itself. Connect
-      Bazarr and that list gets a button to hand the search over to it.
+      Library Health lists files with no subtitle track in your preferred
+      languages, but Forge can't find subtitles itself. Connect Bazarr and
+      that list gets a button to hand the search over to it.
     </div>
     <label class="fld"><span>Address</span>
       <em>Wherever Bazarr's web page loads, without a trailing slash.</em>
@@ -2578,45 +2598,36 @@ function drawSettings() {
             color:var(--muted)"></span>
     </div>
 
+    <h3 style="font-size:15px;margin:26px 0 4px">The Movie Database</h3>
+<div class="toggle ${(SET.tmdb||{}).enabled ? 'on' : ''}"
+         onclick="toggleTmdb()" style="margin-top:22px">
+      <div class="sw"></div>
+      <div><div class="tt">Look up film and show names online</div>
+        <div class="td">Uses The Movie Database to confirm titles, so
+          "moviename1_H264_1080p" can become the film's real name and year.
+          Free key, and Forge only reads — nothing about your library is
+          sent beyond the title it's trying to identify.</div></div>
+    </div>
+
+    ${(SET.tmdb||{}).enabled ? `
+      <label class="fld"><span>TMDB key</span>
+        <em>Sign up at themoviedb.org, then Settings &rarr; API and request a
+            Developer key. Either the API Key or the Read Access Token works.
+            Use a desktop browser — the signup isn't mobile friendly.</em>
+        <input type="text" value="${(SET.tmdb||{}).key || ''}"
+          placeholder="paste your key here"
+          oninput="SET.tmdb.key=this.value"></label>
+      <div class="actions" style="margin:-6px 0 16px">
+        <button onclick="testTmdb()">Test connection</button>
+        <span id="tmdbresult" style="align-self:center;font-size:12.5px;
+              color:var(--muted)"></span>
+      </div>` : ''}
+
         </div>
 
     <div ${settingsSection === 'access' ? '' : 'hidden'}>
       <div id="access-panel"></div>
     </div>
-
-    <div ${settingsSection === 'arrs' ? '' : 'hidden'}>
-${['radarr', 'sonarr'].map(kind => {
-  const name = kind === 'radarr' ? 'Radarr' : 'Sonarr';
-  const port = kind === 'radarr' ? '7878' : '8989';
-  return `
-    <h3 style="font-size:15px;margin:26px 0 4px">${name}</h3>
-    <div class="note" style="margin:0 0 12px;color:var(--muted);font-size:12.5px">
-      Optional. Set up here once and any library can use it — a library says
-      which one manages it on its own Basics step. Forge uses this to replace
-      a file it can't repair: one whose video won't decode, or one with no
-      audio track at all. Nothing is deleted unless a library asks for it.
-    </div>
-    <label class="fld"><span>Address</span>
-      <em>Wherever ${name}'s web page loads, without a trailing slash.</em>
-      <input type="text" value="${attr((SET[kind]||{}).url || '')}"
-        placeholder="http://192.168.1.10:${port}"
-        oninput="SET['${kind}']=SET['${kind}']||{};SET['${kind}'].url=this.value"></label>
-    <label class="fld"><span>API key</span>
-      <em>Settings &rarr; General in ${name}.</em>
-      <input type="text" value="${attr((SET[kind]||{}).api_key || '')}"
-        oninput="SET['${kind}']=SET['${kind}']||{};SET['${kind}'].api_key=this.value"></label>
-    <div class="actions" style="margin:-6px 0 16px">
-      <button onclick="testArr('${kind}')">Test connection</button>
-      <span id="${kind}result" style="align-self:center;font-size:12.5px;
-            color:var(--muted)"></span>
-    </div>`;
-}).join('')}
-    <div class="note" style="margin:4px 0 0;color:var(--muted);font-size:12.5px">
-      Path translation stays on each library rather than living here: one
-      Sonarr commonly covers two libraries at two different paths, so a
-      single mapping couldn't describe both.
-    </div>
-        </div>
 
     <div ${settingsSection === 'originals' ? '' : 'hidden'}>
 <div class="toggle ${og.enabled ? 'on' : ''}" onclick="toggleOrig()"
@@ -3269,6 +3280,36 @@ async function openWizard(libId) {
   drawStep();
 }
 
+// Start a new library from an existing one's answers.
+//
+// Setting a second library up meant walking all thirteen steps again to
+// reproduce a recipe that already existed on the card next to it. This
+// copies every conversion choice and deliberately copies none of the
+// places: two libraries watching one folder would queue every file
+// twice, names have to be unique, and a shared output folder would have
+// them writing over each other. Those three are exactly what makes it a
+// different library, so they're what you're asked for.
+//
+// originals_path does carry over, unlike the other paths — originals_dir()
+// puts each library in its own subfolder beneath it, so sharing one
+// archive location is both safe and usually what was meant.
+async function duplicateLib(libId) {
+  CAT = CAT || await (await fetch('/api/catalog')).json();
+  const lib = ((window.__state || {}).libraries || []).find(l => l.id === libId);
+  if (!lib) return notifyBad('Could not find that library.');
+  returnTo = null;
+  editingId = null;            // save creates a new library rather than editing
+  draft = draftFromLibrary(lib);
+  draft.name = '';
+  draft.watch_path = '';
+  draft.output_path = '';
+  step = 0;
+  document.getElementById('veil').classList.add('open');
+  drawStep();
+  notifyInfo(`Copied the settings from "${lib.name}". Give this one a name `
+             + `and a folder of its own.`);
+}
+
 function closeWizard() { document.getElementById('veil').classList.remove('open'); }
 
 // Which top-level tab is showing. Settings doesn't get a panel of its own —
@@ -3466,6 +3507,32 @@ function fmtDuration(seconds) {
   const m = seconds / 60;
   if (m < 90) return `${Math.round(m)}m`;
   return `${(m / 60).toFixed(1)}h`;
+}
+
+// "every 30 seconds" / "every 5 minutes" — prose, not the terse form
+// above, for hints that quote a setting inside a sentence.
+function everyPhrase(seconds) {
+  // Fall back before clamping, not after: a Math.max(1, ...) is always
+  // truthy, so a trailing "|| 30" can never fire and an absent setting
+  // came out as "every 1 seconds".
+  const n = Number(seconds);
+  const s = Number.isFinite(n) && n > 0 ? Math.round(n) : 30;
+  if (s === 1) return 'every second';
+  if (s < 90) return `every ${s} seconds`;
+  const m = Math.round(s / 60);
+  if (m < 90) return `every ${m} minute${m === 1 ? '' : 's'}`;
+  const h = Math.round(s / 360) / 10;
+  return `every ${h} hour${h === 1 ? '' : 's'}`;
+}
+
+// How often the watcher actually sweeps, read from live state rather
+// than written into the sentence. A hint that hardcodes a number the
+// person can change on another screen is a hint that goes wrong the
+// moment they change it — which is exactly what happened to this one.
+// Read from __state, not SET: SET is only populated once the settings
+// modal has been opened, and the wizard can be reached without that.
+function watchInterval() {
+  return everyPhrase((((window.__state || {}).settings) || {}).scan_seconds);
 }
 
 const CHART_COLORS = ['#4ade9b','#f2b03d','#ff6b6b','#5b6b85',
@@ -4612,8 +4679,8 @@ async function drawStep() {
         <input type="text" value="${draft.name}" placeholder="Movies"
                oninput="setField('name',this.value)"></label>
       <label class="fld"><span>Folder to watch</span>
-        <em>Drop new files here. Forge checks it every 30 seconds and picks up
-            anything that finished copying.</em>
+        <em>Drop new files here. Forge checks it ${watchInterval()} and picks
+            up anything that finished copying.</em>
         <input type="text" value="${draft.watch_path}"
                placeholder="/media/inbox/movies"
                oninput="setField('watch_path',this.value)"></label>

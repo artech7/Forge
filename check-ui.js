@@ -3,9 +3,17 @@
 //   node check-ui.js
 const fs = require('fs');
 const els = {};
+// appendChild/removeChild/children are here because notify() uses them to
+// stack toasts. Without them any code path that raises a toast died with
+// an uncatchable crash instead of a named failure — which is how a real
+// bug in duplicateLib first showed up as "host.appendChild is not a
+// function" pointing at the harness rather than at the code under test.
 const el = id => els[id] || (els[id] = {innerHTML:'', textContent:'', scrollTop:0,
   classList:{add(){},remove(){},toggle(){},contains(){return false}}, remove(){ delete els[id]; },
   parentNode:{insertBefore(){}}, scrollIntoView(){},
+  children: [], appendChild(c){ this.children.push(c); },
+  removeChild(c){ this.children = this.children.filter(x => x !== c); },
+  get firstChild(){ return this.children[0]; },
   querySelector: () => null, querySelectorAll: () => []});
 
 // A real page always has a body; code that toggles a class on it (the
@@ -97,6 +105,11 @@ try { eval(src + '\nglobal.__x = {render, renderLibs, renderTabs, renderJobs, sl
   'loadView, openWizard, drawSettings, refreshPreview, scanOne, scanAll, ' +
   'toggleLib, removeLib, splitList, describeFilters, wizardError, jumpTo, ' +
   'backToReview, nextStep, validateFirstStep, STEPS, GROUPS, groupIndexOf, ' +
+  'SETTINGS_TABS, duplicateLib, watchInterval, everyPhrase, ' +
+  'set SET(v){SET = v;}, ' +
+  'get settingsSection(){return settingsSection;}, ' +
+  'set settingsSection(v){settingsSection = v;}, ' +
+  'get editingId(){return editingId;}, ' +
   'get step(){return step;}, set step(v){step = v;}, ' +
   'get returnTo(){return returnTo;}, get draft(){return draft;}, drawStep};'); }
 catch (e) { console.log('SCRIPT FAILED TO LOAD: ' + e.message); process.exit(1); }
@@ -212,6 +225,88 @@ check('slot control at limits', () => {
       throw new Error(segs.length + ' segments for a ' + group.steps.length + '-step group');
   });
 
+  // Settings was never rendered here — only name-checked in the export
+  // list — so collapsing three credential tabs into one could have
+  // dropped a field with nothing to notice. Every tab now gets drawn.
+  console.log('\nSettings panels:');
+  __x.SET = {schedule:{}, originals:{}, tmdb:{enabled:true, key:'k'},
+             bazarr:{url:'b', api_key:'k'}, radarr:{url:'r', api_key:'k'},
+             sonarr:{url:'s', api_key:'k'}, auto_fail:{}, scan_seconds:30};
+
+  for (const [id, label] of __x.SETTINGS_TABS)
+    check(`${label} renders`, () => {
+      __x.settingsSection = id;
+      __x.drawSettings();
+      if (!els.wiz.innerHTML) throw new Error('rendered nothing');
+    });
+
+  // The point of the merge was that nothing was lost in it. Each of
+  // these lived on a tab of its own before.
+  check('Connections still holds every credential it absorbed', () => {
+    __x.settingsSection = 'connections';
+    __x.drawSettings();
+    const h = els.wiz.innerHTML;
+    for (const want of ['TMDB key', 'Bazarr', 'Radarr', 'Sonarr',
+                        'testTmdb', 'testBazarr', "testArr('radarr')",
+                        "testArr('sonarr')", 'Path mapping'])
+      if (!h.includes(want)) throw new Error('lost: ' + want);
+  });
+
+  check('every tab id has a panel behind it', () => {
+    // A renamed tab whose panel kept the old id renders an empty page
+    // with no error, which is exactly the failure a render check misses.
+    const src = require('fs').readFileSync(
+      __dirname + '/server/static/index.html', 'utf8');
+    const panels = new Set([...src.matchAll(/settingsSection === '(\w+)'/g)]
+      .map(m => m[1]));
+    for (const [id] of __x.SETTINGS_TABS)
+      if (!panels.has(id)) throw new Error('no panel for tab ' + id);
+    for (const id of panels)
+      if (!__x.SETTINGS_TABS.some(([t]) => t === id) && id !== 'access')
+        throw new Error('panel ' + id + ' has no tab');
+  });
+
+  console.log('\nDuplicating a library:');
+  // Earlier checks render states with no libraries in them, and
+  // duplicateLib reads the live state rather than a passed-in object.
+  global.window.__state = state;
+  await __x.duplicateLib(1);
+  check('copies the recipe', () => {
+    if (__x.draft.video_codec !== 'hevc') throw new Error('lost video codec');
+    if (__x.draft.original_action !== 'archive') throw new Error('lost originals');
+  });
+  check('clears the three things that make it a different library', () => {
+    for (const f of ['name', 'watch_path', 'output_path'])
+      if (__x.draft[f] !== '') throw new Error(f + ' carried over: ' + __x.draft[f]);
+  });
+  check('saves as new rather than editing the original', () => {
+    if (__x.editingId !== null) throw new Error('still editing ' + __x.editingId);
+  });
+  check('starts at the first step, not review', () => {
+    if (__x.step !== 0) throw new Error('at step ' + __x.step);
+  });
+
+  console.log('\nHints quote the setting rather than a fixed number:');
+  check('reads the real scan interval out of live state', () => {
+    global.window.__state = {settings:{scan_seconds:300}};
+    if (__x.watchInterval() !== 'every 5 minutes')
+      throw new Error(__x.watchInterval());
+    global.window.__state = {settings:{scan_seconds:30}};
+    if (__x.watchInterval() !== 'every 30 seconds')
+      throw new Error(__x.watchInterval());
+  });
+  check('copes with the setting missing entirely', () => {
+    global.window.__state = {};
+    if (__x.watchInterval() !== 'every 30 seconds')
+      throw new Error(__x.watchInterval());
+  });
+  check('no hint hardcodes the scan interval any more', () => {
+    const src = require('fs').readFileSync(
+      __dirname + '/server/static/index.html', 'utf8');
+    const m = src.match(/checks it every \d+ seconds/);
+    if (m) throw new Error('still hardcoded: ' + m[0]);
+  });
+
   console.log();
   if (failures) {
     // Each failure already printed its own detail line as it happened;
@@ -220,6 +315,11 @@ check('slot control at limits', () => {
     process.exit(1);
   }
   console.log('Interface renders cleanly.');
+  // Raising a toast leaves its dismiss timer pending, which held node
+  // open for the full 5.5s after the last check passed. The duplicate
+  // scan below is synchronous and has already run by this point, so
+  // there is nothing left to wait for.
+  process.exit(0);
 })();
 
 // Duplicate definitions have shadowed working code more than once, so the
