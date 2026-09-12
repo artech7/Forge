@@ -994,6 +994,26 @@ def _schema_indexes_only_touch_original_columns():
 check("no index in SCHEMA names a column migrate() adds later",
       _schema_indexes_only_touch_original_columns, lambda r: r == [])
 
+# The scanner asks unresolved_job_for() about every file it sees that
+# isn't already marked processed — which is precisely the Failed and
+# Ignored backlog, since those are never marked. Without an index on
+# jobs(path) SQLite serves that from idx_jobs_state instead, walking
+# every failed/ignored/bloated row for each file, every 30 seconds.
+# Linear in the backlog, so it gets worse the longer Forge runs: 0.37ms
+# per file at 2,000 jobs, 6.16ms at 64,000. This asserts the plan, not
+# the timing, so it can't go flaky on a slow machine.
+def _unresolved_job_plan():
+    with db.connect() as conn:
+        rows = conn.execute(
+            """EXPLAIN QUERY PLAN
+               SELECT * FROM jobs WHERE path=? AND state IN
+               ('failed','ignored','bloated') ORDER BY id DESC LIMIT 1""",
+            ("/x.mkv",)).fetchall()
+    return " ".join(r["detail"] for r in rows)
+check("looking up a job by path uses an index on path, not a state scan",
+      _unresolved_job_plan,
+      lambda r: "idx_jobs_path" in r and "idx_jobs_state" not in r)
+
 print("\nConversions always outrank loudness work:")
 _tier_lib = db.create_library("Tiers", str(base / "tiers"), "", profile, "archive")
 _before = db.queued_by_kind()          # earlier tests leave jobs behind
