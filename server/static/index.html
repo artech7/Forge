@@ -487,7 +487,7 @@
   .qtable-wrap{position:relative;
                background:linear-gradient(165deg, var(--tint) 0%, transparent 38%),
                           var(--glass);
-               border:0;border-radius:var(--r);overflow-x:auto;
+               border:0;border-radius:var(--r);
                min-width:0;max-width:100%;
                backdrop-filter:blur(26px) saturate(170%) brightness(1.06);
                -webkit-backdrop-filter:blur(26px) saturate(170%) brightness(1.06);
@@ -507,15 +507,29 @@
   .qtable{width:100%;border-collapse:collapse;font-size:12.5px}
   .qtable th,.qtable td{padding:9px 10px;text-align:left;white-space:nowrap;
                         border-bottom:1px solid rgba(255,255,255,.05)}
+  /* Carries the theme's tint rather than being a flat slab. It was a
+     solid --ink-2, which with a wallpaper behind the page read as the
+     one black band in an otherwise translucent table.
+     Nearly opaque, though, and deliberately: a sticky header has rows
+     passing underneath it, and they have to stop being visible. The
+     obvious answer — backdrop-filter, like every other pane here — does
+     not work in this one place. This sits inside .qtable-wrap, which is
+     already a backdrop-filter root, and a nested one does not blur its
+     own scrolling siblings: the rows came through the header perfectly
+     sharp and both sets of text were unreadable at once. */
   .qtable thead th{font-family:'Chivo Mono',monospace;font-size:10.5px;
     letter-spacing:.05em;text-transform:uppercase;color:var(--muted);
-    font-weight:600;position:sticky;top:0;background:var(--ink-2);z-index:2}
+    font-weight:600;position:sticky;top:0;z-index:2;
+    background:linear-gradient(160deg, var(--tint) 0%, transparent 70%),
+               color-mix(in srgb, var(--ink-2) 97%, transparent)}
   .qtable th.sortable{cursor:pointer;user-select:none}
   .qtable th.sortable:hover{color:var(--text)}
   .sortmark{margin-left:5px;font-size:9px;opacity:.9}
   .sortmark.dim{opacity:.25}
-  .qtable tr.filters th{position:sticky;top:30px;background:var(--ink-2);
-                        padding:5px 7px 8px;z-index:2}
+  .qtable tr.filters th{position:sticky;top:30px;z-index:2;
+                        background:linear-gradient(160deg, var(--tint) 0%, transparent 70%),
+                                   color-mix(in srgb, var(--ink-2) 97%, transparent);
+                        padding:5px 7px 8px}
   .qtable tr.filters input,.qtable tr.filters select{
     width:100%;min-width:64px;font-size:11.5px;padding:4px 7px;
     background:rgba(255,255,255,.05);border:1px solid var(--edge);
@@ -544,6 +558,21 @@
 
   /* Narrow screens drop the columns you can live without before the
      table starts scrolling sideways — file, size and ratio survive. */
+  /* Sideways scrolling is only needed where the columns stop fitting,
+     and it costs the sticky header to have it: overflow-x:auto makes
+     overflow-y compute to auto too, which turns this into a scroll
+     container that never scrolls vertically — and a sticky header
+     inside one of those is measured against a box that never moves, so
+     it silently doesn't stick at all. Confining the overflow to narrow
+     screens means the header sticks at every width where there is
+     enough table to need it. */
+  /* 1100px is where the full column set stops fitting, measured rather
+     than guessed: at 1000px the table pushed the whole page sideways by
+     112px because the overflow only started at 900. Wider than this the
+     header sticks; narrower, the table scrolls in its own box instead. */
+  @media (max-width:1100px){
+    .qtable-wrap{overflow-x:auto}
+  }
   @media (max-width:900px){
     .qtable .c-lib,.qtable .c-time,.qtable .c-work{display:none}
   }

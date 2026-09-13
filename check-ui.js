@@ -429,6 +429,31 @@ check('slot control at limits', () => {
     if (!/pointer-events\s*:\s*none/.test(rim))
       throw new Error('the rim would intercept clicks');
   });
+  // Both of these failed silently: the page still rendered, the header
+  // still looked like a header, and nothing anywhere said the sticking
+  // had stopped working or that one band was ignoring the theme.
+  check('the sticky header carries the theme rather than a flat slab', () => {
+    const start = css.indexOf('.qtable thead th{');
+    const rule = css.slice(start, css.indexOf('}', start));
+    if (/background:\s*var\(--ink-2\)/.test(rule))
+      throw new Error('flat --ink-2: reads as a black band over a wallpaper');
+    if (!rule.includes('--tint'))
+      throw new Error('header takes no colour from the theme');
+  });
+  check('the table only scrolls sideways where it has to', () => {
+    // overflow-x:auto makes overflow-y compute to auto as well, which
+    // turns the wrapper into a scroll container that never scrolls
+    // vertically — and position:sticky inside one of those is measured
+    // against a box that never moves, so the header stops sticking.
+    // Unconditional overflow here silently costs the sticky header.
+    const start = css.indexOf('.qtable-wrap{');
+    const rule = css.slice(start, css.indexOf('}', start));
+    if (/overflow-x/.test(rule))
+      throw new Error('overflow-x is unconditional, so nothing ever sticks');
+    if (!/@media[^{]*max-width:\s*1100px[^{]*\{\s*\.qtable-wrap\{overflow-x:auto\}/
+        .test(css.replace(/\n\s*/g, '')))
+      throw new Error('no narrow-screen rule, so wide tables push the page');
+  });
   check('transparency can be turned off', () => {
     if (!css.includes('prefers-reduced-transparency'))
       throw new Error('no reduced-transparency fallback');
