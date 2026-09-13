@@ -106,12 +106,16 @@ try { eval(src + '\nglobal.__x = {render, renderLibs, renderTabs, renderJobs, sl
   'toggleLib, removeLib, splitList, describeFilters, wizardError, jumpTo, ' +
   'backToReview, nextStep, validateFirstStep, STEPS, GROUPS, groupIndexOf, ' +
   'SETTINGS_TABS, HEALTH_TABS, duplicateLib, watchInterval, everyPhrase, saveLibrary, ' +
+  'QUEUE_COLUMNS, TABLE_VIEWS, renderQueueTable, workLabel, codecLabel, ' +
+  'resLabel, sortBy, toggleRow, renderSelectionBar, rowActions, selectionAction, ' +
+  'get queueSel(){return queueSel;}, ' +
+  'set __ask(fn){ ask = fn; }, ' +
   'set SET(v){SET = v;}, ' +
   'get settingsSection(){return settingsSection;}, ' +
   'set settingsSection(v){settingsSection = v;}, ' +
   'get editingId(){return editingId;}, ' +
   'get step(){return step;}, set step(v){step = v;}, ' +
-  'get returnTo(){return returnTo;}, get draft(){return draft;}, drawStep};'); }
+  'get returnTo(){return returnTo;}, get draft(){return draft;}, view, switchView, drawStep};'); }
 catch (e) { console.log('SCRIPT FAILED TO LOAD: ' + e.message); process.exit(1); }
 
 console.log('Rendering the interface with sample data:\n');
@@ -292,6 +296,125 @@ check('slot control at limits', () => {
   // saveLibrary sends '' as null -- so changing anything else silently
   // cleared where that library keeps its originals, and they went back to
   // landing inside the watched folder.
+  console.log('\nThe queue table:');
+  const tjob = (over) => ({id: 1, path: '/media/Movies/CODA (2021).mkv',
+    library_id: 1, state: 'done', spec: {codec: 'hevc', quality: 22, audio: 'aac'},
+    size_before: 6e9, size_after: 9e8, source_width: 1920, source_height: 1080,
+    source_codec: 'h264', created_at: 1.7e9, finished_at: 1.7e9, ...over});
+  const tmeta = {page: 1, per_page: 20, total: 1, codecs: [{id: 'hevc', count: 1}]};
+
+  check('renders a row with every column filled', () => {
+    const h = __x.renderQueueTable([tjob()], tmeta);
+    for (const want of ['CODA (2021).mkv', 'full convert', 'hevc', '1080p',
+                        '6.00 GB', '900 MB', '0.15×'])
+      if (!h.includes(want)) throw new Error('missing: ' + want);
+  });
+  check('a job with no probe on record still renders', () => {
+    const h = __x.renderQueueTable(
+      [tjob({source_width: null, source_height: null, source_codec: null})], tmeta);
+    if (!h.includes('CODA')) throw new Error('row vanished');
+  });
+  check('a job with no result yet leaves the result columns blank', () => {
+    const h = __x.renderQueueTable([tjob({state: 'queued', size_after: null})], tmeta);
+    if (h.includes('NaN') || h.includes('undefined'))
+      throw new Error('printed a non-number');
+  });
+  check('Working is not a table view', () => {
+    if (__x.TABLE_VIEWS.has('working')) throw new Error('working got the table');
+    if (!__x.TABLE_VIEWS.has('done')) throw new Error('done did not');
+  });
+
+  // "copy" is an instruction, not a codec. The column shows what the file
+  // actually ends up as, and the filter has to select the same thing.
+  check('a copy job reports the codec it keeps, not the word copy', () => {
+    if (__x.codecLabel(tjob({spec: {codec: 'copy'}})) !== 'h264')
+      throw new Error(__x.codecLabel(tjob({spec: {codec: 'copy'}})));
+  });
+  check('work is described, not named after the codec', () => {
+    if (__x.workLabel(tjob()) !== 'full convert')
+      throw new Error(__x.workLabel(tjob()));
+    if (__x.workLabel(tjob({spec: {measure: 'loudness'}})) !== 'measuring loudness')
+      throw new Error('loudness job mislabelled');
+    if (__x.workLabel(tjob({spec: {codec: 'copy', audio: 'aac'}})) !== 'audio only')
+      throw new Error('audio-only job mislabelled');
+  });
+  check('resolution is banded by height, not width', () => {
+    // A 2.39:1 film is 1920 wide but only ~800 tall; calling that 1080p
+    // off the width alone would put scope films in the wrong band.
+    const label = h => __x.resLabel({source_height: h});
+    if (label(2160) !== '4K' || label(1080) !== '1080p'
+        || label(800) !== '720p' || label(480) !== 'SD')
+      throw new Error([label(2160), label(1080), label(800), label(480)].join(','));
+    if (label(0) !== '') throw new Error('invented a resolution from nothing');
+  });
+
+  check('clicking a header cycles through and back to the natural order', () => {
+    __x.view.sort = null;
+    __x.sortBy('ratio');  const first = __x.view.sort;
+    __x.sortBy('ratio');  const second = __x.view.sort;
+    __x.sortBy('ratio');  const third = __x.view.sort;
+    if (first !== 'ratio' || second !== 'bloat' || third !== null)
+      throw new Error([first, second, third].join(' -> '));
+  });
+  check('every sortable column names a sort the server knows', () => {
+    // Server-side whitelist, mirrored here. A header offering a key the
+    // server drops sorts by nothing at all and says nothing about it.
+    const known = new Set(['newest','oldest','largest','smallest','growth',
+                           'name','ratio','bloat','library','resolution',
+                           'smallest_resolution']);
+    for (const c of __x.QUEUE_COLUMNS)
+      for (const s of (c.sort || []))
+        if (s && !known.has(s)) throw new Error(`${c.id} -> ${s}`);
+  });
+  check('switching tab drops the sort, filters and selection', () => {
+    __x.view.sort = 'ratio'; __x.view.codec = 'av1'; __x.view.resolution = 'uhd';
+    __x.queueSel.add(99);
+    __x.switchView('failed');
+    if (__x.view.sort || __x.view.codec || __x.view.resolution)
+      throw new Error('a filter survived the tab change');
+    if (__x.queueSel.size) throw new Error('selection survived the tab change');
+  });
+  check('the selection bar offers ordering only where order means anything', () => {
+    __x.queueSel.add(1);
+    __x.view.name = 'waiting'; __x.renderSelectionBar();
+    const waiting = els['queue-selbar'].innerHTML;
+    __x.view.name = 'done'; __x.renderSelectionBar();
+    const done = els['queue-selbar'].innerHTML;
+    __x.queueSel.clear();
+    if (!waiting.includes('Move to top')) throw new Error('waiting had no ordering');
+    if (done.includes('Move to top'))
+      throw new Error('offered to reorder finished work');
+  });
+  // An empty array is falsy on .length but truthy itself, so a "0
+  // skipped" reply took the partial-success branch and printed
+  // "1 done. skipped — no longer applicable".
+  await check('a clean result does not report phantom skips', async () => {
+    const realFetch = global.fetch;
+    // selectionAction asks before destructive work, and that modal waits
+    // on a real click — which in a fake DOM never comes, so without this
+    // the whole suite hangs rather than failing.
+    __x.__ask = async () => true;
+    global.fetch = async () => ({ok: true,
+      json: async () => ({ok: true, done: 1, skipped: []})});
+    els['toasts'].children = [];
+    try {
+      __x.queueSel.add(1);
+      __x.view.name = 'failed';
+      await __x.selectionAction('retry');
+    } finally { global.fetch = realFetch; __x.queueSel.clear(); }
+    const text = (els['toasts'].children || []).map(c => c.textContent).join(' ');
+    if (/\bskipped\b/.test(text))
+      throw new Error('claimed something was skipped: ' + text);
+    if (!/1 queued again/.test(text))
+      throw new Error('did not report the success: ' + text);
+  });
+
+  check('a queued row offers both ends of the queue', () => {
+    const h = __x.rowActions(tjob({state: 'queued'}));
+    if (!h.includes('Top') || !h.includes('Bottom'))
+      throw new Error(h);
+  });
+
   // A tab renamed in one place and referenced by its old name in
   // another reads as a pointer to a screen that isn't there. Every
   // "Library Health -> X" in the interface must name a real tab.

@@ -487,34 +487,52 @@ def next_queued(kind, limit=200):
 
 
 def list_jobs(states=None, limit=200, offset=0, library_id=None, q=None,
-              sort=None):
-    query = "SELECT * FROM jobs"
+              sort=None, codec=None, resolution=None):
+    """One page of jobs, with the source's shape alongside each row.
+
+    The LEFT JOIN brings in what the probe already recorded about the
+    file — how big the picture is, and what it was encoded with before
+    Forge touched it. A job row alone can't answer "which of these are
+    4K", because nothing about the source is copied onto it. LEFT rather
+    than INNER so a job whose file was never probed, or has since been
+    renamed, still appears with those columns empty instead of silently
+    dropping out of its own queue.
+    """
+    query = ("SELECT j.*, f.width AS source_width, f.height AS source_height, "
+             "f.video_codec AS source_codec, f.duration AS source_duration "
+             "FROM jobs j LEFT JOIN files f ON f.path = j.path")
     clauses, params = [], []
     if states:
-        clauses.append(f"state IN ({','.join('?' * len(states))})")
+        clauses.append(f"j.state IN ({','.join('?' * len(states))})")
         params.extend(states)
-    if library_id is not None:
-        clauses.append("library_id=?")
-        params.append(library_id)
-    if q:
-        # SQLite's LIKE is case-insensitive for ASCII by default, which
-        # covers the common case (filenames) without extra handling.
-        clauses.append("path LIKE ?")
-        params.append(f"%{q}%")
+    clauses, params = _job_clauses(clauses, params, library_id, q, codec, resolution)
     if clauses:
         query += " WHERE " + " AND ".join(clauses)
 
     # Whitelisted rather than interpolated, since this lands directly in
     # SQL. "growth" is how much bigger the result got than the source —
     # the thing you'd actually triage the Got Bigger list by, and not a
-    # stored column, so it's computed here.
+    # stored column, so it's computed here. Every column is qualified:
+    # jobs and files both have a "path", so a bare one is ambiguous now
+    # that the two are joined.
     SORTS = {
-        "newest": "id DESC",
-        "oldest": "id ASC",
-        "largest": "size_before DESC",
-        "smallest": "size_before ASC",
-        "growth": "(COALESCE(size_after,0) - COALESCE(size_before,0)) DESC",
-        "name": "path ASC",
+        "newest": "j.id DESC",
+        "oldest": "j.id ASC",
+        "largest": "j.size_before DESC",
+        "smallest": "j.size_before ASC",
+        "growth": "(COALESCE(j.size_after,0) - COALESCE(j.size_before,0)) DESC",
+        "name": "j.path ASC",
+        # Best saving first. NULLIF keeps a zero source size from dividing
+        # by zero, and rows with no result yet sort last rather than
+        # ahead of everything on a NULL.
+        "ratio": ("(CAST(j.size_after AS REAL) / NULLIF(j.size_before,0)) "
+                  "ASC NULLS LAST"),
+        "bloat": ("(CAST(j.size_after AS REAL) / NULLIF(j.size_before,0)) "
+                  "DESC NULLS LAST"),
+        "library": ("(SELECT name FROM libraries WHERE id = j.library_id) "
+                    "ASC NULLS LAST, j.id DESC"),
+        "resolution": "COALESCE(f.height,0) DESC, j.id DESC",
+        "smallest_resolution": "COALESCE(f.height,0) ASC, j.id DESC",
     }
     if sort in SORTS:
         query += f" ORDER BY {SORTS[sort]}"
@@ -525,26 +543,98 @@ def list_jobs(states=None, limit=200, offset=0, library_id=None, q=None,
         # until someone actually does that, so id is still what breaks
         # ties (and is the whole order for anyone who never touches it).
         ascending = states and set(states) <= set(ACTIVE_STATES)
-        query += (" ORDER BY COALESCE(queue_order, id) ASC, id ASC" if ascending
-                  else " ORDER BY id DESC")
+        query += (" ORDER BY COALESCE(j.queue_order, j.id) ASC, j.id ASC"
+                  if ascending else " ORDER BY j.id DESC")
     query += " LIMIT ? OFFSET ?"
     params.extend([limit, offset])
     with connect() as conn:
         return [row_to_dict(r) for r in conn.execute(query, params).fetchall()]
 
 
-def count_jobs(states=None, library_id=None, q=None):
-    query = "SELECT COUNT(*) FROM jobs"
-    clauses, params = [], []
-    if states:
-        clauses.append(f"state IN ({','.join('?' * len(states))})")
-        params.extend(states)
+# Height bands, named the way someone reading a file list would name them
+# rather than by exact pixel count — a 1920x804 scope film is "1080p" to
+# everyone who isn't a muxer. Shared by the filter and the label so the
+# thing you pick and the thing you see can't disagree.
+RESOLUTIONS = {
+    "uhd":    (1600, 1_000_000),
+    "fullhd": (1000, 1600),
+    "hd":     (700, 1000),
+    "sd":     (0, 700),
+}
+
+
+# What codec a job's result actually is, in SQL.
+#
+# The target lives in the spec, which is JSON rather than a column, so
+# json_extract reads it in place — that lets codec be filtered and counted
+# like any other term instead of pulling every row into Python.
+#
+# "copy" is not a codec, it's an instruction to leave the video alone, so
+# a job carrying it comes out as whatever the source already was. That
+# matches what the Codec column shows, which is the point: a filter that
+# doesn't select the value printed in front of you is just broken.
+CODEC_EXPR = ("LOWER(COALESCE(NULLIF(json_extract(j.spec,'$.codec'),'copy'), "
+              "f.video_codec, ''))")
+
+
+def _job_clauses(clauses, params, library_id, q, codec=None, resolution=None):
+    """The WHERE terms shared by listing jobs and counting them.
+
+    Built once rather than written twice: a filter that narrows the list
+    but not the count gives a pager that promises pages which turn out
+    empty, and that had to stay true for every filter added here.
+    """
     if library_id is not None:
-        clauses.append("library_id=?")
+        clauses.append("j.library_id=?")
         params.append(library_id)
     if q:
-        clauses.append("path LIKE ?")
+        # SQLite's LIKE is case-insensitive for ASCII by default, which
+        # covers the common case (filenames) without extra handling.
+        clauses.append("j.path LIKE ?")
         params.append(f"%{q}%")
+    if codec:
+        clauses.append(f"{CODEC_EXPR} = ?")
+        params.append(str(codec).lower())
+    if resolution in RESOLUTIONS:
+        low, high = RESOLUTIONS[resolution]
+        clauses.append("f.height >= ? AND f.height < ?")
+        params.extend([low, high])
+    return clauses, params
+
+
+def codecs_in_view(states=None, library_id=None, q=None):
+    """Which target codecs actually appear in this view, most common first.
+
+    So the codec filter offers what is really there. Reads the spec in
+    SQL rather than counting in Python, which would mean pulling every
+    row of a view that can be a quarter of a million long.
+    """
+    query = (f"SELECT {CODEC_EXPR} AS codec, "
+             "COUNT(*) AS n FROM jobs j LEFT JOIN files f ON f.path = j.path")
+    clauses, params = [], []
+    if states:
+        clauses.append(f"j.state IN ({','.join('?' * len(states))})")
+        params.extend(states)
+    clauses, params = _job_clauses(clauses, params, library_id, q)
+    if clauses:
+        query += " WHERE " + " AND ".join(clauses)
+    # HAVING, not WHERE: the alias only exists after grouping.
+    query += " GROUP BY codec HAVING codec IS NOT NULL AND codec != ''"
+    query += " ORDER BY n DESC"
+    with connect() as conn:
+        return [{"id": r["codec"], "count": r["n"]}
+                for r in conn.execute(query, params).fetchall()]
+
+
+def count_jobs(states=None, library_id=None, q=None, codec=None,
+               resolution=None):
+    query = ("SELECT COUNT(*) FROM jobs j "
+             "LEFT JOIN files f ON f.path = j.path")
+    clauses, params = [], []
+    if states:
+        clauses.append(f"j.state IN ({','.join('?' * len(states))})")
+        params.extend(states)
+    clauses, params = _job_clauses(clauses, params, library_id, q, codec, resolution)
     if clauses:
         query += " WHERE " + " AND ".join(clauses)
     with connect() as conn:
@@ -635,6 +725,44 @@ def move_job_to_top(job_id):
         ).fetchone()
         floor = (row["m"] if row and row["m"] is not None else 0) - 1
         conn.execute("UPDATE jobs SET queue_order=? WHERE id=?", (floor, job_id))
+
+
+def move_jobs(ids, where="top"):
+    """Send these queued jobs to one end of the waiting list.
+
+    Generalises move_job_to_top to a group, and to the other end. Going
+    to the bottom is the one that's hard to do any other way: dragging
+    something down a list of several thousand across paged views isn't
+    a real option, and cancelling it isn't the same thing — the point is
+    "not now", not "not at all".
+
+    Only queued jobs can be positioned; anything already leased or
+    running has a worker on it and its place in the queue no longer
+    means anything. Their order within the group is kept, so selecting
+    five and sending them to the top preserves how they were listed.
+    """
+    ids = [int(i) for i in ids]
+    if not ids:
+        return 0
+    with connect() as conn:
+        placeholders = ",".join("?" * len(ids))
+        movable = {r["id"] for r in conn.execute(
+            f"SELECT id FROM jobs WHERE id IN ({placeholders}) "
+            f"AND state='queued'", ids).fetchall()}
+        ordered = [i for i in ids if i in movable]
+        if not ordered:
+            return 0
+        edge = conn.execute(
+            "SELECT MIN(COALESCE(queue_order,id)) AS lo, "
+            "       MAX(COALESCE(queue_order,id)) AS hi "
+            "FROM jobs WHERE state='queued'").fetchone()
+        lo = edge["lo"] if edge and edge["lo"] is not None else 0
+        hi = edge["hi"] if edge and edge["hi"] is not None else 0
+        base = (hi + 1) if where == "bottom" else (lo - len(ordered))
+        conn.executemany(
+            "UPDATE jobs SET queue_order=? WHERE id=?",
+            [(base + n, jid) for n, jid in enumerate(ordered)])
+    return len(ordered)
 
 
 def reorder_jobs(ids):

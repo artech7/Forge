@@ -1128,7 +1128,9 @@ async def handle_audio_fail(job, error):
 
 @app.get("/api/jobs")
 async def list_jobs(view: str = "active", page: int = 1, per_page: int = 20,
-                     library_id: int = None, q: str = None, kind: str = None):
+                     library_id: int = None, q: str = None, kind: str = None,
+                     sort: str = None, codec: str = None,
+                     resolution: str = None):
     """One page of jobs from a view, with enough detail to render a pager.
 
     library_id narrows both the page of jobs and the counts to one library,
@@ -1144,28 +1146,39 @@ async def list_jobs(view: str = "active", page: int = 1, per_page: int = 20,
     q = (q or "").strip() or None
     kind = kind if kind in db.JOB_KINDS else None
 
+    codec = (codec or "").strip().lower() or None
+    resolution = resolution if resolution in db.RESOLUTIONS else None
+
     if kind:
         # Kind lives in the spec, not a column, so it can't be filtered in
         # SQL. Fetched and filtered first so the page and the total agree —
         # paging in SQL then filtering in Python would give short pages and
         # a count that doesn't match what's shown.
         matching = db._filter_kind(
-            db.list_jobs(list(states), 20000, 0, library_id, q, None), kind)
+            db.list_jobs(list(states), 20000, 0, library_id, q, sort,
+                         codec, resolution), kind)
         total = len(matching)
         pages = max(1, -(-total // per_page))
         page = max(1, min(page, pages))
         start = (page - 1) * per_page
         jobs = matching[start:start + per_page]
     else:
-        total = db.count_jobs(list(states), library_id, q)
+        total = db.count_jobs(list(states), library_id, q, codec, resolution)
         pages = max(1, -(-total // per_page))
         page = max(1, min(page, pages))
         jobs = db.list_jobs(list(states), per_page, (page - 1) * per_page,
-                            library_id, q)
+                            library_id, q, sort, codec, resolution)
 
     return {
         "view": view, "page": page, "pages": pages, "total": total,
         "per_page": per_page, "kind": kind, "jobs": jobs,
+        "sort": sort, "codec": codec, "resolution": resolution,
+        # What's actually worth offering in the filter row. Derived from
+        # the view being looked at rather than hardcoded, so a codec
+        # nobody uses never appears and one added later needs no change
+        # here. Unfiltered by codec on purpose — a list of choices that
+        # shrinks to only the choice already made can't be changed.
+        "codecs": db.codecs_in_view(list(states), library_id, q),
         "counts": db.job_counts(library_id, q),
         "kinds": db.queued_by_kind(library_id) if view == "waiting" else None,
     }
@@ -2071,6 +2084,66 @@ async def prioritize_job(job_id: int):
     db.move_job_to_top(job_id)
     await broadcast()
     return {"ok": True}
+
+
+SELECTION_LIMIT = 500
+
+
+@app.post("/api/jobs/selection")
+async def jobs_selection(req: Request):
+    """Act on exactly the rows someone ticked.
+
+    Separate from /api/jobs/bulk, which takes a view name and a search
+    and works the set out for itself. That shape is right for "retry all
+    4,000 failed" and wrong for "retry these three" — there was no way
+    to say the second at all, so a handful of files meant a handful of
+    round trips or an all-or-nothing button.
+
+    Reuses the single-job paths rather than reimplementing them, so a
+    selected retry behaves exactly like the button on one row, including
+    clearing a stale entry whose file is already queued again. Each one
+    that can't be done is reported rather than failing the whole request:
+    a selection spanning a page will often include something that
+    finished a second ago, and that shouldn't undo the rest.
+    """
+    body = await req.json()
+    action = body.get("action")
+    ids = [int(i) for i in (body.get("ids") or [])][:SELECTION_LIMIT]
+    if not ids:
+        raise HTTPException(400, "No jobs selected.")
+
+    if action in ("top", "bottom"):
+        moved = db.move_jobs(ids, action)
+        await broadcast()
+        return {"ok": True, "moved": moved,
+                "skipped": len(ids) - moved}
+
+    if action not in ("retry", "remove", "cancel"):
+        raise HTTPException(400, "Unknown action")
+
+    done, skipped = 0, []
+    for job_id in ids:
+        job = db.get_job(job_id)
+        if not job:
+            skipped.append({"id": job_id, "why": "no longer there"})
+            continue
+        try:
+            if action == "retry":
+                await retry_job(job_id)
+            elif action == "cancel":
+                if job["state"] not in db.ACTIVE_STATES:
+                    skipped.append({"id": job_id,
+                                    "why": f"already {job['state']}"})
+                    continue
+                db.update_job(job_id, state="cancelled",
+                              finished_at=time.time())
+            else:
+                db.delete_job(job_id)
+            done += 1
+        except HTTPException as exc:
+            skipped.append({"id": job_id, "why": exc.detail})
+    await broadcast()
+    return {"ok": True, "done": done, "skipped": skipped}
 
 
 @app.post("/api/jobs/reorder")

@@ -101,7 +101,14 @@
   }
   .wrap{max-width:1180px;margin:0 auto}
 
-  .toptabs{display:flex;gap:2px;margin:24px 0 26px;border-bottom:1px solid var(--edge)}
+  /* Five tabs don't fit a phone, and a flex row that can't wrap widens
+     the page instead — which took the whole layout 40px off screen at
+     400px wide, on every tab, long before there was a table to blame.
+     Scrolls within itself now; the divider stays put. */
+  .toptabs{display:flex;gap:2px;margin:24px 0 26px;border-bottom:1px solid var(--edge);
+           overflow-x:auto;scrollbar-width:none}
+  .toptabs::-webkit-scrollbar{display:none}
+  .toptab{flex:none}
   .toptab{background:none;border:none;color:var(--muted);font-family:Archivo,sans-serif;
     font-size:14.5px;font-weight:600;padding:11px 18px;cursor:pointer;
     border-radius:10px 10px 0 0;position:relative;top:1px;
@@ -311,6 +318,81 @@
                 font-size:13px;background:rgba(255,255,255,.05);
                 border:1px solid var(--edge);border-radius:11px;color:var(--text)}
   .queue-search::placeholder{color:var(--muted)}
+
+  /* The queue table. Same glass panel and edge colour as every other
+     surface — it reads as one of Forge's cards that happens to have
+     columns, rather than a spreadsheet bolted on. */
+  /* min-width:0 and max-width:100% are what keep the sideways scrolling
+     inside this box. Without them a wide table stretches its container
+     instead of overflowing it, and the whole page scrolls — which moves
+     the header and tabs off screen to read a filename. */
+  .qtable-wrap{background:var(--glass);border:1px solid var(--edge);
+               border-radius:var(--r);overflow-x:auto;
+               min-width:0;max-width:100%}
+  .qtable{width:100%;border-collapse:collapse;font-size:12.5px}
+  .qtable th,.qtable td{padding:9px 10px;text-align:left;white-space:nowrap;
+                        border-bottom:1px solid rgba(255,255,255,.05)}
+  .qtable thead th{font-family:'Chivo Mono',monospace;font-size:10.5px;
+    letter-spacing:.05em;text-transform:uppercase;color:var(--muted);
+    font-weight:600;position:sticky;top:0;background:var(--ink-2);z-index:2}
+  .qtable th.sortable{cursor:pointer;user-select:none}
+  .qtable th.sortable:hover{color:var(--text)}
+  .sortmark{margin-left:5px;font-size:9px;opacity:.9}
+  .sortmark.dim{opacity:.25}
+  .qtable tr.filters th{position:sticky;top:30px;background:var(--ink-2);
+                        padding:5px 7px 8px;z-index:2}
+  .qtable tr.filters input,.qtable tr.filters select{
+    width:100%;min-width:64px;font-size:11.5px;padding:4px 7px;
+    background:rgba(255,255,255,.05);border:1px solid var(--edge);
+    border-radius:7px;color:var(--text);font-family:inherit}
+  .qtable tbody tr:hover{background:rgba(255,255,255,.035)}
+  .qtable tbody tr.picked{background:rgba(74,222,155,.08)}
+  .qtable tbody tr:last-child td{border-bottom:0}
+  .qtable .c-file{white-space:normal;min-width:230px;max-width:520px;
+                  word-break:break-word}
+  .qtable .c-file .num{color:var(--muted);font-family:'Chivo Mono',monospace;
+                       font-size:10.5px;margin-right:8px}
+  .qtable .rowerr{display:block;color:var(--fault);font-size:11px;
+                  margin-top:2px;white-space:normal}
+  .qtable .c-work,.qtable .c-codec{color:var(--muted)}
+  .qtable .c-size,.qtable .c-ratio{font-family:'Chivo Mono',monospace;
+    font-variant-numeric:tabular-nums;text-align:right}
+  .qtable .c-ratio.saved{color:var(--signal)}
+  .qtable .c-ratio.grew{color:var(--fault)}
+  .qtable .c-time{font-family:'Chivo Mono',monospace;font-size:11.5px;
+                  color:var(--muted)}
+  .qtable .c-pick{width:34px}
+  .qtable .c-act{text-align:right}
+  .qtable .c-act button{font-size:11px;padding:4px 9px;margin-left:4px}
+  .qtable input[type=checkbox]{width:15px;height:15px;accent-color:var(--signal);
+                               cursor:pointer}
+
+  /* Narrow screens drop the columns you can live without before the
+     table starts scrolling sideways — file, size and ratio survive. */
+  @media (max-width:900px){
+    .qtable .c-lib,.qtable .c-time,.qtable .c-work{display:none}
+  }
+  @media (max-width:560px){
+    .qtable .c-codec,.qtable .c-res{display:none}
+    /* The filename is the one column that must never be cut, but its
+       floor is what pushes the table past a phone's width. Let it wrap
+       tighter rather than forcing the table to scroll. */
+    .qtable .c-file{min-width:130px}
+    .qtable th,.qtable td{padding:8px 7px}
+    .qtable .c-act button{padding:4px 7px}
+  }
+
+  /* Appears only when something is ticked, so it costs nothing until
+     it's useful. */
+  .selbar{display:none}
+  .selbar.on{display:flex;align-items:center;gap:8px;flex-wrap:wrap;
+    margin:0 0 12px;padding:9px 14px;background:rgba(74,222,155,.09);
+    border:1px solid rgba(74,222,155,.3);border-radius:12px}
+  .selbar .count{font-family:'Chivo Mono',monospace;font-size:12px;
+                 font-weight:600;margin-right:4px}
+  .selbar .grow{flex:1}
+  .selbar button{font-size:12px;padding:5px 11px}
+  .selbar button.danger{border-color:rgba(255,107,107,.45);color:#ffb3b3}
 
   .count-badge{font-family:'Chivo Mono',monospace;font-size:10.5px;
     padding:1px 6px;border-radius:5px;background:rgba(255,255,255,.1);
@@ -692,6 +774,7 @@
     <input type="text" id="queue-search" class="queue-search"
            placeholder="Search by filename…" oninput="onQueueSearch(this.value)">
     <div class="batchbar" id="batchbar"></div>
+    <div class="selbar" id="queue-selbar"></div>
     <div class="queue" id="queue"></div>
     <div class="pager" id="pager"></div>
   </div>
@@ -1404,7 +1487,41 @@ async function queueDrop(e, targetId) {
 /* --------------------------------------------------------- job views */
 const view = {name:'working', page:1, perPage:20, loaded:false, counts:{},
               kind:'all',
-              library_id:null};
+              library_id:null,
+              // Column sort and the filter row. Null means "whatever the
+              // view's natural order is" — running order for the waiting
+              // list, newest-first for history — which is not the same as
+              // any particular column, so it can't be expressed as one.
+              sort:null, codec:null, resolution:null};
+
+// Which rows are ticked. Held outside `view` because it survives paging
+// and sorting within a tab: selecting four files, sorting by size and
+// then acting on them is the whole point, and a selection that emptied
+// itself on every reload would make that impossible. Cleared when the
+// tab changes, where the rows really are a different set.
+let queueSel = new Set();
+
+// Working keeps the detailed rows: a progress bar, the phase line, and a
+// projected size are worth the space when there are three of them and
+// they're changing. Everything else is a list to scan and act on, often
+// thousands long, where columns that line up beat prose that doesn't.
+const TABLE_VIEWS = new Set(['waiting', 'done', 'failed', 'bloated',
+                             'ignored', 'cancelled', 'removed', 'active']);
+
+// Column definitions, in order. `sort` gives the two server sort keys a
+// header cycles through; a column without one isn't sortable.
+const QUEUE_COLUMNS = [
+  {id:'library', label:'Library', sort:['library', null], cls:'c-lib'},
+  {id:'time',    label:'Time',    sort:['newest', 'oldest'], cls:'c-time'},
+  {id:'file',    label:'File',    sort:['name', null], cls:'c-file'},
+  {id:'work',    label:'Work',    cls:'c-work'},
+  {id:'codec',   label:'Codec',   cls:'c-codec'},
+  {id:'res',     label:'Res',     sort:['resolution', 'smallest_resolution'],
+   cls:'c-res'},
+  {id:'before',  label:'Old size', sort:['largest', 'smallest'], cls:'c-size'},
+  {id:'after',   label:'New size', cls:'c-size'},
+  {id:'ratio',   label:'Ratio',   sort:['ratio', 'bloat'], cls:'c-ratio'},
+];
 
 /* Each library gets its own queue: this draws the picker (All + one tab
    per library) and switchLibrary() below re-scopes whichever state tab
@@ -1546,6 +1663,14 @@ function switchView(name) {
   view.page = 1;
   view.kind = 'all';
   view.loaded = false;
+  // A different tab really is a different set of rows, so the sort, the
+  // column filters and anything ticked all belong to the tab being left.
+  // Carrying a "ratio" sort onto the waiting list, where nothing has a
+  // ratio yet, would silently reorder it by nothing at all.
+  view.sort = null;
+  view.codec = null;
+  view.resolution = null;
+  queueSel.clear();
   renderTabs(view.counts);
   if (name === 'working') {
     renderActiveFromState(window.__state || {});
@@ -1604,8 +1729,15 @@ async function loadView() {
     const qParam = queueSearch ? `&q=${encodeURIComponent(queueSearch)}` : '';
     const kindParam = (view.name === 'waiting' && view.kind !== 'all')
       ? `&kind=${view.kind}` : '';
+    // Sort and the column filters are all server-side, so they narrow
+    // the whole list and its total together. Filtering the page you can
+    // see would give a pager counting rows it had already hidden.
+    const sortParam = view.sort ? `&sort=${view.sort}` : '';
+    const codecParam = view.codec ? `&codec=${encodeURIComponent(view.codec)}` : '';
+    const resParam = view.resolution ? `&resolution=${view.resolution}` : '';
     const r = await (await fetch(
-      `/api/jobs?view=${view.name}&page=${view.page}&per_page=${view.perPage}${libParam}${qParam}${kindParam}`)).json();
+      `/api/jobs?view=${view.name}&page=${view.page}&per_page=${view.perPage}`
+      + `${libParam}${qParam}${kindParam}${sortParam}${codecParam}${resParam}`)).json();
     view.loaded = true;
     view.page = r.page;
     renderTabs(r.counts || view.counts);
@@ -1619,8 +1751,314 @@ async function loadView() {
 const ACTION_LABEL = {audio_only:'audio only', video_only:'video only',
                      remux:'repackage', full:'full convert', skip:'—'};
 
+// What a job is actually doing, in a couple of words. Pulled out of
+// renderJobs so the table and the detailed rows describe a job the same
+// way — two descriptions of the same thing drifting apart is how
+// "leveling audio" ended up on an eac3-to-AAC conversion.
+function workLabel(j) {
+  const spec = j.spec || {};
+  const copyingVideo = (spec.codec || '') === 'copy';
+  const convertingAudio = (spec.audio || 'copy') !== 'copy';
+  if (spec.measure === 'loudness') return 'measuring loudness';
+  if (spec.level_only) return 'leveling audio';
+  if (ACTION_LABEL[spec.action]) return ACTION_LABEL[spec.action];
+  if (copyingVideo) {
+    return convertingAudio ? 'audio only'
+         : spec.normalise_loudness ? 'leveling audio' : 'repackaging';
+  }
+  // Re-encoding the picture with nothing saying otherwise. This used to
+  // read as the codec name, which said what the file would become but
+  // not what was being done to it — and in the table, where the codec
+  // has a column of its own, printed the same word twice on one row.
+  return 'full convert';
+}
+
+// The codec a job is heading for. A job copying the video isn't changing
+// it, so the honest answer there is whatever the source already is.
+function codecLabel(j) {
+  const want = (j.spec || {}).codec || '';
+  if (!want || want === 'copy') return j.source_codec || '';
+  return want;
+}
+
+// 3840x2160 -> "4K". Height decides, because letterboxed film is wider
+// than it is tall and would otherwise report a tier too low.
+function resLabel(j) {
+  const h = j.source_height || 0;
+  if (!h) return '';
+  if (h >= 1600) return '4K';
+  if (h >= 1000) return '1080p';
+  if (h >= 700) return '720p';
+  return 'SD';
+}
+
+const RES_FILTERS = [['uhd','4K'], ['fullhd','1080p'],
+                     ['hd','720p'], ['sd','SD']];
+
+function jobTime(j) {
+  const t = j.finished_at || j.started_at || j.created_at;
+  if (!t) return '';
+  const d = new Date(t * 1000);
+  const pad = n => String(n).padStart(2, '0');
+  return `${pad(d.getMonth() + 1)}-${pad(d.getDate())} `
+       + `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+function libraryName(id) {
+  const l = ((window.__state || {}).libraries || []).find(x => x.id === id);
+  return l ? l.name : '';
+}
+
+// Clicking a header cycles: first click sorts the way you almost always
+// want (biggest, newest, best saving), second reverses it, third returns
+// to the view's own order. The third step matters on the waiting list,
+// where the natural order *is* the running order — sorting it by size
+// and having no way back would hide what runs next.
+function sortBy(columnId) {
+  const col = QUEUE_COLUMNS.find(c => c.id === columnId);
+  if (!col || !col.sort) return;
+  const [primary, secondary] = col.sort;
+  view.sort = view.sort === primary ? (secondary || null)
+            : view.sort === secondary ? null
+            : primary;
+  view.page = 1;
+  loadView();
+}
+
+function setQueueFilter(field, value) {
+  view[field] = value || null;
+  view.page = 1;
+  loadView();
+}
+
+function toggleRow(id, on) {
+  if (on) queueSel.add(id); else queueSel.delete(id);
+  renderSelectionBar();
+  const master = document.getElementById('queue-all');
+  if (master) master.checked = false;
+}
+
+function toggleAllRows(on) {
+  const ids = (lastJobs || []).map(j => j.id);
+  if (on) ids.forEach(i => queueSel.add(i));
+  else ids.forEach(i => queueSel.delete(i));
+  document.querySelectorAll('#queue input.rowsel').forEach(cb => {
+    cb.checked = on;
+  });
+  renderSelectionBar();
+}
+
+let lastJobs = [];
+
+function renderSelectionBar() {
+  const el = document.getElementById('queue-selbar');
+  if (!el) return;
+  const n = queueSel.size;
+  if (!n) { el.innerHTML = ''; el.classList.remove('on'); return; }
+  el.classList.add('on');
+  const v = view.name;
+  const canRetry = ['failed', 'ignored', 'bloated', 'done', 'cancelled',
+                    'removed'].includes(v);
+  const canCancel = ['waiting', 'active'].includes(v);
+  const canOrder = v === 'waiting';
+  el.innerHTML = `
+    <span class="count">${n} selected</span>
+    ${canOrder ? `<button onclick="selectionAction('top')">Move to top</button>
+                  <button onclick="selectionAction('bottom')">Move to bottom</button>` : ''}
+    ${canRetry ? `<button onclick="selectionAction('retry')">Put back in the queue</button>` : ''}
+    ${canCancel ? `<button onclick="selectionAction('cancel')">Cancel</button>` : ''}
+    <button class="danger" onclick="selectionAction('remove')">Remove from list</button>
+    <span class="grow"></span>
+    <button onclick="queueSel.clear();renderSelectionBar();loadView()">Clear</button>`;
+}
+
+const SELECTION_ASK = {
+  remove: ['Remove %n from this list? The video files themselves are not '
+           + 'touched.', 'Remove them', true],
+  cancel: ['Cancel %n? Anything already running stops at its next check-in.',
+           'Cancel them', true],
+  retry:  ['Put %n back in the queue?', 'Queue them', false],
+};
+
+async function selectionAction(action) {
+  const ids = [...queueSel];
+  if (!ids.length) return;
+  const noun = ids.length === 1 ? '1 job' : `${ids.length} jobs`;
+  const prompt = SELECTION_ASK[action];
+  if (prompt && !await ask(prompt[0].replace('%n', noun),
+                           {yes: prompt[1], danger: prompt[2]})) return;
+  let r;
+  try {
+    r = await (await fetch('/api/jobs/selection', {method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({action, ids})})).json();
+  } catch (e) {
+    return notifyBad('Could not reach the server.');
+  }
+  // Partial success is the normal case for a selection spanning a page:
+  // something in it usually finished or moved on while it sat there.
+  //
+  // The move actions answer with a count and the rest with a list, so
+  // this has to handle both. Written as `list.length || r.skipped || 0`
+  // it reported "1 done. skipped — no longer applicable", because an
+  // empty array is falsy on .length but truthy in its own right, so the
+  // zero case fell through to the array and printed it as nothing.
+  const skipped = Array.isArray(r.skipped) ? r.skipped.length
+                                           : (r.skipped || 0);
+  const firstWhy = Array.isArray(r.skipped) && r.skipped.length
+    ? (r.skipped[0].why || '') : '';
+  if (action === 'top' || action === 'bottom') {
+    notifyGood(`Moved ${r.moved} to the ${action}.`
+      + (skipped ? ` ${skipped} already started and stayed put.` : ''));
+  } else if (skipped) {
+    notifyInfo(`${r.done} done. ${skipped} skipped — `
+      + (firstWhy || 'no longer applicable') + '.');
+  } else {
+    notifyGood(`${r.done} ${action === 'retry' ? 'queued again'
+               : action === 'cancel' ? 'cancelled' : 'removed'}.`);
+  }
+  queueSel.clear();
+  loadView();
+}
+
+function renderQueueTable(jobs, meta) {
+  const sortMark = col => {
+    if (!col.sort) return '';
+    const [a, b] = col.sort;
+    if (view.sort === a) return '<span class="sortmark">▼</span>';
+    if (view.sort === b) return '<span class="sortmark">▲</span>';
+    return '<span class="sortmark dim">↕</span>';
+  };
+
+  const head = QUEUE_COLUMNS.map(c =>
+    `<th class="${c.cls}${c.sort ? ' sortable' : ''}"
+        ${c.sort ? `onclick="sortBy('${c.id}')"` : ''}>${c.label}${sortMark(c)}</th>`
+  ).join('');
+
+  const codecOpts = ['<option value="">Any</option>'].concat(
+    (meta.codecs || []).map(c =>
+      `<option value="${c.id}" ${view.codec === c.id ? 'selected' : ''}>`
+      + `${c.id} (${c.count})</option>`)).join('');
+  const resOpts = ['<option value="">Any</option>'].concat(
+    RES_FILTERS.map(([id, label]) =>
+      `<option value="${id}" ${view.resolution === id ? 'selected' : ''}>`
+      + `${label}</option>`)).join('');
+
+  // Only the filters nothing else already offers. Library has the tabs
+  // above, and filename has the search box — which deliberately lives
+  // outside the table, because anything inside it is destroyed and
+  // rebuilt on every reload and a text box that loses focus after the
+  // first letter is worse than no text box at all.
+  //
+  // Both of these are selects for the same reason: a select is set once
+  // per change, so rebuilding the table underneath it costs nothing.
+  const filters = `
+    <tr class="filters">
+      <th></th><th></th><th></th><th></th><th></th>
+      <th><select onchange="setQueueFilter('codec', this.value)">${codecOpts}</select></th>
+      <th><select onchange="setQueueFilter('resolution', this.value)">${resOpts}</select></th>
+      <th></th><th></th><th></th><th></th>
+    </tr>`;
+
+  const rows = jobs.map((j, i) => {
+    const n = (meta.page - 1) * meta.per_page + i + 1;
+    const name = j.path.split('/').pop();
+    const ratio = (j.size_before && j.size_after)
+      ? j.size_after / j.size_before : null;
+    const ratioCls = ratio == null ? '' : ratio <= 1 ? 'saved' : 'grew';
+    return `
+      <tr class="${queueSel.has(j.id) ? 'picked' : ''}" data-job-id="${j.id}">
+        <td class="c-pick"><input type="checkbox" class="rowsel"
+            ${queueSel.has(j.id) ? 'checked' : ''}
+            onchange="toggleRow(${j.id}, this.checked)"></td>
+        <td class="c-lib">${attr(libraryName(j.library_id))}</td>
+        <td class="c-time">${jobTime(j)}</td>
+        <td class="c-file" title="${attr(j.path)}">
+          <span class="num">${n}</span>${attr(name)}
+          ${j.error ? `<span class="rowerr">${attr(j.error)}</span>` : ''}</td>
+        <td class="c-work">${attr(workLabel(j))}</td>
+        <td class="c-codec">${attr(codecLabel(j))}</td>
+        <td class="c-res">${resLabel(j)}</td>
+        <td class="c-size">${j.size_before ? fmtSize(j.size_before) : ''}</td>
+        <td class="c-size">${j.size_after ? fmtSize(j.size_after) : ''}</td>
+        <td class="c-ratio ${ratioCls}">${ratio == null ? ''
+            : ratio.toFixed(2) + '×'}</td>
+        <td class="c-act">${rowActions(j)}</td>
+      </tr>`;
+  }).join('');
+
+  return `
+    <div class="qtable-wrap">
+      <table class="qtable">
+        <thead>
+          <tr>
+            <th class="c-pick"><input type="checkbox" id="queue-all"
+                onchange="toggleAllRows(this.checked)"></th>
+            ${head}
+            <th class="c-act"></th>
+          </tr>
+          ${filters}
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>`;
+}
+
+// The per-row buttons, shared by both layouts so a row offers the same
+// things whichever way it's being shown.
+function rowActions(j) {
+  const btn = (fn, label, cls) =>
+    `<button class="${cls || ''}" onclick="${fn}">${label}</button>`;
+  switch (j.state) {
+    case 'failed':
+    case 'ignored':
+      return btn(`retryJob(${j.id})`, 'Try again')
+           + btn(`removeJob(${j.id})`, 'Remove');
+    case 'removed':
+      return btn(`removeJob(${j.id})`, 'Clear');
+    case 'bloated':
+      return btn(`revertJob(${j.id})`, 'Keep original', 'primary')
+           + btn(`acceptJob(${j.id})`, 'Keep it')
+           + btn(`removeJob(${j.id})`, 'Remove');
+    case 'done':
+      return btn(`removeJob(${j.id})`, 'Remove');
+    case 'cancelled':
+      return btn(`requeueJob(${j.id},'${j.state}')`, 'Requeue')
+           + btn(`removeJob(${j.id})`, 'Remove');
+    case 'queued':
+      return btn(`moveJobToTop(${j.id})`, 'Top')
+           + btn(`moveJobToBottom(${j.id})`, 'Bottom')
+           + btn(`cancelJob(${j.id})`, 'Cancel');
+    default:
+      return btn(`requeueJob(${j.id},'${j.state}')`, 'Restart')
+           + btn(`cancelJob(${j.id})`, 'Cancel');
+  }
+}
+
+async function moveJobToBottom(id) {
+  const r = await (await fetch('/api/jobs/selection', {method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({action: 'bottom', ids: [id]})})).json();
+  if (!r.moved) return notifyInfo('That one has already started.');
+  loadView();
+}
+
 function renderJobs(jobs, meta) {
   const el = document.getElementById('queue');
+  lastJobs = jobs || [];
+  // Selections are deliberately not pruned to the visible page: ticking
+  // four files, sorting by size and then acting on them is the point,
+  // and pruning would empty the selection on the reload that sorting
+  // causes. The bar states the count for exactly this reason — it can
+  // include rows that are no longer on screen. Anything that has since
+  // been dealt with elsewhere comes back from the server as skipped
+  // rather than failing the whole action.
+  if (jobs.length && TABLE_VIEWS.has(view.name)) {
+    el.innerHTML = renderQueueTable(jobs, meta || {page: 1, per_page: jobs.length});
+    renderSelectionBar();
+    renderPager(meta);
+    return;
+  }
   if (!jobs.length) {
     el.innerHTML = `<div class="glass empty">${
       view.name === 'failed' ? '<b>Nothing has failed</b>All good.'
@@ -1647,14 +2085,14 @@ function renderJobs(jobs, meta) {
     // Re-encoding the audio is the headline when both are happening:
     // levelling rides along inside that same pass, so calling the job
     // "leveling audio" hides the codec change that's the actual point.
-    const convertingAudio = (j.spec.audio || 'copy') !== 'copy';
-    const bits = j.spec.measure === 'loudness' ? ['measuring loudness']
-      : j.spec.level_only ? ['leveling audio']
-      : ACTION_LABEL[j.spec.action] ? [ACTION_LABEL[j.spec.action]]
-      : copyingVideo
-        ? [convertingAudio ? 'audio only'
-           : j.spec.normalise_loudness ? 'leveling audio' : 'repackaging']
-      : [(j.spec.codec || '').toUpperCase()];
+    // One description, shared with the table via workLabel(). These were
+    // briefly two copies of the same rules, which is how a job came to be
+    // called one thing in one list and another thing in the next.
+    const bits = [workLabel(j)];
+    // The table has a column for the target codec; here there isn't one,
+    // so it rides along with the rest of the detail.
+    if (!copyingVideo && j.spec.measure !== 'loudness' && j.spec.codec)
+      bits.push(j.spec.codec.toUpperCase());
     // Quality only describes a video re-encode, so it's noise otherwise.
     const reEncodingVideo = !copyingVideo && j.spec.measure !== 'loudness'
       && !['audio_only','remux'].includes(j.spec.action);

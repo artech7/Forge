@@ -807,6 +807,90 @@ check("requeueing clears the phase, so nothing describes stale work",
 db.delete_jobs(["queued"], library_id=_ph_lib)
 db.delete_library(_ph_lib)
 
+print("\nSorting, filtering and counting a queue:")
+_q_lib = db.create_library("Queue", str(base / "queue"), "", profile, "archive")
+_q_lib2 = db.create_library("Queue B", str(base / "queue2"), "", profile, "archive")
+_q_rows = [                       # path, library, w, h, before, after, codec
+    ("/q/uhd.mkv",   _q_lib,  3840, 2160, 10_000_000_000, 4_000_000_000, "hevc"),
+    ("/q/hd.mkv",    _q_lib,  1920, 1080,  2_000_000_000,   200_000_000, "hevc"),
+    ("/q/720.mkv",   _q_lib2, 1280,  720,  1_000_000_000,   800_000_000, "av1"),
+    ("/q/sd.mkv",    _q_lib2,  720,  480,    500_000_000,          None, "hevc"),
+]
+for _p, _l, _w, _h, _b, _a, _c in _q_rows:
+    _jid = db.enqueue(_p, {"codec": _c, "quality": 22}, _b, _l)
+    db.update_job(_jid, state="done", size_after=_a)
+    db.cache_probe(_p, {"size": _b, "width": _w, "height": _h,
+                        "video_codec": "h264", "duration": 60,
+                        "audio_codecs": ["aac"], "bitrate": 1,
+                        "video_bitrate": 1, "bit_depth": 8, "detail": {}})
+
+def _q_names(**kw):
+    return [j["path"].split("/")[-1]
+            for j in db.list_jobs(["done"], 50, 0, **kw)]
+
+check("the probe's resolution reaches the job row",
+      lambda: db.list_jobs(["done"], 1, 0, sort="resolution")[0]["source_height"],
+      lambda r: r == 2160)
+# A job whose file was never probed still has to appear in its own queue,
+# which is the whole reason this is a LEFT JOIN.
+db.enqueue("/q/never-probed.mkv", {"codec": "hevc"}, 1, _q_lib)
+check("a job with no probe on record is not dropped by the join",
+      lambda: any(j["path"].endswith("never-probed.mkv")
+                  for j in db.list_jobs(["queued"], 50, 0)),
+      lambda r: r is True)
+check("sorting by best saving",
+      lambda: _q_names(sort="ratio"), lambda r: r[0] == "hd.mkv")
+check("a job with no result sorts last, not first",
+      lambda: _q_names(sort="ratio"), lambda r: r[-1] == "sd.mkv")
+check("sorting by resolution",
+      lambda: _q_names(sort="resolution"), lambda r: r[0] == "uhd.mkv")
+check("sorting by library name",
+      lambda: _q_names(sort="library")[:2],
+      lambda r: set(r) == {"uhd.mkv", "hd.mkv"})
+check("filtering by target codec reads it out of the spec",
+      lambda: _q_names(codec="av1"), lambda r: r == ["720.mkv"])
+check("filtering by resolution band",
+      lambda: _q_names(resolution="fullhd"), lambda r: r == ["hd.mkv"])
+# A filter that narrowed the page but not the total would give a pager
+# offering pages that turn out to be empty.
+check("every filter narrows the count as well as the list",
+      lambda: [(len(_q_names(**f)), db.count_jobs(["done"], **f))
+               for f in ({"codec": "hevc"}, {"codec": "av1"},
+                         {"resolution": "uhd"}, {"resolution": "sd"})],
+      lambda r: all(listed == counted for listed, counted in r))
+check("the codec filter only offers codecs that are really there",
+      lambda: sorted(c["id"] for c in db.codecs_in_view(["done"])),
+      lambda r: r == ["av1", "hevc"])
+
+print("\nActing on a selection rather than a whole view:")
+_sel_ids = [db.enqueue(f"/sel/{i}.mkv", {"codec": "hevc"}, 1, _q_lib)
+            for i in range(6)]
+check("moving several to the top keeps their order",
+      lambda: (db.move_jobs([_sel_ids[4], _sel_ids[2]], "top"),
+               [j["path"] for j in db.list_jobs(["queued"], 3, 0)
+                if j["path"].startswith("/sel/")][:2])[1],
+      lambda r: r == ["/sel/4.mkv", "/sel/2.mkv"])
+check("moving to the bottom puts it last",
+      lambda: (db.move_jobs([_sel_ids[4]], "bottom"),
+               db.list_jobs(["queued"], 200, 0)[-1]["path"])[1],
+      lambda r: r == "/sel/4.mkv")
+# Position is meaningless once a worker has it, and silently reordering
+# something already being encoded would be a lie about what runs next.
+check("a job already running cannot be repositioned",
+      lambda: (db.update_job(_sel_ids[0], state="running"),
+               db.move_jobs([_sel_ids[0]], "top"))[1],
+      lambda r: r == 0)
+check("and a mixed selection moves only the ones it can",
+      lambda: db.move_jobs([_sel_ids[0], _sel_ids[1]], "top"),
+      lambda r: r == 1)
+# Put the queue back as it was found. These checks deliberately set
+# queue_order by hand, and a later check asserts that next_queued hands
+# work back in id order — which is only true of a queue nobody has
+# reordered. Leaving these behind made that one fail for a reason that
+# had nothing to do with it.
+with db.connect() as _c:
+    _c.execute("DELETE FROM jobs WHERE library_id IN (?,?)", (_q_lib, _q_lib2))
+
 print("\nA running job's scratch file is never swept:")
 # Production outage. The sweep was handed list_jobs(limit=500), which
 # orders by queue position, so a few thousand waiting loudness jobs
