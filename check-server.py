@@ -5,7 +5,9 @@ Catches the class of bug where an edit lands in the wrong function — the
 code imports and parses fine, then fails at runtime on a specific call.
     python3 check-server.py
 """
+import ast
 import inspect
+import os
 import pathlib
 import re
 import sys
@@ -804,6 +806,94 @@ check("requeueing clears the phase, so nothing describes stale work",
       lambda r: r is None)
 db.delete_jobs(["queued"], library_id=_ph_lib)
 db.delete_library(_ph_lib)
+
+print("\nA running job's scratch file is never swept:")
+# Production outage. The sweep was handed list_jobs(limit=500), which
+# orders by queue position, so a few thousand waiting loudness jobs
+# filled the window and the job actually encoding fell outside it. The
+# sweep read that as an orphan and deleted the output from under a live
+# FFmpeg -- on Linux the unlink succeeds even with the handle open, so
+# nothing objected. The age guard didn't save it either: the worker
+# writes over SMB, where mtime can sit at creation time for the whole
+# encode, so a live file looked hours stale.
+_sweep_lib = db.create_library("Sweep", str(base / "sweep"), "", profile, "archive")
+(base / "sweep").mkdir(parents=True, exist_ok=True)
+for _i in range(600):                      # a backlog deeper than the old window
+    db.enqueue(f"/sweep/wait{_i}.mkv", {"measure": "loudness"}, 1, _sweep_lib)
+_live = db.enqueue("/sweep/live.mkv", {"codec": "hevc"}, 1, _sweep_lib)
+db.update_job(_live, state="running")
+
+check("the protected set is not truncated by a deep queue",
+      lambda: _live in db.protected_job_ids(), lambda r: r is True)
+check("a job that just finished is still protected",
+      lambda: (lambda j: (db.update_job(j, state="failed", finished_at=time.time()),
+                          j in db.protected_job_ids())[1])(_live),
+      lambda r: r is True)
+check("a job that finished long ago is not",
+      lambda: (lambda j: (db.update_job(j, state="failed",
+                                        finished_at=time.time() - 7200),
+                          j in db.protected_job_ids())[1])(_live),
+      lambda r: r is False)
+
+# The whole point, end to end: an old-looking file belonging to a live
+# job survives a sweep. Backdated well past the hour so the age guard
+# offers no protection at all -- exactly the SMB case.
+db.update_job(_live, state="running", finished_at=None)
+_work = base / "sweep" / f".forge-{_live}.mkv"
+_work.write_bytes(b"x" * 1024)
+os.utime(_work, (time.time() - 7200, time.time() - 7200))
+check("a live job's scratch file survives even when it looks hours old",
+      lambda: watcher.sweep_work_files(str(base / "sweep"),
+                                       db.protected_job_ids())[0],
+      lambda r: r == 0)
+check("and it is still on disk afterwards", lambda: _work.exists(),
+      lambda r: r is True)
+
+# Through the real caller, not just the helper. The bug was never in
+# sweep_work_files -- it did exactly what it was told -- it was in
+# scan_library handing it a truncated set. Testing the helper alone
+# passes whether or not the caller is fixed, which is the trap.
+check("and survives a real scan, not just a direct sweep",
+      lambda: (watcher.scan_library(db.get_library(_sweep_lib), lambda p: None),
+               _work.exists())[1],
+      lambda r: r is True)
+
+# The other half: genuine orphans must still be cleared, or scratch
+# files from a machine that rebooted mid-encode pile up forever.
+_orphan = base / "sweep" / ".forge-99999999.mkv"
+_orphan.write_bytes(b"x" * 2048)
+os.utime(_orphan, (time.time() - 7200, time.time() - 7200))
+check("an orphaned scratch file is still swept",
+      lambda: watcher.sweep_work_files(str(base / "sweep"),
+                                       db.protected_job_ids())[0],
+      lambda r: r == 1)
+check("and the live one was left alone", lambda: _work.exists(),
+      lambda r: r is True)
+
+# Leave the jobs table as it was found. Several later checks read
+# list_jobs with a small limit, and 600 queued rows seeded here sit at
+# lower ids than anything they create, so their own job falls outside
+# the window and they fail for a reason that has nothing to do with them.
+with db.connect() as _c:
+    _c.execute("DELETE FROM jobs WHERE library_id=?", (_sweep_lib,))
+
+print("\nA worker slot survives whatever one job does to it:")
+# The traceback that ended the night: stat() said the scratch file was
+# gone, unlink() said another process held it, and that second error
+# escaped run_job's own handler. Nothing reported the job failed, and
+# the exception unwound the thread -- so the slot stopped leasing and
+# the node sat there looking healthy with nothing running.
+check("runner catches more than connection errors",
+      lambda: [h.type for h in ast.walk(
+          next(n for n in ast.walk(ast.parse(inspect.getsource(_agent)))
+               if isinstance(n, ast.FunctionDef) and n.name == "runner"))
+          if isinstance(h, ast.ExceptHandler)],
+      lambda r: any(h is None or getattr(h, "id", "") == "Exception" for h in r))
+check("cleaning up after a failure cannot raise past the handler",
+      lambda: inspect.getsource(_agent.run_job),
+      lambda r: "except OSError as tidy" in r
+                and r.index("try:\n                Path(local_out).unlink")
+                    < r.index("report_fail(job_id, f\"{type(exc).__name__}"))
 
 print("\nWhat the worker launchers probe before starting:")
 # Both scripts check the server is there first. Probing an address that

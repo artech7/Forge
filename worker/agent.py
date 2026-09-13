@@ -451,7 +451,16 @@ def run_job(job, caps):
 
     except Exception as exc:
         if local_out:
-            Path(local_out).unlink(missing_ok=True)
+            try:
+                Path(local_out).unlink(missing_ok=True)
+            except OSError as tidy:
+                # Tidying up must never replace the error that caused it.
+                # On Windows, removing a file another process still holds
+                # raises instead of succeeding, and that escaped this
+                # handler — so the job was never reported failed, and the
+                # exception went on to kill the slot that was running it.
+                print(f"[job {job_id}] could not remove the work file "
+                      f"({tidy}); leaving it for the sweep")
         # Where it happened matters as much as what happened: a bare message
         # like "must be str, not NoneType" says nothing about the cause.
         where = traceback.extract_tb(exc.__traceback__)[-1]
@@ -550,6 +559,16 @@ def runner(index, nid, caps):
                 continue
         except requests.RequestException as exc:
             print(f"[slot {index}] server unreachable ({exc})")
+        except Exception as exc:
+            # A slot has to outlive anything one job can do to it. This
+            # was uncaught, so a single unexpected error ended the thread
+            # and that slot stopped taking work for the rest of the run —
+            # silently, because the node kept pinging and still looked
+            # healthy. Overnight every slot could go this way and the
+            # whole machine would sit there doing nothing.
+            print(f"[slot {index}] unexpected error, carrying on: "
+                  f"{type(exc).__name__}: {exc}")
+            traceback.print_exc()
         time.sleep(8)
 
 

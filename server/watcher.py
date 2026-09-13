@@ -230,11 +230,11 @@ def scan_library(library, probe_fn):
                 print(f"scan: forgot {dropped} file(s) no longer on disk "
                       f"in {library['name']}")
             # Scratch files from jobs that died hard, which can be many
-            # gigabytes each. Anything still being written by a live job
-            # is protected by both guards inside the sweep.
-            active = {j["id"] for j in db.list_jobs(
-                states=list(db.ACTIVE_STATES), limit=500)}
-            gone, freed = sweep_work_files(library["watch_path"], active)
+            # gigabytes each. The set of jobs to leave alone has to be
+            # complete -- see db.protected_job_ids() for what a truncated
+            # one cost.
+            gone, freed = sweep_work_files(library["watch_path"],
+                                           db.protected_job_ids())
             if gone:
                 print(f"scan: removed {gone} leftover work file(s), "
                       f"{freed // (1024*1024)} MB reclaimed")
@@ -476,9 +476,15 @@ def sweep_work_files(watch_path, active_job_ids, older_than=3600):
 
     The normal failure path removes its own scratch file, but a worker
     killed mid-encode, a rebooted machine or a restarted container skips
-    that — leaving a partial file that can be many gigabytes. Guarded two
-    ways: the job id must not be running, and the file must be older than
-    an hour, so a job that is genuinely mid-write is never touched.
+    that — leaving a partial file that can be many gigabytes.
+
+    The job-id check is the guard that matters, and it has to be given a
+    complete set (db.protected_job_ids, never a limited query). The age
+    check below is a second opinion for files whose job is long gone, not
+    a safety net for live ones: a worker writing over SMB holds the data
+    client-side, so the mtime this sees can sit at the file's creation
+    time for the whole encode and a perfectly live file looks hours
+    stale. Anything still being written must be caught by its id.
     """
     root = Path(watch_path)
     if not root.is_dir():

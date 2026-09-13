@@ -1015,6 +1015,35 @@ def set_file_detail(path, detail):
             (path, json.dumps(detail), time.time(), json.dumps(detail), time.time()))
 
 
+def protected_job_ids(grace=900):
+    """Job ids whose scratch file must not be swept, ever.
+
+    Two groups. Active work, obviously. And anything that finished very
+    recently: a job auto-failed or cancelled by the server goes terminal
+    at once, but the worker only learns that on its next check-in and
+    keeps writing until then, so for a minute or two a finished job
+    still owns a file on disk.
+
+    Deliberately unlimited. This used to be list_jobs(limit=500), which
+    orders by queue position -- so with a few thousand loudness jobs
+    waiting, the window filled entirely with work that hadn't started
+    and the job actually encoding fell outside it. The sweep then read
+    that as "nobody owns this file" and deleted the output from under a
+    running FFmpeg. On Linux the unlink succeeds silently even though
+    the worker still holds the handle, so nothing anywhere objects.
+
+    Cheap despite the missing limit: one indexed scan returning integers.
+    """
+    placeholders = ",".join("?" * len(ACTIVE_STATES))
+    with connect() as conn:
+        rows = conn.execute(
+            f"""SELECT id FROM jobs
+                WHERE state IN ({placeholders})
+                   OR (finished_at IS NOT NULL AND finished_at > ?)""",
+            (*ACTIVE_STATES, time.time() - grace)).fetchall()
+    return {r["id"] for r in rows}
+
+
 def purge_work_file_jobs():
     """Drop jobs that were queued against Forge's own scratch files.
 
