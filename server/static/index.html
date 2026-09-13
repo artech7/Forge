@@ -376,8 +376,42 @@
      letter-spacing:.16em;text-transform:uppercase;color:var(--muted);
      margin:30px 0 12px}
 
-  .nodes{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:14px}
-  .node{padding:16px 18px;position:relative;overflow:hidden}
+  /* One node per row, spanning the full width, rather than a narrow card
+     sitting beside its siblings. A node has three separate things to say
+     — which machine it is, what it can encode with, and how much work it
+     may take — and in columns they read at a glance instead of as a tall
+     stack you scroll past. */
+  .nodes{display:flex;flex-direction:column;gap:14px}
+  .node{padding:16px 18px;position:relative;overflow:hidden;
+        display:grid;
+        grid-template-columns:minmax(170px,220px) minmax(0,1fr) minmax(160px,230px);
+        gap:12px 22px;align-items:start}
+  .node-ident{min-width:0;grid-column:1}
+  .node-caps{min-width:0;grid-column:2}
+  /* Top right, where the row would otherwise be empty. Under the name it
+     left a 34px hole whenever the node was idle and the trace was flat. */
+  .node .scope{grid-column:3;margin-top:2px}
+  /* The controls and any warnings are prose, and prose in one narrow
+     column is what made this card 411px tall with two thirds of it
+     empty. They run the full width underneath, and the controls split
+     that width three ways so each explanation is a short paragraph
+     rather than a long one. */
+  .node-controls,.node-notes{grid-column:1/-1}
+  .node-controls{display:grid;
+                 grid-template-columns:repeat(auto-fit,minmax(230px,1fr));
+                 gap:14px 26px;margin-top:13px;padding-top:14px;
+                 border-top:1px solid var(--edge)}
+  .ctl{min-width:0}
+  .ctl-row{display:flex;align-items:center;gap:10px;justify-content:space-between}
+  .ctl-lbl{font-size:12.5px;color:var(--muted);line-height:1.35;min-width:0}
+  .ctl-lbl b{color:var(--text);font-weight:600}
+  .ctl .tip{font-size:11.5px;color:var(--amber);margin-top:7px;line-height:1.45}
+  .ctl select.node-role{width:auto;min-width:140px;flex:none}
+  @media (max-width:900px){
+    .node{grid-template-columns:1fr;gap:0}
+    .node-caps,.node .scope{grid-column:1}
+    .node .scope{margin-top:12px}
+  }
   .node .name{font-weight:600;font-size:15px;display:flex;align-items:center;gap:8px}
   .node .state{font-family:'Chivo Mono',monospace;font-size:10px;
                letter-spacing:.1em;text-transform:uppercase;color:var(--idle)}
@@ -1329,11 +1363,15 @@ function render(state) {
                     : measuring.length ? 'measuring loudness'
                     : 'idle';
       return `<div class="glass node ${job ? 'busy' : ''}">
-        <div class="name">${n.name}<span class="state">${label}</span></div>
-        <div class="caps">${caps || '<span class="cap">no encoders</span>'}</div>
-        ${note}
+        <div class="node-ident">
+          <div class="name">${n.name}<span class="state">${label}</span></div>
+        </div>
+        <div class="node-caps">
+          <div class="caps">${caps || '<span class="cap">no encoders</span>'}</div>
+        </div>
         <canvas class="scope" data-node="${n.id}"></canvas>
         ${slotControl(n)}
+        ${note ? `<div class="node-notes">${note}</div>` : ''}
       </div>`;
     }).join('');
 
@@ -1498,24 +1536,31 @@ function slotControl(n) {
     : slots === 1 ? '<b>1</b> file at a time'
     : `<b>${slots}</b> files at once`;
 
-  return `<div class="slots">
-    <div class="lbl">${label}${tip ? `<div class="tip">${tip}</div>` : ''}</div>
-    <div class="stepper" data-node="${n.id}">
-      <button onclick="setSlots('${n.id}',${slots - 1})"
-        ${slots <= 0 ? 'disabled' : ''} aria-label="Fewer at once">&minus;</button>
-      <span class="n">${slots}</span>
-      <button onclick="setSlots('${n.id}',${slots + 1})"
-        ${slots >= 16 ? 'disabled' : ''} aria-label="More at once">+</button>
+  // Three control groups side by side rather than one stacked column.
+  // Each is a heading with its control on the same line and its
+  // explanation underneath — so the prose, which is what makes this
+  // card tall, runs in three short columns instead of one long one.
+  return `<div class="node-controls">
+    <div class="ctl">
+      <div class="ctl-row"><span class="ctl-lbl">${label}</span>
+        <div class="stepper" data-node="${n.id}">
+          <button onclick="setSlots('${n.id}',${slots - 1})"
+            ${slots <= 0 ? 'disabled' : ''} aria-label="Fewer at once">&minus;</button>
+          <span class="n">${slots}</span>
+          <button onclick="setSlots('${n.id}',${slots + 1})"
+            ${slots >= 16 ? 'disabled' : ''} aria-label="More at once">+</button>
+        </div></div>
+      ${tip ? `<div class="tip">${tip}</div>` : ''}
     </div>
-  </div>
-  <div class="node-role-block">
-    <div class="lbl" style="margin-top:10px">Takes on
-      <div class="tip">${NODE_ROLE_TIP[n.role || 'both']}</div></div>
-    <select class="node-role" onchange="setNodeRole('${n.id}',this.value)">
-      ${NODE_ROLES.map(([id, label]) =>
-        `<option value="${id}" ${(n.role || 'both') === id ? 'selected' : ''}>${label}</option>`
-      ).join('')}
-    </select>
+    <div class="ctl">
+      <div class="ctl-row"><span class="ctl-lbl">Takes on</span>
+        <select class="node-role" onchange="setNodeRole('${n.id}',this.value)">
+          ${NODE_ROLES.map(([id, label]) =>
+            `<option value="${id}" ${(n.role || 'both') === id ? 'selected' : ''}>${label}</option>`
+          ).join('')}
+        </select></div>
+      <div class="tip">${NODE_ROLE_TIP[n.role || 'both']}</div>
+    </div>
     ${housekeepingSlotControl(n, slots)}
   </div>`;
 }
@@ -1543,16 +1588,19 @@ function housekeepingSlotControl(n, total) {
     ? 'None reserved — loudness work waits until this node is fully idle'
     : `<b>${reserved}</b> of ${total} kept for loudness work, no matter what else is queued`;
 
-  return `<div class="lbl" style="margin-top:10px">${label}
-      <div class="tip">One machine, two encoders — reserve a slot for loudness
-        measuring/levelling so it isn't stuck waiting behind the whole
-        conversion queue the way the rest of "Anything" mode does.</div></div>
-    <div class="stepper" data-hk-node="${n.id}">
-      <button onclick="setHousekeepingSlots('${n.id}',${reserved - 1})"
-        ${reserved <= 0 ? 'disabled' : ''} aria-label="Reserve fewer">&minus;</button>
-      <span class="n">${reserved}</span>
-      <button onclick="setHousekeepingSlots('${n.id}',${reserved + 1})"
-        ${reserved >= total ? 'disabled' : ''} aria-label="Reserve more">+</button>
+  return `<div class="ctl">
+      <div class="ctl-row"><span class="ctl-lbl">Kept for loudness</span>
+        <div class="stepper" data-hk-node="${n.id}">
+          <button onclick="setHousekeepingSlots('${n.id}',${reserved - 1})"
+            ${reserved <= 0 ? 'disabled' : ''} aria-label="Reserve fewer">&minus;</button>
+          <span class="n">${reserved}</span>
+          <button onclick="setHousekeepingSlots('${n.id}',${reserved + 1})"
+            ${reserved >= total ? 'disabled' : ''} aria-label="Reserve more">+</button>
+        </div></div>
+      <div class="tip">${label}. One machine, two encoders — reserve a slot
+        for loudness measuring/levelling so it isn't stuck waiting behind
+        the whole conversion queue the way the rest of "Anything" mode
+        does.</div>
     </div>`;
 }
 

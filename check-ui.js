@@ -454,6 +454,21 @@ check('slot control at limits', () => {
         .test(css.replace(/\n\s*/g, '')))
       throw new Error('no narrow-screen rule, so wide tables push the page');
   });
+  check('node cards span the full width rather than sitting in a grid', () => {
+    const start = css.indexOf('.nodes{');
+    const rule = css.slice(start, css.indexOf('}', start));
+    if (/grid-template-columns/.test(rule))
+      throw new Error('nodes are back in columns beside each other: ' + rule);
+    if (!/flex-direction:\s*column/.test(rule))
+      throw new Error('nodes are not stacked one per row: ' + rule);
+  });
+  check('and lay their own contents out across that width', () => {
+    const start = css.indexOf('.node{');
+    const rule = css.slice(start, css.indexOf('}', start));
+    const cols = (rule.match(/grid-template-columns:([^;]+)/) || [])[1] || '';
+    if (cols.split('minmax').length - 1 < 3)
+      throw new Error('the card is not laid out in columns: ' + cols);
+  });
   check('transparency can be turned off', () => {
     if (!css.includes('prefers-reduced-transparency'))
       throw new Error('no reduced-transparency fallback');
