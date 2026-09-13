@@ -485,6 +485,25 @@ check('slot control at limits', () => {
                         '6.00 GB', '900 MB', '0.15×'])
       if (!h.includes(want)) throw new Error('missing: ' + want);
   });
+  // Clicking a filename opens its details. The table shipped without
+  // the hook, so that quietly stopped working for every queue list at
+  // once — the rows looked right and nothing errored.
+  check('a filename opens its details', () => {
+    const h = __x.renderQueueTable([tjob()], tmeta);
+    if (!h.includes('data-fileinfo='))
+      throw new Error('the name is not clickable');
+    if (!h.includes('data-fileinfo="/media/Movies/CODA (2021).mkv"'))
+      throw new Error('the hook carries the wrong path');
+  });
+  check('and the affordance is not tied to one list', () => {
+    // Styling this per parent is what let a new list carry the hook,
+    // open on click, and give no sign it could be clicked.
+    const full = require('fs').readFileSync(
+      __dirname + '/server/static/index.html', 'utf8');
+    const style = full.slice(full.indexOf('<style>'), full.indexOf('</style>'));
+    if (!/\[data-fileinfo\]\{[^}]*cursor:pointer/.test(style))
+      throw new Error('no generic rule: only some lists look clickable');
+  });
   check('a job with no probe on record still renders', () => {
     const h = __x.renderQueueTable(
       [tjob({source_width: null, source_height: null, source_codec: null})], tmeta);

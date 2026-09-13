@@ -690,11 +690,14 @@
   .review-item .acts button{padding:6px 11px;font-size:12px}
 
   /* file details popup */
-  .job .file .clickable,.review-item .nm.clickable,.drill-name .clickable{cursor:pointer;
+  /* Keyed on the attribute that makes a name clickable, not on the
+     three parents that happened to have one when this was written. A
+     new list — the queue table was one — otherwise carries the hook,
+     opens the details on click, and gives no sign it can be clicked. */
+  [data-fileinfo]{cursor:pointer;
       text-decoration:underline;text-decoration-color:transparent;
       transition:color .15s,text-decoration-color .15s}
-  .job .file .clickable:hover,.review-item .nm.clickable:hover,
-  .drill-name .clickable:hover{color:var(--signal);
+  [data-fileinfo]:hover{color:var(--signal);
       text-decoration-color:var(--signal)}
   .fi-grid{display:grid;grid-template-columns:auto 1fr;gap:6px 16px;
            font-size:13px;align-items:baseline}
@@ -2213,7 +2216,8 @@ function renderQueueTable(jobs, meta) {
         <td class="c-lib">${attr(libraryName(j.library_id))}</td>
         <td class="c-time">${jobTime(j)}</td>
         <td class="c-file" title="${attr(j.path)}">
-          <span class="num">${n}</span>${attr(name)}
+          <span class="num">${n}</span><span
+            data-fileinfo="${attr(j.path)}">${attr(name)}</span>
           ${j.error ? `<span class="rowerr">${attr(j.error)}</span>` : ''}</td>
         <td class="c-work">${attr(workLabel(j))}</td>
         <td class="c-codec">${attr(codecLabel(j))}</td>
