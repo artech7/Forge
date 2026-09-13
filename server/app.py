@@ -2086,6 +2086,90 @@ async def prioritize_job(job_id: int):
     return {"ok": True}
 
 
+# --------------------------------------------------------- appearance
+#
+# The wallpaper is one file, replaced whenever a new one is uploaded.
+# It lives beside the database rather than in it: an image is megabytes
+# of bytes nothing ever queries, and putting it in a row would bloat
+# every backup of a file that is otherwise small enough to copy freely.
+WALLPAPER_DIR = db.DB_PATH.parent
+WALLPAPER_TYPES = {"image/jpeg": ".jpg", "image/png": ".png",
+                   "image/webp": ".webp", "image/avif": ".avif",
+                   "image/gif": ".gif"}
+WALLPAPER_MAX = 12 * 1024 * 1024
+
+
+def wallpaper_file():
+    """The stored wallpaper, whatever type it was uploaded as."""
+    for ext in sorted(set(WALLPAPER_TYPES.values())):
+        candidate = WALLPAPER_DIR / f"wallpaper{ext}"
+        if candidate.exists():
+            return candidate
+    return None
+
+
+@app.get("/api/wallpaper")
+async def get_wallpaper():
+    found = wallpaper_file()
+    if not found:
+        raise HTTPException(404, "No wallpaper has been uploaded.")
+    # Long cache with the mtime as the cache-buster in the URL; without
+    # this the browser re-fetches a multi-megabyte image on every render.
+    return FileResponse(found, headers={"Cache-Control": "public, max-age=31536000"})
+
+
+@app.post("/api/wallpaper")
+async def set_wallpaper(image: UploadFile = File(...)):
+    ext = WALLPAPER_TYPES.get((image.content_type or "").lower())
+    if not ext:
+        raise HTTPException(
+            400, "That needs to be a JPEG, PNG, WebP, AVIF or GIF.")
+    data = await image.read()
+    if not data:
+        raise HTTPException(400, "That file was empty.")
+    if len(data) > WALLPAPER_MAX:
+        raise HTTPException(
+            400, f"That image is {len(data) / 1e6:.0f} MB. The limit is "
+                 f"{WALLPAPER_MAX // (1024 * 1024)} MB — anything larger is "
+                 f"slow to load on a phone for no visible gain.")
+    # Only one wallpaper at a time, so clear whatever type was there
+    # before rather than leaving a .png behind a new .jpg.
+    for old in WALLPAPER_DIR.glob("wallpaper.*"):
+        try:
+            old.unlink()
+        except OSError:
+            pass
+    try:
+        (WALLPAPER_DIR / f"wallpaper{ext}").write_bytes(data)
+    except OSError as exc:
+        raise HTTPException(500, f"Couldn't save that: {exc}")
+    appearance = dict(db.get_settings().get("appearance") or {})
+    appearance["wallpaper"] = True
+    # Every browser caches the image for a year, so the only thing that
+    # tells one a new picture has been uploaded is this number changing
+    # in the URL. Stored rather than generated per request, or each
+    # browser would decide a different answer and re-fetch constantly.
+    appearance["wallpaper_version"] = int(time.time())
+    db.save_settings({"appearance": appearance})
+    await broadcast()
+    return {"ok": True, "bytes": len(data),
+            "version": appearance["wallpaper_version"]}
+
+
+@app.delete("/api/wallpaper")
+async def clear_wallpaper():
+    for old in WALLPAPER_DIR.glob("wallpaper.*"):
+        try:
+            old.unlink()
+        except OSError:
+            pass
+    appearance = dict(db.get_settings().get("appearance") or {})
+    appearance["wallpaper"] = False
+    db.save_settings({"appearance": appearance})
+    await broadcast()
+    return {"ok": True}
+
+
 SELECTION_LIMIT = 500
 
 

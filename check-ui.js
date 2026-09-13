@@ -14,6 +14,9 @@ const el = id => els[id] || (els[id] = {innerHTML:'', textContent:'', scrollTop:
   children: [], appendChild(c){ this.children.push(c); },
   removeChild(c){ this.children = this.children.filter(x => x !== c); },
   get firstChild(){ return this.children[0]; },
+  // Real elements have a style object; code that sets an inline colour
+  // or a background image on one would otherwise only fail in a browser.
+  style: {setProperty(){}, removeProperty(){}},
   querySelector: () => null, querySelectorAll: () => []});
 
 // A real page always has a body; code that toggles a class on it (the
@@ -35,7 +38,12 @@ global.document = {
   querySelector: sel => (sel === '.wiz-nav' ? el('wiznav') : null),
   querySelectorAll: () => [], addEventListener: () => {},
   createElement: () => ({style:{}, scrollIntoView(){}, classList:{add(){}}}),
-  documentElement: {dataset: {}}};
+  documentElement: {dataset: {},
+    style: {setProperty(){}, removeProperty(){}}}};
+// Reads a computed custom property. The appearance code asks the page
+// what the current theme's accent is, and in a browser that always
+// answers something.
+global.getComputedStyle = () => ({getPropertyValue: () => '#4ade9b'});
 global.window = {}; global.location = {protocol:'http:', host:'x', reload(){}};
 global.WebSocket = class { constructor(){} };
 global.alert = () => {}; global.confirm = () => true;
@@ -109,6 +117,7 @@ try { eval(src + '\nglobal.__x = {render, renderLibs, renderTabs, renderJobs, sl
   'QUEUE_COLUMNS, TABLE_VIEWS, renderQueueTable, workLabel, codecLabel, ' +
   'resLabel, sortBy, toggleRow, renderSelectionBar, rowActions, selectionAction, ' +
   'get queueSel(){return queueSel;}, ' +
+  'THEMES, setTheme, applyAppearance, drawCustomize, ' +
   'set __ask(fn){ ask = fn; }, ' +
   'set SET(v){SET = v;}, ' +
   'get settingsSection(){return settingsSection;}, ' +
@@ -296,6 +305,101 @@ check('slot control at limits', () => {
   // saveLibrary sends '' as null -- so changing anything else silently
   // cleared where that library keeps its originals, and they went back to
   // landing inside the watched folder.
+  console.log('\nAppearance:');
+  check('every theme has artwork behind it', () => {
+    const full = require('fs').readFileSync(
+      __dirname + '/server/static/index.html', 'utf8');
+    const style = full.slice(full.indexOf('<style>'), full.indexOf('</style>'));
+    // Each theme must define its own --bg-art, or it silently falls back
+    // to whichever theme was declared before it and two themes look the
+    // same without anything reporting a problem.
+    for (const t of __x.THEMES) {
+      const at = style.indexOf(`data-theme="${t.id}"`);
+      const block = style.slice(at, style.indexOf('}', at));
+      if (!block.includes('--bg-art'))
+        throw new Error(`${t.id} has no background art`);
+    }
+  });
+  check('the theme list and the palettes agree', () => {
+    const full = require('fs').readFileSync(
+      __dirname + '/server/static/index.html', 'utf8');
+    for (const t of __x.THEMES)
+      if (!full.includes(`data-theme="${t.id}"`))
+        throw new Error(`${t.id} is offered but has no palette`);
+  });
+  check('an unknown theme falls back rather than painting nothing', () => {
+    __x.setTheme('not-a-theme');
+    if (document.documentElement.dataset.theme !== 'ironforge')
+      throw new Error(document.documentElement.dataset.theme);
+  });
+  check('a wallpaper puts the page into wallpaper mode', () => {
+    __x.applyAppearance({theme: 'frostbound', wallpaper: true,
+                         wallpaper_version: 7, wallpaper_dim: 40});
+    if (!document.body.classList.contains('has-wallpaper'))
+      throw new Error('body was not marked');
+    if (!(els['wallpaper'].style.backgroundImage || '').includes('v=7'))
+      throw new Error('no cache-busting version: '
+        + els['wallpaper'].style.backgroundImage);
+  });
+  check('and removing it puts the page back', () => {
+    __x.applyAppearance({theme: 'frostbound', wallpaper: false});
+    if (document.body.classList.contains('has-wallpaper'))
+      throw new Error('still in wallpaper mode');
+  });
+  check('repainting the same appearance is a no-op', () => {
+    // Every state push carries this, so re-applying an unchanged
+    // appearance would restart the wallpaper on every progress report.
+    const a = {theme: 'runestone', accent: '#ff0000'};
+    __x.applyAppearance(a);
+    let sets = 0;
+    const real = document.documentElement.style.setProperty;
+    document.documentElement.style.setProperty = () => { sets++; };
+    __x.applyAppearance({...a});
+    document.documentElement.style.setProperty = real;
+    if (sets) throw new Error('repainted ' + sets + ' properties');
+  });
+  check('the Customize panel renders', () => {
+    __x.settingsSection = 'customize';
+    global.window.__state = {settings: {appearance: {theme: 'ironforge'}},
+                             libraries: []};
+    __x.drawCustomize();
+    const h = els['customize-panel'].innerHTML;
+    for (const t of __x.THEMES)
+      if (!h.includes(t.name)) throw new Error('no swatch for ' + t.name);
+    if (!h.includes('Accent colour')) throw new Error('no accent control');
+    if (!h.includes('Background picture')) throw new Error('no wallpaper control');
+  });
+  // Appearance applies the moment it's changed, so a Save button here
+  // would imply the opposite — and Cancel would imply it could be
+  // undone, which it can't, because it already happened.
+  check('Customize offers Done, not Save and Cancel', () => {
+    __x.SET = {schedule: {}, originals: {}, auto_fail: {}, tmdb: {},
+               bazarr: {}, radarr: {}, sonarr: {}};
+    __x.settingsSection = 'customize';
+    __x.drawSettings();
+    const h = els['wiz'].innerHTML;
+    const nav = h.slice(h.lastIndexOf('wiz-nav'));
+    if (nav.includes('saveSettings()'))
+      throw new Error('offers Save for changes already applied');
+    if (!nav.includes('>Done<')) throw new Error('no way to close it');
+    __x.settingsSection = 'work';
+    __x.drawSettings();
+    const other = els['wiz'].innerHTML;
+    if (!other.slice(other.lastIndexOf('wiz-nav')).includes('saveSettings()'))
+      throw new Error('the other tabs lost their Save button');
+  });
+  check('the dim and blur sliders only appear with a picture to apply them to', () => {
+    global.window.__state = {settings: {appearance: {theme: 'ironforge'}}};
+    __x.drawCustomize();
+    if (els['customize-panel'].innerHTML.includes('Dim it'))
+      throw new Error('offered to dim a picture that is not there');
+    global.window.__state = {settings: {appearance:
+      {theme: 'ironforge', wallpaper: true}}};
+    __x.drawCustomize();
+    if (!els['customize-panel'].innerHTML.includes('Dim it'))
+      throw new Error('no dim control with a wallpaper set');
+  });
+
   console.log('\nGlass:');
   const css = (() => {
     const full = require('fs').readFileSync(

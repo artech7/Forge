@@ -32,6 +32,15 @@
     --sheen:rgba(255,255,255,.55);
     --tint:rgba(150,190,255,.20);
     --bg-1:#1a2740; --bg-2:#16283a;
+    /* Cold steel on the anvil: a shaft of light from high left, the
+       blue heat of quenched metal low right, and a faint brushed grain
+       running across it. */
+    --bg-art:
+      radial-gradient(120% 80% at 12% -10%, var(--bg-1) 0%, transparent 55%),
+      radial-gradient(100% 70% at 100% 0%, var(--bg-2) 0%, transparent 50%),
+      radial-gradient(70% 50% at 85% 105%, rgba(90,150,255,.10) 0%, transparent 60%),
+      repeating-linear-gradient(104deg,
+        rgba(255,255,255,.014) 0 2px, transparent 2px 7px);
     --r:18px;
   }
 
@@ -52,6 +61,15 @@
     --sheen:rgba(255,225,190,.55);
     --tint:rgba(255,140,60,.24);
     --bg-1:#3d2012; --bg-2:#2a1608;
+    /* A forge fire sits below the floor, so the light comes up rather
+       than down, and the coals glow through from the bottom corners. */
+    --bg-art:
+      radial-gradient(110% 70% at 50% 118%, rgba(255,120,40,.20) 0%, transparent 58%),
+      radial-gradient(90% 60% at 8% 108%, rgba(255,80,20,.16) 0%, transparent 55%),
+      radial-gradient(120% 80% at 18% -12%, var(--bg-1) 0%, transparent 52%),
+      radial-gradient(100% 70% at 98% 4%, var(--bg-2) 0%, transparent 48%),
+      repeating-linear-gradient(78deg,
+        rgba(255,160,80,.016) 0 3px, transparent 3px 9px);
   }
 
   /* Niflheim: the frost realm. */
@@ -71,6 +89,16 @@
     --sheen:rgba(225,245,255,.58);
     --tint:rgba(130,200,255,.24);
     --bg-1:#173350; --bg-2:#0f2438;
+    /* Niflheim: light comes off the ice itself, pale and from above,
+       with the angular facets of a frozen surface cutting across it. */
+    --bg-art:
+      radial-gradient(120% 80% at 30% -14%, var(--bg-1) 0%, transparent 56%),
+      radial-gradient(100% 65% at 96% 2%, var(--bg-2) 0%, transparent 50%),
+      radial-gradient(80% 55% at 8% 100%, rgba(120,200,255,.10) 0%, transparent 62%),
+      repeating-linear-gradient(58deg,
+        rgba(190,230,255,.020) 0 1px, transparent 1px 13px),
+      repeating-linear-gradient(-58deg,
+        rgba(190,230,255,.013) 0 1px, transparent 1px 19px);
   }
 
   /* Weathered stone, carved and mossed over. */
@@ -90,6 +118,15 @@
     --sheen:rgba(235,255,235,.50);
     --tint:rgba(150,220,160,.20);
     --bg-1:#1d2c20; --bg-2:#152018;
+    /* Weathered stone under an overcast sky: flat diffuse light, moss
+       creeping in from the low corners, and a mottled granite texture. */
+    --bg-art:
+      radial-gradient(130% 85% at 22% -16%, var(--bg-1) 0%, transparent 54%),
+      radial-gradient(95% 62% at 100% 6%, var(--bg-2) 0%, transparent 48%),
+      radial-gradient(60% 45% at 4% 104%, rgba(120,190,130,.09) 0%, transparent 60%),
+      radial-gradient(55% 40% at 96% 110%, rgba(120,190,130,.06) 0%, transparent 58%),
+      repeating-linear-gradient(33deg,
+        rgba(210,255,215,.012) 0 4px, transparent 4px 11px);
   }
   *{box-sizing:border-box}
   html,body{margin:0;height:100%}
@@ -110,10 +147,27 @@
     position:fixed;
     inset:0;
     z-index:-1;
-    background:
-      radial-gradient(120% 80% at 12% -10%, var(--bg-1) 0%, transparent 55%),
-      radial-gradient(100% 70% at 100% 0%, var(--bg-2) 0%, transparent 50%),
-      var(--ink);
+    background:var(--bg-art), var(--ink);
+    transition:background .4s ease;
+  }
+  /* A wallpaper sits under the theme's own art. The art keeps its
+     gradients — they are what ties an arbitrary photograph to the rest
+     of the palette — but drops the opaque --ink underneath it, which
+     would otherwise cover the picture completely. */
+  body.has-wallpaper::before{background:var(--bg-art)}
+  #wallpaper{
+    position:fixed;inset:0;z-index:-2;
+    background-position:center;background-size:cover;background-repeat:no-repeat;
+    display:none;
+  }
+  body.has-wallpaper #wallpaper{display:block}
+  /* Dimming is a layer of its own rather than opacity on the image,
+     so the picture keeps its own contrast instead of fading towards
+     whatever happens to be behind it. */
+  #wallpaper::after{
+    content:'';position:absolute;inset:0;
+    background:var(--ink);
+    opacity:var(--wall-dim,.55);
   }
   .wrap{max-width:1180px;margin:0 auto}
 
@@ -161,8 +215,7 @@
   header{display:flex;align-items:baseline;gap:14px;flex-wrap:wrap;margin-bottom:26px}
   .rune{color:var(--signal);text-shadow:0 0 12px color-mix(in srgb, var(--signal) 60%, transparent);
         font-size:.85em;margin-right:1px}
-  #theme-picker{margin-left:auto;width:auto;padding:6px 10px;font-size:12px;
-                background:rgba(255,255,255,.06)}
+  h1{margin-right:auto}
   h1{font-size:22px;font-weight:800;letter-spacing:-.02em;margin:0}
   .tag{font-family:'Chivo Mono',monospace;font-size:11px;letter-spacing:.14em;
        text-transform:uppercase;color:var(--muted)}
@@ -516,6 +569,32 @@
   .selbar button{font-size:12px;padding:5px 11px}
   .selbar button.danger{border-color:rgba(255,107,107,.45);color:#ffb3b3}
 
+  /* Theme swatches. Each one sets data-theme on itself, so the chip is
+     painted by that theme's real variables — a preview that can't drift
+     away from the thing it previews. */
+  .swatches{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));
+            gap:10px}
+  .swatch{display:flex;align-items:center;gap:12px;text-align:left;
+          padding:11px 13px;border-radius:14px;width:100%}
+  .swatch .chip{flex:none;width:42px;height:42px;border-radius:11px;
+    border:1px solid var(--edge);
+    background:var(--bg-art), var(--ink);
+    box-shadow:inset 0 1px 0 var(--sheen)}
+  .swatch .lbl{display:flex;flex-direction:column;gap:2px;min-width:0}
+  .swatch .lbl b{font-size:13px;font-weight:600}
+  .swatch .lbl em{font-style:normal;font-size:11.5px;color:var(--muted);
+                  line-height:1.4}
+  .swatch.on{border-color:var(--signal);
+             box-shadow:inset 0 1px 0 var(--sheen), 0 0 0 1px var(--signal)}
+
+  .accent-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+  .accent-row input[type=color]{width:52px;height:34px;padding:2px;
+    background:rgba(255,255,255,.05);border:1px solid var(--edge);
+    border-radius:9px;cursor:pointer}
+  .accent-row code{font-family:'Chivo Mono',monospace;font-size:12px;
+                   color:var(--muted)}
+  input[type=range]{width:100%;accent-color:var(--signal);cursor:pointer}
+
   .count-badge{font-family:'Chivo Mono',monospace;font-size:10.5px;
     padding:1px 6px;border-radius:5px;background:rgba(255,255,255,.1);
     font-variant-numeric:tabular-nums;margin-left:6px}
@@ -850,16 +929,13 @@
 </style>
 </head>
 <body>
+<!-- Sits behind everything, including the theme's own gradients. -->
+<div id="wallpaper"></div>
+
 <div class="wrap">
   <header>
     <h1><span class="rune" aria-hidden="true">ᚠ</span> Forge</h1>
     <span class="tag">standardizing your media library</span>
-    <select id="theme-picker" title="Theme" onchange="setTheme(this.value)">
-      <option value="ironforge">Ironforge</option>
-      <option value="emberforge">Emberforge</option>
-      <option value="frostbound">Frostbound</option>
-      <option value="runestone">Runestone</option>
-    </select>
     <span class="pill"><span class="dot" id="dot"></span><span id="conn">connecting</span></span>
   </header>
 
@@ -1116,6 +1192,10 @@ function drawScope(canvas, samples) {
 }
 
 function render(state) {
+  // Every state push carries the appearance, so a change made in one
+  // browser reaches the others without a reload. applyAppearance does
+  // nothing when it matches what's already painted.
+  applyAppearance((state.settings || {}).appearance);
   const st = state.stats || {};
   document.getElementById('s-saved').innerHTML =
     fmtBytes(Math.max(0, (st.before || 0) - (st.after || 0)));
@@ -2999,6 +3079,7 @@ const SETTINGS_TABS = [
   ['work', 'When Forge works'],
   ['connections', 'Connections'],
   ['originals', 'Originals'],
+  ['customize', 'Customize'],
   ['access', 'Access'],
 ];
 let settingsSection = 'work';
@@ -3196,6 +3277,10 @@ ${['radarr', 'sonarr'].map(kind => {
 
         </div>
 
+    <div ${settingsSection === 'customize' ? '' : 'hidden'}>
+      <div id="customize-panel"></div>
+    </div>
+
     <div ${settingsSection === 'access' ? '' : 'hidden'}>
       <div id="access-panel"></div>
     </div>
@@ -3260,15 +3345,22 @@ ${['radarr', 'sonarr'].map(kind => {
 
         </div>
 
-    <div class="wiz-nav">
-      <button onclick="closeWizard()">Cancel</button>
-      <span class="grow"></span>
-      <button class="primary" onclick="saveSettings()">Save</button>
-    </div>`;
+    ${settingsSection === 'customize' ? `
+      <div class="wiz-nav">
+        <span class="grow"></span>
+        <button class="primary" onclick="closeWizard()">Done</button>
+      </div>`
+    : `
+      <div class="wiz-nav">
+        <button onclick="closeWizard()">Cancel</button>
+        <span class="grow"></span>
+        <button class="primary" onclick="saveSettings()">Save</button>
+      </div>`}`;
   // The panel is rebuilt empty by the render above, and its contents
   // come from the server, so it's filled in after the fact rather than
   // making every settings redraw wait on a request.
   if (settingsSection === 'access') drawAccess();
+  if (settingsSection === 'customize') drawCustomize();
 }
 
 function toggleSched() {
@@ -3289,6 +3381,170 @@ function toggleTmdb() {
   SET.tmdb = SET.tmdb || {key:'', enabled:false};
   SET.tmdb.enabled = !SET.tmdb.enabled;
   drawSettings();
+}
+
+// ----------------------------------------------------- appearance
+//
+// Everything here saves the moment it changes rather than behind a Save
+// button. You are looking at the thing you are editing, so a preview
+// step would be a picture of the page you are already on — and having
+// to press Save to find out whether you like a colour is the opposite
+// of choosing one.
+function appearanceNow() {
+  return {...(((window.__state || {}).settings || {}).appearance || {})};
+}
+
+async function saveAppearance(change) {
+  const next = {...appearanceNow(), ...change};
+  applyAppearance(next);           // paint first; the round trip can wait
+  try {
+    await fetch('/api/settings', {method: 'PUT',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({appearance: next})});
+  } catch (e) {
+    return notifyBad('Could not save that.');
+  }
+  // Keep the local copy in step so the next change builds on this one
+  // rather than on whatever the last websocket push happened to carry.
+  if (window.__state && window.__state.settings)
+    window.__state.settings.appearance = next;
+  drawCustomize();
+}
+
+function drawCustomize() {
+  const box = document.getElementById('customize-panel');
+  if (!box) return;
+  const a = appearanceNow();
+  const current = a.theme || 'ironforge';
+
+  // Each swatch paints itself with that theme's own variables, so the
+  // preview is the real palette rather than a hand-picked approximation
+  // that drifts the moment a theme is retuned.
+  const swatches = THEMES.map(t => `
+    <button class="swatch ${current === t.id ? 'on' : ''}"
+            data-theme="${t.id}" onclick="saveAppearance({theme:'${t.id}'})">
+      <span class="chip"></span>
+      <span class="lbl"><b>${t.name}</b><em>${t.blurb}</em></span>
+    </button>`).join('');
+
+  box.innerHTML = `
+    <p class="lead" style="margin:18px 0 12px">How Forge looks. Changes
+      apply straight away and follow you to any other browser signed in
+      to this Forge.</p>
+
+    <h3 style="font-size:15px;margin:20px 0 8px">Theme</h3>
+    <div class="swatches">${swatches}</div>
+
+    <h3 style="font-size:15px;margin:26px 0 4px">Accent colour</h3>
+    <div class="note" style="margin:0 0 10px;color:var(--muted);font-size:12.5px">
+      The highlight on buttons, progress and anything healthy. Leave it
+      on the theme's own unless you want something specific.
+    </div>
+    <div class="accent-row">
+      <input type="color" value="${attr(a.accent || themeSignal())}"
+             oninput="saveAppearanceDebounced({accent:this.value})">
+      <code>${attr(a.accent || 'theme default')}</code>
+      ${a.accent ? `<button onclick="saveAppearance({accent:''})">Back to the theme's</button>` : ''}
+    </div>
+
+    <h3 style="font-size:15px;margin:26px 0 4px">Background picture</h3>
+    <div class="note" style="margin:0 0 10px;color:var(--muted);font-size:12.5px">
+      Optional. The theme's own colours stay layered over whatever you
+      choose, so the page still reads as Forge rather than as a photo
+      with controls on top. JPEG, PNG, WebP, AVIF or GIF, up to 12 MB.
+    </div>
+    <div class="accent-row">
+      <button onclick="document.getElementById('wallfile').click()">
+        ${a.wallpaper ? 'Choose a different picture' : 'Choose a picture'}</button>
+      ${a.wallpaper ? `<button class="danger"
+         onclick="clearWallpaper()">Remove it</button>` : ''}
+      <input type="file" id="wallfile" accept="image/*" hidden
+             onchange="uploadWallpaper(this)">
+      <span id="wallstatus" style="font-size:12.5px;color:var(--muted)"></span>
+    </div>
+    ${a.wallpaper ? `
+      <label class="fld" style="margin-top:14px"><span>Dim it</span>
+        <em>How much of the theme's dark is laid over the picture. Too
+            little and text gets hard to read against a busy image.</em>
+        <input type="range" min="0" max="95" value="${a.wallpaper_dim ?? 55}"
+               oninput="previewDim(this.value)"
+               onchange="saveAppearance({wallpaper_dim:+this.value})"></label>
+      <label class="fld"><span>Blur it</span>
+        <em>Softening a detailed photograph keeps it from competing with
+            the text in front of it.</em>
+        <input type="range" min="0" max="40" value="${a.wallpaper_blur ?? 0}"
+               oninput="previewBlur(this.value)"
+               onchange="saveAppearance({wallpaper_blur:+this.value})"></label>` : ''}`;
+}
+
+// The colour input needs a real value to open on, and "the theme's own"
+// isn't one until it's read back off the page.
+function themeSignal() {
+  const v = getComputedStyle(document.documentElement)
+    .getPropertyValue('--signal').trim();
+  return /^#[0-9a-f]{6}$/i.test(v) ? v : '#4ade9b';
+}
+
+// Dragging a colour or a slider fires continuously. Paint every frame,
+// but only tell the server once the movement settles — otherwise one
+// drag is a hundred writes.
+let appearanceTimer = null;
+function saveAppearanceDebounced(change) {
+  applyAppearance({...appearanceNow(), ...change});
+  clearTimeout(appearanceTimer);
+  appearanceTimer = setTimeout(() => saveAppearance(change), 400);
+}
+function previewDim(v) {
+  document.documentElement.style.setProperty('--wall-dim', String(v / 100));
+}
+function previewBlur(v) {
+  const wall = document.getElementById('wallpaper');
+  wall.style.filter = +v ? `blur(${v}px)` : '';
+  wall.style.inset = +v ? `-${v * 2}px` : '0';
+}
+
+async function uploadWallpaper(input) {
+  const file = (input.files || [])[0];
+  if (!file) return;
+  const status = document.getElementById('wallstatus');
+  status.textContent = 'Uploading…';
+  const body = new FormData();
+  body.append('image', file);
+  let r;
+  try {
+    r = await fetch('/api/wallpaper', {method: 'POST', body});
+  } catch (e) {
+    status.textContent = '';
+    return notifyBad('Could not reach the server.');
+  }
+  if (!r.ok) {
+    status.textContent = '';
+    const detail = (await r.json().catch(() => ({}))).detail
+      || 'That picture was refused.';
+    return notifyBad(detail);
+  }
+  const out = await r.json();
+  status.textContent = '';
+  // The server has already recorded it; mirror that locally so the
+  // panel redraws with the sliders rather than waiting for a push.
+  const next = {...appearanceNow(), wallpaper: true,
+                wallpaper_version: out.version};
+  if (window.__state && window.__state.settings)
+    window.__state.settings.appearance = next;
+  applyAppearance(next);
+  drawCustomize();
+  notifyGood('Background set.');
+}
+
+async function clearWallpaper() {
+  if (!await ask('Remove the background picture?', {yes: 'Remove it',
+                                                    danger: true})) return;
+  await fetch('/api/wallpaper', {method: 'DELETE'});
+  const next = {...appearanceNow(), wallpaper: false};
+  if (window.__state && window.__state.settings)
+    window.__state.settings.appearance = next;
+  applyAppearance(next);
+  drawCustomize();
 }
 
 async function drawAccess() {
@@ -6199,18 +6455,69 @@ function connect() {
   };
 }
 // Four palettes sharing the same set of variable names — see the
-// [data-theme] blocks in <style>. Persisted so the choice survives a
-// reload; applied immediately on load, before anything else paints, so
-// there's no flash of the wrong theme.
-const THEMES = ['ironforge', 'emberforge', 'frostbound', 'runestone'];
+// [data-theme] blocks in <style>, where each also defines the artwork
+// behind the page.
+//
+// The choice is stored on the server so a phone and a desktop agree,
+// and mirrored into localStorage purely so the right palette paints
+// before the first response arrives instead of flashing the default.
+const THEMES = [
+  {id:'ironforge',  name:'Ironforge',
+   blurb:'Cold steel on the anvil, quenched in blue.'},
+  {id:'emberforge', name:'Emberforge',
+   blurb:'Molten metal, lit from the coals below.'},
+  {id:'frostbound', name:'Frostbound',
+   blurb:'Niflheim — pale light coming off the ice.'},
+  {id:'runestone',  name:'Runestone',
+   blurb:'Weathered stone, carved and mossed over.'},
+];
+const THEME_IDS = THEMES.map(t => t.id);
+
 function setTheme(name) {
-  if (!THEMES.includes(name)) name = 'ironforge';
+  if (!THEME_IDS.includes(name)) name = 'ironforge';
   document.documentElement.dataset.theme = name;
-  document.getElementById('theme-picker').value = name;
   try { localStorage.setItem('forge-theme', name); } catch (e) {}
 }
 setTheme((() => { try { return localStorage.getItem('forge-theme'); }
                   catch (e) { return null; } })() || 'ironforge');
+
+// What is currently painted, so a state push that says the same thing
+// doesn't restart the wallpaper's fade or fight someone mid-edit.
+let appliedAppearance = '';
+
+function applyAppearance(a) {
+  a = a || {};
+  const stamp = JSON.stringify(a);
+  if (stamp === appliedAppearance) return;
+  appliedAppearance = stamp;
+
+  setTheme(a.theme || 'ironforge');
+
+  // An accent of '' means "whatever this theme already uses", which is
+  // why it can't just be stored as a colour — removing the override is
+  // a different act from setting one.
+  const root = document.documentElement;
+  if (a.accent) root.style.setProperty('--signal', a.accent);
+  else root.style.removeProperty('--signal');
+
+  const wall = document.getElementById('wallpaper');
+  if (a.wallpaper) {
+    // The version in the query is what lets the image be cached for a
+    // year and still change the moment a new one is uploaded.
+    wall.style.backgroundImage =
+      `url('/api/wallpaper?v=${a.wallpaper_version || 0}')`;
+    wall.style.filter = a.wallpaper_blur ? `blur(${a.wallpaper_blur}px)` : '';
+    // Blurring samples past the edges and lets the background show
+    // through as a pale rim, so the layer is grown to cover it.
+    wall.style.inset = a.wallpaper_blur ? `-${a.wallpaper_blur * 2}px` : '0';
+    root.style.setProperty('--wall-dim',
+      String(Math.min(95, Math.max(0, a.wallpaper_dim ?? 55)) / 100));
+    document.body.classList.add('has-wallpaper');
+  } else {
+    document.body.classList.remove('has-wallpaper');
+    wall.style.backgroundImage = '';
+  }
+}
 
 // ------------------------------------------------------- signing in
 //

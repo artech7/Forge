@@ -1482,6 +1482,23 @@ DEFAULT_SETTINGS = {
     # node_token is what workers authenticate with, since a worker
     # can't type a password and shouldn't be trusted with the admin's.
     "auth": {"username": "", "password": "", "node_token": ""},
+    # How Forge looks. Kept on the server rather than only in the
+    # browser so the same choice greets you on a phone as on a desktop —
+    # the theme is also mirrored into localStorage, but only so the
+    # right palette paints before the first response arrives rather than
+    # flashing the default on every load.
+    #
+    # accent is empty until someone picks one; "" means "whatever the
+    # chosen theme already uses", which is not the same as any colour
+    # and so can't be stored as one.
+    "appearance": {
+        "theme": "ironforge",
+        "accent": "",
+        "wallpaper": False,     # whether an uploaded image is in use
+        "wallpaper_dim": 55,    # percent of ink laid over it, 0-95
+        "wallpaper_blur": 0,    # pixels, 0-40
+        "wallpaper_version": 0, # bumped on upload, busts the year-long cache
+    },
     "radarr": {"url": "", "api_key": ""},
     "sonarr": {"url": "", "api_key": ""},
     "schedule": {
