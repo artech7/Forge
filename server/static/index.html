@@ -27,6 +27,10 @@
     --amber:#f2b03d;    /* queued, waiting */
     --fault:#ff6b6b;    /* failed */
     --idle:#5b6b85;
+    /* Liquid glass: the bright edge where light refracts through the
+       pane, and the colour the pane itself carries. */
+    --sheen:rgba(255,255,255,.55);
+    --tint:rgba(150,190,255,.20);
     --bg-1:#1a2740; --bg-2:#16283a;
     --r:18px;
   }
@@ -43,6 +47,10 @@
     --amber:#ff7a3d;
     --fault:#ff5a4d;
     --idle:#8a6a55;
+    /* Liquid glass: the bright edge where light refracts through the
+       pane, and the colour the pane itself carries. */
+    --sheen:rgba(255,225,190,.55);
+    --tint:rgba(255,140,60,.24);
     --bg-1:#3d2012; --bg-2:#2a1608;
   }
 
@@ -58,6 +66,10 @@
     --amber:#7fb8e8;
     --fault:#ff6b6b;
     --idle:#4a6478;
+    /* Liquid glass: the bright edge where light refracts through the
+       pane, and the colour the pane itself carries. */
+    --sheen:rgba(225,245,255,.58);
+    --tint:rgba(130,200,255,.24);
     --bg-1:#173350; --bg-2:#0f2438;
   }
 
@@ -73,6 +85,10 @@
     --amber:#c9a24d;
     --fault:#ff6b6b;
     --idle:#5c6c60;
+    /* Liquid glass: the bright edge where light refracts through the
+       pane, and the colour the pane itself carries. */
+    --sheen:rgba(235,255,235,.50);
+    --tint:rgba(150,220,160,.20);
     --bg-1:#1d2c20; --bg-2:#152018;
   }
   *{box-sizing:border-box}
@@ -109,7 +125,12 @@
            overflow-x:auto;scrollbar-width:none}
   .toptabs::-webkit-scrollbar{display:none}
   .toptab{flex:none}
-  .toptab{background:none;border:none;color:var(--muted);font-family:Archivo,sans-serif;
+  /* Flat text with an underline, not a pane. The shared button rule gives
+     every button a rim and a drop shadow, and those have to be turned off
+     here or each tab draws itself as a pill. */
+  .toptab{background:none;border:none;box-shadow:none;
+    backdrop-filter:none;-webkit-backdrop-filter:none;
+    color:var(--muted);font-family:Archivo,sans-serif;
     font-size:14.5px;font-weight:600;padding:11px 18px;cursor:pointer;
     border-radius:10px 10px 0 0;position:relative;top:1px;
     transition:color .15s,background .15s}
@@ -151,12 +172,96 @@
        transition:background .3s}
   .dot.live{background:var(--signal);box-shadow:0 0 10px var(--signal)}
 
+  /* Liquid glass.
+     Frosted glass is just a blur. What makes a pane read as a real piece
+     of glass is its edge: light bends through the thickness and lights
+     the rim brightly where it faces the light and faintly where it
+     doesn't. Three layers do that here.
+
+     1. The pane. A slight vertical gradient rather than one flat wash,
+        because a flat fill reads as paint. saturate/brightness on the
+        backdrop is the tint the glass itself carries.
+     2. The rim (::after). A gradient run around the border only, via the
+        two-mask xor trick — the element is masked to its own padding box
+        and then to its whole box, and excluding one from the other
+        leaves exactly the 1px frame. A plain border can only be one
+        flat colour, which is what kept this looking like a rectangle
+        with a line round it.
+     3. Depth. An inner highlight along the top inside edge, an inner
+        shadow along the bottom, and a soft drop shadow so the pane sits
+        above the background rather than in it. */
   .glass{
-    background:var(--glass);
-    border:1px solid var(--edge);
+    position:relative;
+    background:
+      linear-gradient(160deg, var(--tint) 0%, transparent 42%),
+      var(--glass);
+    border:0;
     border-radius:var(--r);
-    backdrop-filter:blur(22px) saturate(150%);
-    -webkit-backdrop-filter:blur(22px) saturate(150%);
+    backdrop-filter:blur(26px) saturate(170%) brightness(1.06);
+    -webkit-backdrop-filter:blur(26px) saturate(170%) brightness(1.06);
+    box-shadow:
+      inset 0 1px 0 var(--sheen),
+      inset 0 -1px 0 rgba(0,0,0,.22),
+      0 10px 30px -12px rgba(0,0,0,.55);
+  }
+  .glass::after{
+    content:'';
+    position:absolute;
+    inset:0;
+    border-radius:inherit;
+    padding:1px;
+    background:linear-gradient(150deg,
+      var(--sheen) 0%,
+      var(--edge) 28%,
+      transparent 52%,
+      var(--edge) 78%,
+      var(--sheen) 100%);
+    -webkit-mask:linear-gradient(#000 0 0) content-box,
+                 linear-gradient(#000 0 0);
+            mask:linear-gradient(#000 0 0) content-box,
+                 linear-gradient(#000 0 0);
+    -webkit-mask-composite:xor;
+            mask-composite:exclude;
+    /* The rim paints over the content, which is what a real glass edge
+       does — it's in front of what's behind it. Only ever the outermost
+       1px, and pointer-events:none so it can't swallow a click. Forcing
+       content above it instead would mean position:relative on every
+       child, and that makes each one a containing block for anything
+       absolutely positioned inside it. */
+    pointer-events:none;
+  }
+
+  /* Buttons are small panes of the same glass, so they get the same
+     edge. Kept lighter than a card's — at this size a full-strength rim
+     reads as a border, which is the thing being avoided. */
+  button{
+    position:relative;
+    background:
+      linear-gradient(170deg, rgba(255,255,255,.10), rgba(255,255,255,.03));
+    backdrop-filter:blur(12px) saturate(140%);
+    -webkit-backdrop-filter:blur(12px) saturate(140%);
+    box-shadow:inset 0 1px 0 rgba(255,255,255,.16),
+               0 2px 8px -4px rgba(0,0,0,.5);
+  }
+  button:hover{
+    background:
+      linear-gradient(170deg, rgba(255,255,255,.18), rgba(255,255,255,.07));
+    box-shadow:inset 0 1px 0 var(--sheen),
+               0 4px 14px -5px rgba(0,0,0,.55);
+  }
+
+  /* Transparency is a preference, not a given: some people find layered
+     translucency genuinely hard to read through, and the OS has a switch
+     for saying so. Everything below keeps the shape and the depth and
+     drops only the see-through. */
+  @media (prefers-reduced-transparency:reduce){
+    .glass,button{
+      backdrop-filter:none;
+      -webkit-backdrop-filter:none;
+      background:var(--ink-2);
+    }
+    .glass::after{background:var(--edge)}
+    .veil{backdrop-filter:none;background:rgba(4,7,12,.94)}
   }
 
   .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));
@@ -326,9 +431,26 @@
      inside this box. Without them a wide table stretches its container
      instead of overflowing it, and the whole page scrolls — which moves
      the header and tabs off screen to read a filename. */
-  .qtable-wrap{background:var(--glass);border:1px solid var(--edge);
-               border-radius:var(--r);overflow-x:auto;
-               min-width:0;max-width:100%}
+  .qtable-wrap{position:relative;
+               background:linear-gradient(165deg, var(--tint) 0%, transparent 38%),
+                          var(--glass);
+               border:0;border-radius:var(--r);overflow-x:auto;
+               min-width:0;max-width:100%;
+               backdrop-filter:blur(26px) saturate(170%) brightness(1.06);
+               -webkit-backdrop-filter:blur(26px) saturate(170%) brightness(1.06);
+               box-shadow:inset 0 1px 0 var(--sheen),
+                          inset 0 -1px 0 rgba(0,0,0,.22),
+                          0 10px 30px -12px rgba(0,0,0,.55)}
+  /* Sticky headers scroll over the pane, so they need their own opaque
+     backing or rows show through them. */
+  .qtable-wrap::after{content:'';position:absolute;inset:0;border-radius:inherit;
+    padding:1px;
+    background:linear-gradient(150deg, var(--sheen) 0%, var(--edge) 28%,
+               transparent 52%, var(--edge) 78%, var(--sheen) 100%);
+    -webkit-mask:linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+            mask:linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+    -webkit-mask-composite:xor; mask-composite:exclude;
+    pointer-events:none}
   .qtable{width:100%;border-collapse:collapse;font-size:12.5px}
   .qtable th,.qtable td{padding:9px 10px;text-align:left;white-space:nowrap;
                         border-bottom:1px solid rgba(255,255,255,.05)}
@@ -539,7 +661,11 @@
   .lib .tip{font-size:11.5px;color:var(--amber);line-height:1.45;margin-top:8px}
   .lib .recipe{margin-top:11px;font-family:'Chivo Mono',monospace;font-size:10.5px;
                color:var(--muted);letter-spacing:.04em}
-  .lib .row{display:flex;gap:8px;margin-top:13px}
+  /* Wraps because there are five of these now. Adding Duplicate pushed
+     the row past the card's width in a two-column layout, and a plain
+     flex row doesn't wrap — it just overflowed, so Remove hung outside
+     the card and over whatever sat beside it. */
+  .lib .row{display:flex;flex-wrap:wrap;gap:8px;margin-top:13px}
   .lib button{padding:6px 12px;font-size:12px}
   .lib .scanresult{font-size:11.5px;color:var(--muted);line-height:1.5;margin-top:10px}
   .sec{font-size:11px;color:var(--muted)}
@@ -580,7 +706,8 @@
   .toggle .td{font-size:12.5px;color:var(--muted);line-height:1.5;margin-top:2px}
 
   /* wizard */
-  .veil{position:fixed;inset:0;background:rgba(4,7,12,.72);backdrop-filter:blur(7px);
+  .veil{position:fixed;inset:0;background:rgba(4,7,12,.62);backdrop-filter:blur(14px) saturate(120%);
+        -webkit-backdrop-filter:blur(14px) saturate(120%);
         display:none;align-items:center;justify-content:center;padding:18px;z-index:50}
   .veil.open{display:flex}
   /* in-page confirmations and notices, in place of the browser's own
@@ -630,10 +757,13 @@
           max-width:min(380px,calc(100vw - 36px));pointer-events:none}
   .toast{pointer-events:auto;padding:11px 14px;border-radius:12px;
          font-size:12.5px;line-height:1.55;white-space:pre-line;cursor:pointer;
-         background:var(--glass);border:1px solid var(--edge);
-         backdrop-filter:blur(22px) saturate(150%);
-         -webkit-backdrop-filter:blur(22px) saturate(150%);
-         box-shadow:0 10px 30px rgba(0,0,0,.35);
+         background:linear-gradient(160deg, var(--tint) 0%, transparent 45%),
+                    var(--glass);
+         border:1px solid var(--edge);
+         backdrop-filter:blur(26px) saturate(170%) brightness(1.06);
+         -webkit-backdrop-filter:blur(26px) saturate(170%) brightness(1.06);
+         box-shadow:inset 0 1px 0 var(--sheen),
+                    0 14px 36px -10px rgba(0,0,0,.55);
          animation:toast-in .22s ease-out}
   .toast.good{border-left:3px solid var(--signal)}
   .toast.bad{border-left:3px solid var(--fault)}

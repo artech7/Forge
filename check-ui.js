@@ -296,6 +296,53 @@ check('slot control at limits', () => {
   // saveLibrary sends '' as null -- so changing anything else silently
   // cleared where that library keeps its originals, and they went back to
   // landing inside the watched folder.
+  console.log('\nGlass:');
+  const css = (() => {
+    const full = require('fs').readFileSync(
+      __dirname + '/server/static/index.html', 'utf8');
+    return full.slice(full.indexOf('<style>'), full.indexOf('</style>'));
+  })();
+
+  // A theme is a block of custom properties. One added later that forgets
+  // these two gets an invisible rim and an untinted pane — it still
+  // renders, so nothing would say it had gone wrong.
+  check('every theme defines the glass variables', () => {
+    const blocks = css.match(/\[data-theme="[a-z]+"\][^{]*\{[^}]*\}/g) || [];
+    if (blocks.length < 4) throw new Error('found only ' + blocks.length + ' themes');
+    for (const b of blocks) {
+      const name = b.match(/data-theme="([a-z]+)"/)[1];
+      for (const v of ['--sheen', '--tint', '--glass', '--edge'])
+        if (!b.includes(v)) throw new Error(`${name} has no ${v}`);
+    }
+  });
+  check('the rim is drawn and cannot swallow a click', () => {
+    // The whole rule, not a fixed slice — a comment inside it pushed
+    // the declaration past the window and failed a correct file.
+    const start = css.indexOf('.glass::after');
+    const rim = css.slice(start, css.indexOf('\n  }', start));
+    if (!/mask-composite\s*:\s*exclude/.test(rim))
+      throw new Error('no masked border — the rim would fill the whole card');
+    if (!/pointer-events\s*:\s*none/.test(rim))
+      throw new Error('the rim would intercept clicks');
+  });
+  check('transparency can be turned off', () => {
+    if (!css.includes('prefers-reduced-transparency'))
+      throw new Error('no reduced-transparency fallback');
+  });
+  // The shared button rule adds a rim and a shadow, which is wrong for
+  // anything meant to read as plain text.
+  check('the top tabs stay flat', () => {
+    const tab = css.slice(css.indexOf('.toptab{'), css.indexOf('.toptab{') + 300);
+    if (!/box-shadow\s*:\s*none/.test(tab))
+      throw new Error('tabs inherit the button shadow and draw as pills');
+  });
+  // Five buttons don't fit a card in a two-column layout.
+  check('a library card wraps its buttons instead of overflowing', () => {
+    const row = css.slice(css.indexOf('.lib .row{'), css.indexOf('.lib .row{') + 120);
+    if (!/flex-wrap\s*:\s*wrap/.test(row))
+      throw new Error('the row cannot wrap: ' + row.slice(0, 60));
+  });
+
   console.log('\nThe queue table:');
   const tjob = (over) => ({id: 1, path: '/media/Movies/CODA (2021).mkv',
     library_id: 1, state: 'done', spec: {codec: 'hevc', quality: 22, audio: 'aac'},
