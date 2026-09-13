@@ -26,6 +26,12 @@ import naming, profiles, schedule, watcher       # noqa: E402
 import lookup, scheduler                         # noqa: E402
 import arr                                       # noqa: E402
 
+# Kept because a later check stubs this out on the module itself,
+# and the module app imports is the same object — so by the time
+# the *arr checks run, the real function is gone unless it was put
+# somewhere first.
+_REAL_FIND_AND_RESEARCH = arr.find_and_research
+
 
 class _FakeReq:
     """Enough of a Request for endpoints that only read the body."""
@@ -806,6 +812,116 @@ check("requeueing clears the phase, so nothing describes stale work",
       lambda r: r is None)
 db.delete_jobs(["queued"], library_id=_ph_lib)
 db.delete_library(_ph_lib)
+
+print("\nAsking Radarr/Sonarr to replace a file:")
+# Every one of these failed in production with "didn't recognise this
+# path", for a reason no amount of path translation could fix: Sonarr's
+# and Radarr's /api/v3/parse return null outright when `title` is empty,
+# and Forge was sending only `path`. Nothing was ever looked up.
+_arr_calls = []
+
+
+def _fake_arr(replies):
+    """Stand in for the *arr HTTP client, recording what it was asked."""
+    def request(base_url, api_key, method, path, params=None, body=None):
+        _arr_calls.append({"method": method, "path": path,
+                           "params": params or {}, "body": body})
+        for match, reply in replies:
+            if match in path:
+                return reply() if callable(reply) else reply
+        return None
+    return request
+
+
+_real_arr_request = arr._request
+arr.find_and_research = _REAL_FIND_AND_RESEARCH
+_SERIES = {"id": 5, "title": "Bob's Burgers"}
+_EPISODES = [{"id": 900, "episodeFileId": 77}]
+_SONARR_PATH = "/media/TV Shows/Bob's Burgers/Season 11/Bob's Burgers - S11E07 - x.mkv"
+
+arr._request = _fake_arr([
+    ("/parse", {"series": _SERIES, "episodes": _EPISODES}),
+    ("/episodefile", [{"id": 77, "path": _SONARR_PATH}]),
+    ("/command", {"id": 1}),
+])
+_arr_calls.clear()
+_ok, _msg = arr.find_and_research("sonarr", "http://s", "k", _SONARR_PATH)
+check("a title is sent, not just a path",
+      lambda: _arr_calls[0]["params"].get("title"),
+      lambda r: r == "Bob's Burgers - S11E07 - x.mkv")
+check("Sonarr also gets the path, which is how it reads the season",
+      lambda: _arr_calls[0]["params"].get("path"), lambda r: r == _SONARR_PATH)
+check("the file record is fetched separately, since parse has none",
+      lambda: any(c["path"].endswith("/episodefile") for c in _arr_calls),
+      lambda r: r is True)
+check("the right episode file is deleted",
+      lambda: [c["path"] for c in _arr_calls if c["method"] == "DELETE"],
+      lambda r: r == ["/api/v3/episodefile/77"])
+check("and a search is asked for",
+      lambda: [c["body"]["name"] for c in _arr_calls if c["method"] == "POST"],
+      lambda r: r == ["EpisodeSearch"])
+check("it reports success in words", lambda: (_ok, _msg),
+      lambda r: r[0] is True and "Bob's Burgers" in r[1])
+
+# Radarr's parse takes no path at all — sending one is harmless but the
+# title is what it reads.
+arr._request = _fake_arr([
+    ("/parse", {"movie": {"id": 3, "title": "CODA", "movieFileId": 12}}),
+    ("/moviefile", [{"id": 12, "path": "/movies/CODA (2021).mkv"}]),
+    ("/command", {"id": 1}),
+])
+_arr_calls.clear()
+_rok, _rmsg = arr.find_and_research("radarr", "http://r", "k",
+                                    "/media/Movies/CODA (2021).mkv",
+                                    "/media/Movies", "/movies")
+check("the path translation is applied before the lookup",
+      lambda: _arr_calls[0]["params"].get("title"),
+      lambda r: r == "CODA (2021).mkv")
+check("Radarr is not sent a path parameter it does not accept",
+      lambda: "path" in _arr_calls[0]["params"], lambda r: r is False)
+check("the right movie file is deleted",
+      lambda: [c["path"] for c in _arr_calls if c["method"] == "DELETE"],
+      lambda r: r == ["/api/v3/moviefile/12"])
+
+# The failure that matters most: the series is there, the path is not.
+# Saying so, with both paths, is the only way to work out the mapping.
+arr._request = _fake_arr([
+    ("/parse", {"series": _SERIES, "episodes": _EPISODES}),
+    ("/episodefile", [{"id": 77, "path": "/tv/Bob's Burgers/Season 11/other.mkv"}]),
+])
+_arr_calls.clear()
+_mok, _mmsg = arr.find_and_research("sonarr", "http://s", "k",
+                                    "/media/TV Shows/Bob's Burgers/Season 11/missing.mkv")
+check("a path mismatch names both paths",
+      lambda: _mmsg,
+      lambda r: "/media/TV Shows" in r and "/tv/Bob's Burgers" in r)
+check("and says what to do about it",
+      lambda: _mmsg, lambda r: "path translation" in r)
+check("nothing is deleted when the file could not be matched",
+      lambda: [c for c in _arr_calls if c["method"] == "DELETE"],
+      lambda r: r == [])
+
+# Two files can parse identically and live in different folders, so the
+# match is on the path, never on what the parse guessed.
+arr._request = _fake_arr([
+    ("/parse", {"series": _SERIES, "episodes": [{"id": 900, "episodeFileId": 55}]}),
+    ("/episodefile", [{"id": 55, "path": "/media/TV Shows/Other/S11E07.mkv"},
+                      {"id": 78, "path": _SONARR_PATH}]),
+    ("/command", {"id": 1}),
+])
+_arr_calls.clear()
+arr.find_and_research("sonarr", "http://s", "k", _SONARR_PATH)
+check("the file at the path wins over the one the parse guessed",
+      lambda: [c["path"] for c in _arr_calls if c["method"] == "DELETE"],
+      lambda r: r == ["/api/v3/episodefile/78"])
+
+# And the shape that started all this: parse answering null.
+arr._request = _fake_arr([("/parse", None)])
+_arr_calls.clear()
+_nok, _nmsg = arr.find_and_research("sonarr", "http://s", "k", "/media/x/y.mkv")
+check("an unparseable name says so plainly", lambda: (_nok, _nmsg),
+      lambda r: r[0] is False and "couldn't read a title" in r[1])
+arr._request = _real_arr_request
 
 print("\nSorting, filtering and counting a queue:")
 _q_lib = db.create_library("Queue", str(base / "queue"), "", profile, "archive")

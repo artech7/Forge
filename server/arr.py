@@ -69,6 +69,47 @@ def remap_path(path, path_from, path_to):
     return path
 
 
+def _match_file(files, wanted):
+    """Find the *arr's record for the file Forge is looking at.
+
+    Matched on the path, never on the id the parse came back with. The
+    parse reads a *name*: two files in different folders with the same
+    episode numbering parse identically, and this function's caller
+    deletes whatever it returns. Falling back to the parsed id when the
+    path doesn't line up would delete a file Forge could not verify, and
+    would quietly paper over the path translation being wrong — which is
+    the one thing the person running it actually needs told.
+
+    The filename on its own is accepted as a second try, because the
+    list has already been narrowed to one series or one movie by then.
+    """
+    for f in files:
+        if (f.get("path") or "") == wanted:
+            return f
+    tail = wanted.rsplit("/", 1)[-1]
+    for f in files:
+        if (f.get("path") or "").rsplit("/", 1)[-1] == tail:
+            return f
+    return None
+
+
+def _path_help(files, wanted):
+    """What to say when the *arr has the series but not at this path.
+
+    Shows one of its own paths beside the one Forge asked about, because
+    the answer is always a path translation and it is impossible to
+    guess without seeing both.
+    """
+    example = next((f.get("path") for f in files if f.get("path")), "")
+    if not example:
+        return (f"it has no files on record for this one. Forge looked for "
+                f"{wanted}")
+    return (f"it has that series, but at a different path. Forge asked "
+            f"about {wanted}; {example} is where it keeps one. Set this "
+            f"library's path translation on its Recovery step so the two "
+            f"agree.")
+
+
 def find_and_research(kind, base_url, api_key, path, path_from="", path_to=""):
     """Delete the file via Radarr/Sonarr's own API, then ask it to re-fetch.
 
@@ -77,11 +118,32 @@ def find_and_research(kind, base_url, api_key, path, path_from="", path_to=""):
     the "missing" state that makes a new search meaningful. Returns a
     plain-language result either way — this is reported straight into a
     job's outcome, not logged somewhere separate.
+
+    Two things about /api/v3/parse that this has to work around, both of
+    which used to make every single call fail:
+
+      * It returns null outright when `title` is empty, whatever else is
+        passed. Sending only `path=` therefore produced an empty body and
+        the unhelpful "didn't recognise this path" for every file, before
+        any lookup was even attempted. The filename goes in `title`.
+      * Its response carries no file record at all — no episodeFile, no
+        movieFile, in either application. So the file has to be fetched
+        separately and matched by path, which is the honest way round
+        anyway: see _match_file.
     """
     remapped = remap_path(path, path_from, path_to)
+    name = remapped.rsplit("/", 1)[-1]
+    params = {"title": name}
+    if kind != "radarr":
+        # Radarr's parse takes only a title; Sonarr also reads the folders
+        # above the file, which is what lets it tell seasons apart.
+        params["path"] = remapped
+
+    def get(endpoint, query=None):
+        return _request(base_url, api_key, "GET", endpoint, params=query)
+
     try:
-        parsed = _request(base_url, api_key, "GET", "/api/v3/parse",
-                          params={"path": remapped})
+        parsed = get("/api/v3/parse", params)
     except urllib.error.HTTPError as exc:
         return False, f"Radarr/Sonarr rejected the lookup ({exc.code})."
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
@@ -90,40 +152,51 @@ def find_and_research(kind, base_url, api_key, path, path_from="", path_to=""):
         return False, "Radarr/Sonarr sent back something unexpected."
 
     if not parsed:
-        return False, f"Radarr/Sonarr didn't recognise this path: {remapped}"
+        return False, f"Radarr/Sonarr couldn't read a title out of {name}."
 
-    if kind == "radarr":
-        movie = parsed.get("movie") or {}
-        movie_file = parsed.get("movieFile") or (movie.get("movieFile")
-                                                 if movie else None)
-        if not movie or not movie_file:
-            return False, "Radarr knows this file, but has no file record for it."
-        try:
+    try:
+        if kind == "radarr":
+            movie = parsed.get("movie") or {}
+            if not movie.get("id"):
+                return False, (f"Radarr parsed {name} but has no matching "
+                               f"movie in its library.")
+            files = get("/api/v3/moviefile", {"movieId": movie["id"]}) or []
+            found = _match_file(files, remapped)
+            if not found:
+                return False, (f"Radarr has {movie.get('title', 'that movie')}, "
+                               f"but {_path_help(files, remapped)}")
             _request(base_url, api_key, "DELETE",
-                    f"/api/v3/moviefile/{movie_file['id']}")
+                     f"/api/v3/moviefile/{found['id']}")
             _request(base_url, api_key, "POST", "/api/v3/command", body={
                 "name": "MoviesSearch", "movieIds": [movie["id"]],
             })
-        except (urllib.error.HTTPError, urllib.error.URLError, OSError) as exc:
-            return False, f"Deleted the record, but the new search failed: {exc}"
-        return True, f"Removed and asked Radarr to search again for {movie.get('title', 'this movie')}."
+            return True, ("Removed and asked Radarr to search again for "
+                          f"{movie.get('title', 'this movie')}.")
 
-    # sonarr
-    episodes = parsed.get("episodes") or []
-    episode_file = parsed.get("episodeFile")
-    series = parsed.get("series") or {}
-    if not episodes or not episode_file:
-        return False, "Sonarr knows this file, but has no file record for it."
-    try:
+        series = parsed.get("series") or {}
+        episodes = parsed.get("episodes") or []
+        if not series.get("id") or not episodes:
+            return False, (f"Sonarr parsed {name} but has no matching "
+                           f"episode in its library.")
+        files = get("/api/v3/episodefile", {"seriesId": series["id"]}) or []
+        found = _match_file(files, remapped)
+        if not found:
+            return False, (f"Sonarr has {series.get('title', 'that series')}, "
+                           f"but {_path_help(files, remapped)}")
         _request(base_url, api_key, "DELETE",
-                f"/api/v3/episodefile/{episode_file['id']}")
+                 f"/api/v3/episodefile/{found['id']}")
         _request(base_url, api_key, "POST", "/api/v3/command", body={
             "name": "EpisodeSearch",
-            "episodeIds": [e["id"] for e in episodes],
+            "episodeIds": [e["id"] for e in episodes if e.get("id")],
         })
-    except (urllib.error.HTTPError, urllib.error.URLError, OSError) as exc:
-        return False, f"Deleted the record, but the new search failed: {exc}"
-    return True, f"Removed and asked Sonarr to search again for {series.get('title', 'this episode')}."
+        return True, ("Removed and asked Sonarr to search again for "
+                      f"{series.get('title', 'this episode')}.")
+    except urllib.error.HTTPError as exc:
+        return False, f"Radarr/Sonarr rejected that ({exc.code})."
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        return False, f"Could not reach Radarr/Sonarr: {getattr(exc, 'reason', exc)}"
+    except (json.JSONDecodeError, ValueError, KeyError, TypeError) as exc:
+        return False, f"Radarr/Sonarr sent back something unexpected ({exc})."
 
 
 # --------------------------------------------------------------- Bazarr
