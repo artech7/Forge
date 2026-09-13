@@ -507,28 +507,31 @@
   .qtable{width:100%;border-collapse:collapse;font-size:12.5px}
   .qtable th,.qtable td{padding:9px 10px;text-align:left;white-space:nowrap;
                         border-bottom:1px solid rgba(255,255,255,.05)}
-  /* Carries the theme's tint rather than being a flat slab. It was a
-     solid --ink-2, which with a wallpaper behind the page read as the
-     one black band in an otherwise translucent table.
-     Nearly opaque, though, and deliberately: a sticky header has rows
-     passing underneath it, and they have to stop being visible. The
-     obvious answer — backdrop-filter, like every other pane here — does
-     not work in this one place. This sits inside .qtable-wrap, which is
-     already a backdrop-filter root, and a nested one does not blur its
-     own scrolling siblings: the rows came through the header perfectly
-     sharp and both sets of text were unreadable at once. */
+  /* --bg-1 is each theme's own colour — the blue of Ironforge, the
+     warm brown of Emberforge — where --ink-2 is the near-black every
+     theme shares. Built on --ink-2 this was technically themed and
+     looked like a black slab, which is the whole complaint.
+     Mostly opaque, and deliberately: a sticky header has rows passing
+     underneath it and they have to stop being visible. Only 8% of the
+     way open, which is enough to feel like glass without the rows
+     reading through it. The blur is a finishing touch, not the
+     mechanism — backdrop-filter cannot do this job here, because this
+     sits inside .qtable-wrap, which is already a backdrop-filter root,
+     and a nested one does not blur its own scrolling siblings. */
   .qtable thead th{font-family:'Chivo Mono',monospace;font-size:10.5px;
     letter-spacing:.05em;text-transform:uppercase;color:var(--muted);
     font-weight:600;position:sticky;top:0;z-index:2;
-    background:linear-gradient(160deg, var(--tint) 0%, transparent 70%),
-               color-mix(in srgb, var(--ink-2) 97%, transparent)}
+    background:color-mix(in srgb, var(--bg-1) 92%, transparent);
+    backdrop-filter:blur(10px) saturate(140%);
+    -webkit-backdrop-filter:blur(10px) saturate(140%)}
   .qtable th.sortable{cursor:pointer;user-select:none}
   .qtable th.sortable:hover{color:var(--text)}
   .sortmark{margin-left:5px;font-size:9px;opacity:.9}
   .sortmark.dim{opacity:.25}
   .qtable tr.filters th{position:sticky;top:30px;z-index:2;
-                        background:linear-gradient(160deg, var(--tint) 0%, transparent 70%),
-                                   color-mix(in srgb, var(--ink-2) 97%, transparent);
+                        background:color-mix(in srgb, var(--bg-1) 92%, transparent);
+                        backdrop-filter:blur(10px) saturate(140%);
+                        -webkit-backdrop-filter:blur(10px) saturate(140%);
                         padding:5px 7px 8px}
   .qtable tr.filters input,.qtable tr.filters select{
     width:100%;min-width:64px;font-size:11.5px;padding:4px 7px;

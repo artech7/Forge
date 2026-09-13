@@ -437,7 +437,7 @@ check('slot control at limits', () => {
     const rule = css.slice(start, css.indexOf('}', start));
     if (/background:\s*var\(--ink-2\)/.test(rule))
       throw new Error('flat --ink-2: reads as a black band over a wallpaper');
-    if (!rule.includes('--tint'))
+    if (!/--bg-1|--tint/.test(rule))
       throw new Error('header takes no colour from the theme');
   });
   check('the table only scrolls sideways where it has to', () => {
