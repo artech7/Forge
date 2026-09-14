@@ -23,6 +23,7 @@ import requests
 
 import encoders
 import streams
+import sysinfo
 
 SERVER = os.environ.get("SERVER", "http://localhost:8420").rstrip("/")
 NAME = os.environ.get("NODE_NAME", socket.gethostname())
@@ -124,6 +125,10 @@ def register(nid, caps):
         "recipes": {e: n for e, (n, _b) in encoders.WORKING_RECIPE.items()},
         "benchmarks": encoders.BENCHMARKS,
         "benchmarks_10bit": encoders.BENCHMARKS_10BIT,
+        # A snapshot of what this machine is doing, read fresh on every
+        # heartbeat. Empty on a worker whose requirements predate it,
+        # which the card copes with by showing nothing extra.
+        "stats": sysinfo.collect(),
     })
     if resp.status_code == 401:
         raise PermissionError(explain_401())

@@ -530,7 +530,7 @@ async def register_node(req: Request):
         body.get("encoders", []), body.get("mounts", []),
         int(body.get("max_jobs", 1)),
         body.get("recipes"), body.get("benchmarks"), body.get("cpus"),
-        body.get("benchmarks_10bit"),
+        body.get("benchmarks_10bit"), body.get("stats"),
     )
     await broadcast()
     # The server owns concurrency, so the worker is told how many to run.

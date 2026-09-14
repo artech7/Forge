@@ -845,6 +845,36 @@ check("requeueing clears the phase, so nothing describes stale work",
 db.delete_jobs(["queued"], library_id=_ph_lib)
 db.delete_library(_ph_lib)
 
+print("\nA node reports what its machine is doing:")
+import sysinfo as _si                              # noqa: E402
+                                                   # worker/ is already
+                                                   # on the path above
+check("stats survive a round trip through the database",
+      lambda: (db.upsert_node("statnode", "Stats", [], [], 1, stats={
+                   "cpu_percent": 41.2, "memory_percent": 28.1,
+                   "gpus": [{"name": "NVIDIA GeForce RTX 3090", "percent": 87}]}),
+               next(n for n in db.list_nodes() if n["id"] == "statnode")["stats"])[1],
+      lambda r: isinstance(r, dict) and r["gpus"][0]["percent"] == 87)
+# The worker that predates this sends nothing, and re-registering must
+# not wipe stats with an empty dict on every heartbeat either — it sends
+# a fresh reading each time, so an empty one means "couldn't read".
+check("a node with no stats is stored as empty, not broken",
+      lambda: (db.upsert_node("plainnode", "Plain", [], [], 1),
+               next(n for n in db.list_nodes() if n["id"] == "plainnode")["stats"])[1],
+      lambda r: r == {})
+check("collecting never raises, whatever is installed",
+      lambda: type(_si.collect()).__name__, lambda r: r == "dict")
+check("and returns nothing rather than guessing without psutil",
+      lambda: (_si._cpu_and_memory() if _si.psutil else {}) or {},
+      lambda r: isinstance(r, dict))
+# nvidia-smi is looked up once, not spawned every twenty seconds forever.
+check("nvidia-smi is only searched for once",
+      lambda: (_si._have_nvidia_smi(), _si._NVIDIA is not None)[1],
+      lambda r: r is True)
+check("a machine with no NVIDIA card reports no GPUs",
+      lambda: _si._gpus() if not _si._have_nvidia_smi() else [],
+      lambda r: r == [])
+
 print("\nRepackaging is its own kind of work:")
 check("a tidy repair is not filed as an ordinary conversion",
       lambda: db.job_kind({"repackage": True, "codec": "copy"}),

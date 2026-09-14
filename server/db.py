@@ -24,6 +24,8 @@ CREATE TABLE IF NOT EXISTS nodes (
     recipes      TEXT NOT NULL DEFAULT '{}',
     benchmarks   TEXT NOT NULL DEFAULT '{}',
     benchmarks_10bit TEXT NOT NULL DEFAULT '{}',
+    stats        TEXT NOT NULL DEFAULT '{}',   -- live CPU/memory/GPU, refreshed
+                                               -- on every heartbeat
     last_seen    REAL NOT NULL,
     enabled      INTEGER NOT NULL DEFAULT 1,
     role         TEXT NOT NULL DEFAULT 'both',  -- both|transcode|housekeeping
@@ -210,7 +212,8 @@ def row_to_dict(row):
         return None
     d = dict(row)
     for key in ("encoders", "mounts", "spec", "profile", "filters",
-                "recipes", "benchmarks", "benchmarks_10bit", "naming"):
+                "recipes", "benchmarks", "benchmarks_10bit", "naming",
+                "stats"):
         if key in d:
             d[key] = parse_json(d[key], {} if key not in
                                 ("encoders", "mounts") else [])
@@ -218,7 +221,8 @@ def row_to_dict(row):
 
 
 def upsert_node(node_id, name, encoders, mounts, max_jobs,
-                recipes=None, benchmarks=None, cpus=None, benchmarks_10bit=None):
+                recipes=None, benchmarks=None, cpus=None, benchmarks_10bit=None,
+                stats=None):
     """Register or refresh a node.
 
     slots is deliberately NOT overwritten on re-registration: it's set from
@@ -228,19 +232,20 @@ def upsert_node(node_id, name, encoders, mounts, max_jobs,
         conn.execute(
             """INSERT INTO nodes
                (id, name, encoders, mounts, max_jobs, slots, cpus,
-                recipes, benchmarks, benchmarks_10bit, last_seen)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                recipes, benchmarks, benchmarks_10bit, stats, last_seen)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT(id) DO UPDATE SET
                  name=excluded.name, encoders=excluded.encoders,
                  mounts=excluded.mounts, max_jobs=excluded.max_jobs,
                  cpus=excluded.cpus,
                  recipes=excluded.recipes, benchmarks=excluded.benchmarks,
                  benchmarks_10bit=excluded.benchmarks_10bit,
+                 stats=excluded.stats,
                  last_seen=excluded.last_seen""",
             (node_id, name, json.dumps(encoders), json.dumps(mounts),
              max_jobs, max_jobs, cpus, json.dumps(recipes or {}),
              json.dumps(benchmarks or {}), json.dumps(benchmarks_10bit or {}),
-             time.time()),
+             json.dumps(stats or {}), time.time()),
         )
 
 
@@ -1416,7 +1421,8 @@ def migrate():
                   ("slots", "INTEGER"), ("cpus", "INTEGER"),
                   ("benchmarks_10bit", "TEXT NOT NULL DEFAULT '{}'"),
                   ("role", "TEXT NOT NULL DEFAULT 'both'"),
-                  ("housekeeping_slots", "INTEGER NOT NULL DEFAULT 0")],
+                  ("housekeeping_slots", "INTEGER NOT NULL DEFAULT 0"),
+                  ("stats", "TEXT NOT NULL DEFAULT '{}'")],
         "files": [("video_bitrate", "INTEGER"), ("bit_depth", "INTEGER"),
                   ("detail", "TEXT")],
     }

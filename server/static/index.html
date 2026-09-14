@@ -386,6 +386,30 @@
         display:grid;
         grid-template-columns:minmax(170px,220px) minmax(0,1fr) minmax(160px,230px);
         gap:12px 22px;align-items:start}
+  /* Live machine stats. Spans the full width under the top row, which
+     is the only place three meters fit side by side without any of them
+     wrapping its numbers. */
+  /* auto-fill, not auto-fit: a machine with no GPU has two meters, and
+     auto-fit would stretch them across the whole card while the machine
+     beside it fits three into the same space. Filling keeps a meter the
+     same size on every card. */
+  .node-stats{grid-column:1/-1;display:grid;
+              grid-template-columns:repeat(auto-fill,minmax(300px,1fr));
+              gap:10px 22px;margin-top:2px}
+  .meter{min-width:0}
+  .meter-top{display:flex;justify-content:space-between;gap:10px;
+             align-items:baseline;margin-bottom:4px}
+  .meter-lbl{font-family:'Chivo Mono',monospace;font-size:10px;
+             letter-spacing:.09em;text-transform:uppercase;color:var(--muted);
+             overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .meter-val{font-family:'Chivo Mono',monospace;font-size:10.5px;
+             color:var(--text);font-variant-numeric:tabular-nums;flex:none}
+  .meter-track{height:4px;border-radius:2px;background:rgba(255,255,255,.09);
+               overflow:hidden}
+  .meter-track i{display:block;height:100%;background:var(--signal);
+                 border-radius:2px;transition:width .6s ease}
+  .meter-track i.hot{background:var(--amber)}
+
   .node-ident{min-width:0;grid-column:1}
   .node-caps{min-width:0;grid-column:2}
   /* Top right, where the row would otherwise be empty. Under the name it
@@ -1361,7 +1385,45 @@ function render(state) {
         return `<span class="cap ${isSw || tenSlow ? (isSw ? 'sw' : 'hw') : isHw ? 'hw' : ''}"
                 >${e}${fps}</span>`;
       }).join('');
-      // Name the encoder that will actually be used, so a slow fallback
+          // Live machine stats, absent on a worker that predates them — the
+      // card simply doesn't grow a row in that case rather than showing
+      // a set of empty meters.
+      const st = n.stats || {};
+      const meter = (label, percent, detail, warnAbove) => {
+        const pct = Math.max(0, Math.min(100, Number(percent) || 0));
+        const hot = warnAbove != null && pct >= warnAbove;
+        return `<div class="meter">
+          <div class="meter-top"><span class="meter-lbl">${label}</span>
+            <span class="meter-val">${detail}</span></div>
+          <div class="meter-track"><i class="${hot ? 'hot' : ''}"
+            style="width:${pct}%"></i></div></div>`;
+      };
+      const bits2 = [];
+      if (st.cpu_percent != null) {
+        // Cores are worth stating once: 100% of four is a very different
+        // machine from 100% of thirty-two.
+        const cores = st.cpu_threads || st.cpu_cores || n.cpus;
+        bits2.push(meter('CPU', st.cpu_percent,
+          `${st.cpu_percent}%${cores ? ` of ${cores}` : ''}`));
+      }
+      if (st.memory_total) {
+        // Memory pressure is the one that quietly ruins an encode, so
+        // this is the only meter that changes colour.
+        bits2.push(meter('Memory', st.memory_percent,
+          `${fmtSize(st.memory_used)} / ${fmtSize(st.memory_total)}`, 90));
+      }
+      for (const g of st.gpus || []) {
+        const parts = [];
+        if (g.percent != null) parts.push(`${g.percent}%`);
+        if (g.memory_total) parts.push(
+          `${fmtSize(g.memory_used)} / ${fmtSize(g.memory_total)}`);
+        if (g.temperature != null) parts.push(`${g.temperature}\u00b0C`);
+        bits2.push(meter(shortGpuName(g.name), g.percent, parts.join(' \u00b7 ')));
+      }
+      const statsRow = bits2.length
+        ? `<div class="node-stats">${bits2.join('')}</div>` : '';
+
+  // Name the encoder that will actually be used, so a slow fallback
       // sitting in the list doesn't imply jobs are going to it.
       const fastest = Object.entries(marks).sort((a,b) => b[1]-a[1])[0];
       const notes = [];
@@ -1398,6 +1460,7 @@ function render(state) {
           <div class="caps">${caps || '<span class="cap">no encoders</span>'}</div>
         </div>
         <canvas class="scope" data-node="${n.id}"></canvas>
+        ${statsRow}
         ${slotControl(n)}
         ${note ? `<div class="node-notes">${note}</div>` : ''}
       </div>`;
@@ -1535,6 +1598,18 @@ const pendingSlots = {};
 // renderLibs itself or it would be wiped out mid-scan.
 const libScanBusy = {};    // library id -> true while a check is running
 const libScanResult = {};  // library id -> last plain-language outcome
+
+// "NVIDIA GeForce RTX 3090" is mostly words every card shares. The
+// model is the part that tells two machines apart.
+function shortGpuName(name) {
+  if (!name) return 'GPU';
+  return String(name)
+    .replace(/^NVIDIA\s+/i, '')
+    .replace(/^GeForce\s+/i, '')
+    .replace(/^AMD\s+/i, '')
+    .replace(/^Intel\(R\)\s+/i, '')
+    .trim() || 'GPU';
+}
 
 function slotControl(n) {
   const server = n.slots == null ? (n.max_jobs || 1) : n.slots;
