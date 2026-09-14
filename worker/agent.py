@@ -55,6 +55,59 @@ DESIRED = {"slots": MAX_JOBS}
 SLOT_LOCK = threading.Lock()
 
 
+# Every FFmpeg this worker has running. Popen does not tie a child's
+# life to its parent's on any platform, so without this a Ctrl+C or a
+# crash leaves the encode running — still holding gigabytes, still
+# writing to a scratch file nobody will claim, and invisible except as
+# a machine whose memory never comes back. sweep_work_files on the
+# server exists to clear up after exactly that.
+LIVE_ENCODES = set()
+LIVE_LOCK = threading.Lock()
+
+
+def _watch(proc):
+    with LIVE_LOCK:
+        # Drop anything that has already exited. A job that raises
+        # between starting FFmpeg and waiting on it never reaches
+        # _unwatch, and on a worker left running for weeks those add up.
+        for done in [p for p in LIVE_ENCODES if p.poll() is not None]:
+            LIVE_ENCODES.discard(done)
+        LIVE_ENCODES.add(proc)
+    return proc
+
+
+def _unwatch(proc):
+    with LIVE_LOCK:
+        LIVE_ENCODES.discard(proc)
+
+
+def stop_all_encodes(grace=5):
+    """Ask every running FFmpeg to stop, then insist.
+
+    Called on the way out. terminate() first so FFmpeg closes its output
+    file properly rather than leaving a half-written one behind; kill()
+    only for anything that ignores it.
+    """
+    with LIVE_LOCK:
+        procs = list(LIVE_ENCODES)
+    for proc in procs:
+        try:
+            if proc.poll() is None:
+                proc.terminate()
+        except OSError:
+            pass
+    deadline = time.time() + grace
+    for proc in procs:
+        try:
+            proc.wait(timeout=max(0, deadline - time.time()))
+        except Exception:
+            try:
+                proc.kill()
+            except OSError:
+                pass
+    return len(procs)
+
+
 class Phase:
     """Says what this job is doing while nothing measurable is happening.
 
@@ -385,9 +438,10 @@ def run_job(job, caps):
 
         post(f"/api/jobs/{job_id}/progress",
              {"heartbeat": True, "phase": "starting the encoder"})
-        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
-                                stderr=subprocess.PIPE, text=True,
-                                encoding="utf-8", errors="replace", bufsize=1)
+        proc = _watch(subprocess.Popen(cmd, stdout=subprocess.PIPE,
+                                       stderr=subprocess.PIPE, text=True,
+                                       encoding="utf-8", errors="replace",
+                                       bufsize=1))
 
         # FFmpeg writes warnings to stderr continuously. Nothing was reading
         # that pipe until the process finished, so once the operating
@@ -421,6 +475,7 @@ def run_job(job, caps):
                     stopped = True
                     break
         proc.wait()
+        _unwatch(proc)
         stderr_thread.join(timeout=5)
 
         if stopped:
@@ -715,6 +770,11 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         pass
     finally:
+        # Before anything else: a child left running here is the one
+        # thing that outlives this process and keeps costing memory.
+        stopped = stop_all_encodes()
+        if stopped:
+            print(f"Stopped {stopped} encode(s) still running.")
         lockfile = WORK_DIR / "worker.pid"
         try:
             if lockfile.read_text().strip() == str(os.getpid()):

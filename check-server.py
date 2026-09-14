@@ -845,6 +845,38 @@ check("requeueing clears the phase, so nothing describes stale work",
 db.delete_jobs(["queued"], library_id=_ph_lib)
 db.delete_library(_ph_lib)
 
+print("\nA worker does not leave FFmpeg running behind it:")
+# Popen does not tie a child's life to its parent's on any platform, so
+# Ctrl+C used to leave the encode running — holding gigabytes, writing
+# to a scratch file nobody would claim, and showing up only as a machine
+# whose memory never came back.
+import subprocess as _sp                             # noqa: E402
+_live = [_agent._watch(_sp.Popen([sys.executable, "-c",
+                                  "import time; time.sleep(60)"]))
+         for _ in range(2)]
+check("both encodes are running to begin with",
+      lambda: sum(1 for p in _live if p.poll() is None), lambda r: r == 2)
+check("shutting down stops every one of them",
+      lambda: (_agent.stop_all_encodes(grace=3), time.sleep(0.3),
+               sum(1 for p in _live if p.poll() is None))[2],
+      lambda r: r == 0)
+# terminate() is asked first so FFmpeg closes its file properly, but
+# anything ignoring it still has to go.
+_stubborn = _agent._watch(_sp.Popen([sys.executable, "-c",
+    "import signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+    "time.sleep(60)"]))
+time.sleep(0.4)
+check("a process ignoring terminate is killed anyway",
+      lambda: (_agent.stop_all_encodes(grace=1), time.sleep(0.4),
+               _stubborn.poll() is None)[2], lambda r: r is False)
+# A job that raises between starting FFmpeg and waiting on it never
+# reaches _unwatch, and on a worker left running for weeks those add up.
+check("finished processes are pruned rather than accumulating",
+      lambda: ([_agent._watch(_sp.Popen([sys.executable, "-c", ""])).wait()
+                for _ in range(5)],
+               len(_agent.LIVE_ENCODES))[1],
+      lambda r: r <= 1)
+
 print("\nA node reports what its machine is doing:")
 import sysinfo as _si                              # noqa: E402
                                                    # worker/ is already
