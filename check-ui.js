@@ -227,16 +227,36 @@ check('slot control at limits', () => {
     }
   });
 
-  await check('step bar is clickable', async () => {
-    // The bar only shows dots for the steps inside the CURRENT group
-    // (see the comment in bar()) rather than all of them at once, so
-    // land on a group with more than one step to have something to count.
+  await check('every step in a group is named, not just dotted', async () => {
+    // The bar only shows the steps inside the CURRENT group (see the
+    // comment in bar()), so land on one with more than a single step.
+    // These used to be bare bars whose only clue was a hover tooltip,
+    // which meant a setting on the third step of a group could not be
+    // found without clicking blindly through the first two.
     const group = __x.GROUPS.find(g => g.steps.length > 1);
     __x.step = group.steps[0];
     await __x.drawStep();
-    const segs = els.wiz.innerHTML.match(/<i class="[^"]*" title="/g) || [];
-    if (segs.length !== group.steps.length)
-      throw new Error(segs.length + ' segments for a ' + group.steps.length + '-step group');
+    const chips = els.wiz.innerHTML.match(/class="step-chip[^"]*"/g) || [];
+    if (chips.length !== group.steps.length)
+      throw new Error(chips.length + ' chips for a ' + group.steps.length + '-step group');
+    for (const i of group.steps)
+      if (!els.wiz.innerHTML.includes(`>${__x.STEPS[i]}</button>`))
+        throw new Error(`"${__x.STEPS[i]}" is not written anywhere`);
+  });
+  await check('and the one you are on is the one that stands out', async () => {
+    const group = __x.GROUPS.find(g => g.steps.length > 1);
+    __x.step = group.steps[group.steps.length - 1];
+    await __x.drawStep();
+    const on = els.wiz.innerHTML.match(/class="step-chip [^"]*\bon\b[^"]*"/g) || [];
+    if (on.length !== 1) throw new Error(on.length + ' chips marked current');
+  });
+  check('the review row names the step it opens', () => {
+    // It said "Track order", which is a different word from the step's
+    // own heading and describes only half of what that step does.
+    const full = require('fs').readFileSync(
+      __dirname + '/server/static/index.html', 'utf8');
+    if (full.includes("'Track order'"))
+      throw new Error('the review row still uses a name no step has');
   });
 
   // Settings was never rendered here — only name-checked in the export

@@ -977,13 +977,17 @@
   .wiz-group:hover{color:var(--text)}
   .wiz-group.done{color:var(--text)}
   .wiz-group.on{color:var(--signal);border-bottom-color:var(--signal)}
-  .steps{display:flex;gap:5px;margin-bottom:22px}
-  .steps i{flex:1;height:3px;border-radius:2px;background:rgba(255,255,255,.1);
-           cursor:pointer;transition:background .15s;position:relative}
-  .steps i::after{content:'';position:absolute;inset:-8px 0;}
-  .steps i:hover{background:rgba(255,255,255,.3)}
-  .steps i.on{background:var(--signal)}
-  .steps i.on:hover{background:#7af0b8}
+  .steps{display:flex;gap:6px;margin-bottom:22px;flex-wrap:wrap}
+  .step-chip{flex:0 1 auto;padding:5px 12px;font-size:12px;font-weight:600;
+    border-radius:9px;background:rgba(255,255,255,.05);color:var(--muted);
+    border:1px solid transparent;box-shadow:none;backdrop-filter:none;
+    -webkit-backdrop-filter:none}
+  .step-chip:hover{color:var(--text);background:rgba(255,255,255,.1)}
+  /* A step already passed is legible but quiet; the one you are on is
+     the only thing in the row that should draw the eye. */
+  .step-chip.done{color:var(--text)}
+  .step-chip.on{color:var(--signal);border-color:var(--signal);
+                background:color-mix(in srgb, var(--signal) 12%, transparent)}
 
   /* Review rows jump straight to the step that owns them. */
   .review-heading{font-size:11px;font-weight:700;letter-spacing:.04em;
@@ -5817,9 +5821,15 @@ function bar() {
   // Individual dots only for steps within the current section — thirteen
   // dots at once told you nothing useful; three or four do.
   const withinGroup = GROUPS[current] ? GROUPS[current].steps : [step];
+  // Named, not dotted. These were three bare bars whose only clue was a
+  // hover tooltip, so a setting on the third step of a group could not be
+  // found at all without clicking through — "I don't see Tracks" was
+  // exactly right, because the word appeared nowhere until you were
+  // already on it.
   const dotRow = withinGroup.length > 1 ? `<div class="steps">${
-    withinGroup.map(i => `<i class="${i <= step ? 'on' : ''}" title="${STEPS[i]}"
-        onclick="jumpTo(${i})"></i>`).join('')}</div>` : '';
+    withinGroup.map(i => `<button class="step-chip ${i === step ? 'on'
+        : i < step ? 'done' : ''}"
+        onclick="jumpTo(${i})">${STEPS[i]}</button>`).join('')}</div>` : '';
   return `<div class="wiz-groups">${groupRow}</div>${dotRow}`;
 }
 
@@ -6027,9 +6037,11 @@ async function drawStep() {
     lead = 'Which tracks survive, and in what order.';
     body = `
       <label class="fld"><span>Preferred audio languages</span>
-        <em>Three-letter codes in order of preference, separated by commas.
-            These get moved to the front so they play by default.
-            eng = English, jpn = Japanese, spa = Spanish.</em>
+        <em>Three-letter codes, best first, separated by commas.
+            eng = English, jpn = Japanese, spa = Spanish. On its own this
+            only sets the order — the tracks you list play by default and
+            nothing is removed. Whether the others are dropped is the
+            setting below.</em>
         <input type="text" value="${(draft.audio_languages_list||[]).join(', ')}"
           placeholder="eng, jpn"
           oninput="draft.audio_languages_list=splitList(this.value)"></label>
@@ -6501,10 +6513,16 @@ async function drawStep() {
       [4, 'Subtitles', n('subtitles','subtitle_mode')
           + (draft.subtitle_mode === 'languages'
              ? ' (' + (draft.subtitle_languages || []).join(', ') + ')' : '')],
-      [5, 'Track order', ((draft.audio_languages_list || []).join(', ') || 'as-is')
-          + (draft.audio_language_mode === 'preferred_only'
-             ? ' (others removed)' : '')
-          + (draft.tidy_track_names ? ', tracks named by language' : '')],
+      // Named for the step it opens. It was "Track order", which is both
+      // a different word from the step's own heading and a description
+      // of only half of what it does — this row is also where tracks get
+      // removed, which is what people come looking for.
+      [5, 'Tracks', (draft.audio_language_mode === 'preferred_only'
+             ? `only ${(draft.audio_languages_list || []).join(', ') || 'eng'}`
+             + ', others removed'
+             : `all kept, ${(draft.audio_languages_list || []).join(', ')
+                            || 'eng'} first`)
+          + (draft.tidy_track_names ? ', named by language' : '')],
       [6, 'Naming', draft.naming.enabled
           ? ((CAT.naming.find(x => x.id === draft.naming.scheme) || {}).name
              || draft.naming.scheme) + ' layout'
