@@ -115,6 +115,7 @@ try { eval(src + '\nglobal.__x = {render, renderLibs, renderTabs, renderJobs, sl
   'backToReview, nextStep, validateFirstStep, STEPS, GROUPS, groupIndexOf, ' +
   'SETTINGS_TABS, HEALTH_TABS, duplicateLib, watchInterval, everyPhrase, saveLibrary, ' +
   'QUEUE_COLUMNS, TABLE_VIEWS, renderQueueTable, workLabel, codecLabel, ' +
+  'renderTabs, set __setKinds(k){ lastKinds = k; }, ' +
   'resLabel, sortBy, toggleRow, renderSelectionBar, rowActions, selectionAction, ' +
   'get queueSel(){return queueSel;}, ' +
   'THEMES, setTheme, applyAppearance, drawCustomize, ' +
@@ -519,6 +520,41 @@ check('slot control at limits', () => {
     if (!/\[data-fileinfo\]\{[^}]*cursor:pointer/.test(style))
       throw new Error('no generic rule: only some lists look clickable');
   });
+  // The queue header had four stacked rows before any data: library
+  // pills, state pills, a kind-filter row, and a search box. The kind
+  // filter was also the one control that narrowed the list from
+  // somewhere other than the table it narrowed.
+  check('the kind filter is not a row of its own any more', () => {
+    const full = require('fs').readFileSync(
+      __dirname + '/server/static/index.html', 'utf8');
+    if (full.includes('id="kindfilter"'))
+      throw new Error('the separate filter row is back');
+  });
+  check('it is offered in the table, beside the other filters', () => {
+    __x.view.name = 'waiting';
+    __x.__setKinds = {convert: 5, measure: 9};
+    const h = __x.renderQueueTable([tjob({state: 'queued'})], tmeta);
+    if (!h.includes('switchKind('))
+      throw new Error('no way to filter by kind from the table');
+    if (!h.includes('Loudness measuring (9)'))
+      throw new Error('the counts are not carried over');
+  });
+  check('and not offered when there is only one kind to pick', () => {
+    // A control whose only option is the thing already showing is noise.
+    __x.__setKinds = {convert: 5};
+    const h = __x.renderQueueTable([tjob()], tmeta);
+    if (h.includes('switchKind('))
+      throw new Error('offered a choice of one');
+    __x.__setKinds = {};
+  });
+  check('an empty state tab recedes rather than competing', () => {
+    __x.renderTabs({waiting: 2179, failed: 1738, removed: 0, bloated: 0,
+                    working: 0, ignored: 349, done: 1100});
+    const h = els['jobtabs'].innerHTML;
+    const empties = (h.match(/class="[^"]*\bempty\b/g) || []).length;
+    if (empties !== 3) throw new Error(`${empties} dimmed, expected 3`);
+  });
+
   check('a job with no probe on record still renders', () => {
     const h = __x.renderQueueTable(
       [tjob({source_width: null, source_height: null, source_codec: null})], tmeta);

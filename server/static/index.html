@@ -692,6 +692,18 @@
   .drill-queued{font-size:11.5px;color:var(--signal);margin-top:4px;
                 line-height:1.45}
 
+  /* Library scope and the filename search on one line. They are both
+     "narrow what I'm looking at", so they belong together rather than
+     as two more stacked rows. */
+  .queue-bar{display:flex;align-items:center;gap:10px 16px;flex-wrap:wrap;
+             margin:0 0 12px}
+  .queue-bar .tabs{margin:0}
+  .queue-bar .queue-search{margin:0;flex:1 1 220px;max-width:320px}
+  /* An empty list is still worth being able to reach, but it should not
+     compete with the ones that have something in them. */
+  #jobtabs button.empty{opacity:.45}
+  #jobtabs button.empty.on{opacity:1}
+
   .count-badge{font-family:'Chivo Mono',monospace;font-size:10.5px;
     padding:1px 6px;border-radius:5px;background:rgba(255,255,255,.1);
     font-variant-numeric:tabular-nums;margin-left:6px}
@@ -1074,11 +1086,16 @@
       </div>
     </div>
 
-    <div class="tabs" id="libtabs"></div>
+    <!-- State first: it is the thing you switch, and everything below
+         narrows whatever it selects. Library scope and the search share
+         one line under it, and every column filter lives in the table's
+         own header rather than in a third row of pills up here. -->
     <div class="tabs" id="jobtabs"></div>
-    <div class="tabs" id="kindfilter"></div>
-    <input type="text" id="queue-search" class="queue-search"
-           placeholder="Search by filename…" oninput="onQueueSearch(this.value)">
+    <div class="queue-bar">
+      <div class="tabs" id="libtabs"></div>
+      <input type="text" id="queue-search" class="queue-search"
+             placeholder="Search by filename…" oninput="onQueueSearch(this.value)">
+    </div>
     <div class="batchbar" id="batchbar"></div>
     <div class="selbar" id="queue-selbar"></div>
     <div class="queue" id="queue"></div>
@@ -1944,17 +1961,13 @@ const KIND_LABELS = {
 
 // A waiting list thousands deep is mostly one kind of work. Splitting it
 // makes "what is Forge actually about to do" answerable at a glance.
+// What kinds of work the current view holds, kept so the table's Work
+// column can offer them. Was a third row of pills above the table,
+// which put one filter somewhere different from all the others.
+let lastKinds = {};
+
 function renderKindFilter(kinds) {
-  const el = document.getElementById('kindfilter');
-  if (!el) return;
-  if (view.name !== 'waiting' || !kinds) { el.innerHTML = ''; return; }
-  const shown = ['all', 'convert', 'repackage', 'measure', 'level']
-    .filter(k => k === 'all' || kinds[k]);
-  // Nothing to split when it's all one kind.
-  if (shown.length <= 2) { el.innerHTML = ''; return; }
-  el.innerHTML = shown.map(k =>
-    `<button class="${view.kind === k ? 'on' : ''}" onclick="switchKind('${k}')">
-      ${KIND_LABELS[k]} <span class="badge">${kinds[k] || 0}</span></button>`).join('');
+  lastKinds = kinds || {};
 }
 
 function switchKind(kind) {
@@ -2050,7 +2063,8 @@ function renderTabs(counts) {
     ['done', 'Completed', counts.done || 0, ''],
   ];
   document.getElementById('jobtabs').innerHTML = defs.map(([id, label, n, cls]) =>
-    `<button class="${view.name === id ? 'on' : ''}" onclick="switchView('${id}')">
+    `<button class="${view.name === id ? 'on' : ''}${n ? '' : ' empty'}"
+      onclick="switchView('${id}')">
       ${label}<span class="badge ${n ? cls : ''}">${n}</span></button>`
   ).join('');
 }
@@ -2124,7 +2138,9 @@ async function loadView() {
   try {
     const libParam = view.library_id == null ? '' : `&library_id=${view.library_id}`;
     const qParam = queueSearch ? `&q=${encodeURIComponent(queueSearch)}` : '';
-    const kindParam = (view.name === 'waiting' && view.kind !== 'all')
+    // Any view, not just Waiting. The server has always been able to
+    // filter Completed or Failed by kind; nothing ever asked it to.
+    const kindParam = view.kind && view.kind !== 'all'
       ? `&kind=${view.kind}` : '';
     // Sort and the column filters are all server-side, so they narrow
     // the whole list and its total together. Filtering the page you can
@@ -2341,6 +2357,17 @@ function renderQueueTable(jobs, meta) {
     RES_FILTERS.map(([id, label]) =>
       `<option value="${id}" ${view.resolution === id ? 'selected' : ''}>`
       + `${label}</option>`)).join('');
+  // Kinds present in this view, in a fixed order so the list doesn't
+  // reshuffle as counts change. Only offered when there is more than one
+  // kind to choose between — a Completed list of nothing but conversions
+  // gains nothing from a control that can only say "conversions".
+  const kindsHere = ['convert', 'repackage', 'measure', 'level']
+    .filter(k => (lastKinds || {})[k]);
+  const workOpts = kindsHere.length > 1
+    ? ['<option value="all">Any</option>'].concat(kindsHere.map(k =>
+        `<option value="${k}" ${view.kind === k ? 'selected' : ''}>`
+        + `${KIND_LABELS[k]} (${lastKinds[k]})</option>`)).join('')
+    : '';
 
   // Only the filters nothing else already offers. Library has the tabs
   // above, and filename has the search box — which deliberately lives
@@ -2352,7 +2379,9 @@ function renderQueueTable(jobs, meta) {
   // per change, so rebuilding the table underneath it costs nothing.
   const filters = `
     <tr class="filters">
-      <th></th><th></th><th></th><th></th><th></th>
+      <th></th><th></th><th></th><th></th>
+      <th>${workOpts
+        ? `<select onchange="switchKind(this.value)">${workOpts}</select>` : ''}</th>
       <th><select onchange="setQueueFilter('codec', this.value)">${codecOpts}</select></th>
       <th><select onchange="setQueueFilter('resolution', this.value)">${resOpts}</select></th>
       <th></th><th></th><th></th><th></th>
