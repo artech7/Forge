@@ -169,6 +169,16 @@ def plan_conversion(path, info, spec, filters):
     video_ok = (want_video == "copy"
                 or (have_video == want_video and video_is_efficient(info, filters)))
 
+    # Tone-mapping needs the picture re-encoded: you cannot change a
+    # transfer curve on a stream you are copying. Without this, an HDR
+    # file that already uses the target codec is copied untouched and a
+    # library set to "convert HDR to normal" silently does nothing at
+    # all — which is most of an already-converted library, and exactly
+    # the files someone turns the setting on for.
+    if spec.get("hdr_mode") == "sdr" and (
+            ((info or {}).get("detail") or {}).get("hdr")):
+        video_ok = False
+
     want_audio = spec.get("audio", "aac")
     have_audio = (info or {}).get("audio_codecs") or []
     audio_ok = (want_audio == "copy"

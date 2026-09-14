@@ -845,6 +845,44 @@ check("requeueing clears the phase, so nothing describes stale work",
 db.delete_jobs(["queued"], library_id=_ph_lib)
 db.delete_library(_ph_lib)
 
+print("\nConverting HDR to SDR:")
+# The setting only does anything if the picture is re-encoded. An HDR
+# file already in the target codec was copied, so a library set to
+# "convert HDR to normal" left exactly those files HDR — which is most
+# of an already-converted library.
+_hdr_info = {"video_codec": "hevc", "audio_codecs": ["aac"], "height": 2160,
+             "detail": {"hdr": True}}
+_sdr_info = {"video_codec": "hevc", "audio_codecs": ["aac"], "height": 2160,
+             "detail": {"hdr": False}}
+_sdr_spec = {"codec": "hevc", "audio": "aac", "container": "mkv",
+             "hdr_mode": "sdr"}
+_keep_spec = {**_sdr_spec, "hdr_mode": "preserve"}
+_p = pathlib.Path("/m/Film.mkv")
+
+check("an HDR file in the target codec is still re-encoded",
+      lambda: watcher.plan_conversion(_p, _hdr_info, _sdr_spec, {})[1]["codec"],
+      lambda r: r == "hevc")
+check("and is not reported as already correct",
+      lambda: watcher.plan_conversion(_p, _hdr_info, _sdr_spec, {})[0],
+      lambda r: r != "skip")
+check("an SDR file in the target codec is still copied",
+      lambda: watcher.plan_conversion(_p, _sdr_info, _sdr_spec, {})[1]["codec"],
+      lambda r: r == "copy")
+check("and an HDR file is copied when the library keeps HDR",
+      lambda: watcher.plan_conversion(_p, _hdr_info, _keep_spec, {})[1]["codec"],
+      lambda r: r == "copy")
+# The worker half: tone-mapping is skipped when the video is copied,
+# which is correct, and is why the planner above has to stop that
+# happening rather than the worker trying to cope with it.
+check("the output is tagged as SDR once tone-mapped",
+      lambda: " ".join(_st.colour_args({"tag_colours": True},
+                                       {"color_transfer": "smpte2084"}, True)),
+      lambda r: "bt709" in r and "smpte2084" not in r)
+check("and left tagged HDR when it is not",
+      lambda: " ".join(_st.colour_args({"tag_colours": True},
+                                       {"color_transfer": "smpte2084"}, False)),
+      lambda r: "smpte2084" in r)
+
 print("\nAsking Radarr/Sonarr to replace a file:")
 # Every one of these failed in production with "didn't recognise this
 # path", for a reason no amount of path translation could fix: Sonarr's
