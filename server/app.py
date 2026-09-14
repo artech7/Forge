@@ -509,7 +509,11 @@ def probe(path):
             "subtitle_tracks": [
                 {"codec": s.get("codec_name"),
                  "language": (s.get("tags") or {}).get("language"),
-                 "title": (s.get("tags") or {}).get("title")}
+                 "title": (s.get("tags") or {}).get("title"),
+                 # Forced tracks survive a language filter whatever the
+                 # library asked for, so a check that doesn't know which
+                 # are forced reports files nothing would change.
+                 "forced": bool((s.get("disposition") or {}).get("forced"))}
                 for s in sub_streams
             ],
             "chapters": len(data.get("chapters") or []),
@@ -1649,9 +1653,14 @@ async def stats_language_check(kind: str, language: str = None, library_id: int 
 def _tidy_problems_for(detail, library):
     """Bind the library's own subtitle preference to the shared rules."""
     spec = profiles.resolve((library or {}).get("profile") or {})
-    wanted = (spec.get("subtitle_languages")
-              if spec.get("subtitle_mode") == "languages" else None)
-    return watcher.tidy_problems(detail, wanted)
+    subs = (spec.get("subtitle_languages")
+            if spec.get("subtitle_mode") == "languages" else None)
+    # Only when the library actually removes other audio. A library that
+    # keeps every track has no unwanted ones by definition, and saying
+    # otherwise would offer a repair that changes nothing.
+    audio = (spec.get("audio_languages")
+             if spec.get("remove_other_audio") else None)
+    return watcher.tidy_problems(detail, subs, audio)
 
 
 @app.get("/api/stats/untidy")

@@ -1025,6 +1025,48 @@ check("subtitles in unwanted languages are counted",
            "subtitle_tracks": [{"language": "eng"}, {"language": "fre"},
                                {"language": "kor"}]}, ["eng"]),
       lambda r: any("2 subtitle tracks" in x for x in r))
+check("audio in a language the library does not want is caught",
+      lambda: watcher.tidy_problems(
+          {"stream_order": ["video", "audio", "audio"],
+           "audio_tracks": [{"language": "eng"}, {"language": "ger"}]},
+          None, ["eng"]),
+      lambda r: any("1 audio track" in x and "ger" in x for x in r))
+# The filter keeps every track when none of them match, so there is
+# nothing to remove and offering a repair would do nothing at all —
+# which is the complaint that started the queued-state work.
+check("a file with none of the wanted languages is not listed",
+      lambda: watcher.tidy_problems(
+          {"stream_order": ["video", "audio"],
+           "audio_tracks": [{"language": "ger"}, {"language": "fre"}]},
+          None, ["eng"]),
+      lambda r: r == [])
+# An untagged track is kept by the filter too. Dropping the only audio a
+# file has because nobody labelled it would be the worst kind of tidying.
+check("an untagged audio track is not counted as unwanted",
+      lambda: watcher.tidy_problems(
+          {"stream_order": ["video", "audio", "audio"],
+           "audio_tracks": [{"language": "eng"}, {"language": None}]},
+          None, ["eng"]),
+      lambda r: r == [])
+check("and nothing is reported when the library keeps every track",
+      lambda: watcher.tidy_problems(
+          {"stream_order": ["video", "audio"],
+           "audio_tracks": [{"language": "ger"}]}, None, None),
+      lambda r: r == [])
+# Forced subtitles survive a language filter whatever the list says, so
+# counting them listed files a repackage would leave untouched.
+check("a forced subtitle in another language is not a fault",
+      lambda: watcher.tidy_problems(
+          {"stream_order": ["video", "subtitle"],
+           "subtitle_tracks": [{"language": "kor", "forced": True}]},
+          ["eng"], None),
+      lambda r: r == [])
+check("but an ordinary one in that language still is",
+      lambda: watcher.tidy_problems(
+          {"stream_order": ["video", "subtitle"],
+           "subtitle_tracks": [{"language": "kor", "forced": False}]},
+          ["eng"], None),
+      lambda r: any("subtitle track" in x for x in r))
 check("and are ignored when the library keeps everything",
       lambda: watcher.tidy_problems(
           {"stream_order": ["video", "subtitle"],

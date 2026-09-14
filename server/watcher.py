@@ -163,7 +163,22 @@ _LAYOUT_WORDS = {
 }
 
 
-def tidy_problems(detail, want_subtitle_languages=None):
+def _unwanted_languages(tracks, wanted):
+    """Tracks in a language the library did not ask for.
+
+    Anything untagged is left out. A missing language tag is not the
+    same as a language you don't want, the filter itself keeps those,
+    and dropping the only audio a file has because nobody labelled it
+    would be the worst kind of tidying.
+    """
+    wanted = [l.lower() for l in wanted]
+    return [t for t in tracks
+            if (t.get("language") or "").lower() not in wanted
+            and (t.get("language") or "").lower() not in ("", "und", "unk")]
+
+
+def tidy_problems(detail, want_subtitle_languages=None,
+                  want_audio_languages=None):
     """What is objectively wrong with how this file's tracks are laid out.
 
     Deliberately not "differs from what Forge would write". Forge's
@@ -207,14 +222,32 @@ def tidy_problems(detail, want_subtitle_languages=None):
     if (detail.get("video_title") or "").strip():
         problems.append("the picture track carries a leftover title")
 
-    wanted = [l.lower() for l in (want_subtitle_languages or [])]
-    if wanted:
-        extra = [t for t in (detail.get("subtitle_tracks") or [])
-                 if (t.get("language") or "").lower() not in wanted]
+    if want_subtitle_languages:
+        # Forced tracks are kept whatever the list says, so counting them
+        # here would list files a repackage leaves exactly as they were.
+        subs = [t for t in (detail.get("subtitle_tracks") or [])
+                if not t.get("forced")]
+        extra = _unwanted_languages(subs, want_subtitle_languages)
         if extra:
             problems.append(f"{len(extra)} subtitle track"
                             f"{'s' if len(extra) > 1 else ''} in languages "
                             f"this library does not want")
+
+    if want_audio_languages:
+        audio = detail.get("audio_tracks") or []
+        extra = _unwanted_languages(audio, want_audio_languages)
+        # A file with none of the wanted languages keeps all its audio —
+        # that is the deliberate safety in the filter, so there is
+        # nothing here to fix and listing it would be an action that
+        # does nothing. Only worth reporting when something would go.
+        keeping_something = len(extra) < len(
+            [t for t in audio
+             if (t.get("language") or "").lower() not in ("", "und", "unk")])
+        if extra and keeping_something:
+            langs = sorted({(t.get("language") or "").lower() for t in extra})
+            problems.append(f"{len(extra)} audio track"
+                            f"{'s' if len(extra) > 1 else ''} this library "
+                            f"does not want ({', '.join(langs)})")
 
     return problems
 
