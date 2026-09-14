@@ -11,6 +11,8 @@ import os
 import pathlib
 import re
 import sys
+import shutil
+import subprocess
 import tempfile
 import time
 
@@ -850,8 +852,7 @@ print("\nA worker does not leave FFmpeg running behind it:")
 # Ctrl+C used to leave the encode running — holding gigabytes, writing
 # to a scratch file nobody would claim, and showing up only as a machine
 # whose memory never came back.
-import subprocess as _sp                             # noqa: E402
-_live = [_agent._watch(_sp.Popen([sys.executable, "-c",
+_live = [_agent._watch(subprocess.Popen([sys.executable, "-c",
                                   "import time; time.sleep(60)"]))
          for _ in range(2)]
 check("both encodes are running to begin with",
@@ -862,7 +863,7 @@ check("shutting down stops every one of them",
       lambda r: r == 0)
 # terminate() is asked first so FFmpeg closes its file properly, but
 # anything ignoring it still has to go.
-_stubborn = _agent._watch(_sp.Popen([sys.executable, "-c",
+_stubborn = _agent._watch(subprocess.Popen([sys.executable, "-c",
     "import signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); "
     "time.sleep(60)"]))
 time.sleep(0.4)
@@ -872,15 +873,59 @@ check("a process ignoring terminate is killed anyway",
 # A job that raises between starting FFmpeg and waiting on it never
 # reaches _unwatch, and on a worker left running for weeks those add up.
 check("finished processes are pruned rather than accumulating",
-      lambda: ([_agent._watch(_sp.Popen([sys.executable, "-c", ""])).wait()
+      lambda: ([_agent._watch(subprocess.Popen([sys.executable, "-c", ""])).wait()
                 for _ in range(5)],
                len(_agent.LIVE_ENCODES))[1],
       lambda r: r <= 1)
 
-print("\nA node reports what its machine is doing:")
 import sysinfo as _si                              # noqa: E402
                                                    # worker/ is already
                                                    # on the path above
+print("\nLeftover encodes from a worker that died are cleaned up:")
+# The remaining gap after stop_all_encodes: a worker killed outright, or
+# a console window closed before Python could run its shutdown. A reboot
+# needs no help — it takes FFmpeg with it.
+_orph_dir = tempfile.mkdtemp()
+
+
+def _encode(out):
+    # -re runs it in real time, so it is still going when we look. Without
+    # it FFmpeg finishes 300 seconds of testsrc in about a second and the
+    # check passes for the wrong reason.
+    return subprocess.Popen(
+        ["ffmpeg", "-v", "quiet", "-re", "-f", "lavfi",
+         "-i", "testsrc=duration=300:size=320x240:rate=24", "-y", out])
+
+
+_o_mounted = _encode(f"{_orph_dir}/.forge-9001.mkv")
+_o_streamed = _encode(f"{_orph_dir}/job-9002.mkv")
+# Someone else's encode, which happens to have "job-" in its name. The
+# caller kills whatever this returns, so a loose match here would
+# destroy unrelated work.
+_o_theirs = _encode(f"{_orph_dir}-elsewhere-job-interview.mkv")
+time.sleep(2)
+
+check("all three test encodes are running",
+      lambda: [p.poll() is None for p in (_o_mounted, _o_streamed, _o_theirs)],
+      lambda r: r == [True, True, True])
+check("only the two belonging to Forge are identified",
+      lambda: len(_si.orphaned_encodes(_orph_dir)), lambda r: r == 2)
+check("and killing them stops exactly those",
+      lambda: (_si.kill_orphaned_encodes(_orph_dir), time.sleep(1.0),
+               [_o_mounted.poll() is None, _o_streamed.poll() is None])[2],
+      lambda r: r == [False, False])
+check("an unrelated encode named job-something is left alone",
+      lambda: _o_theirs.poll() is None, lambda r: r is True)
+for _p in (_o_mounted, _o_streamed, _o_theirs):
+    if _p.poll() is None:
+        _p.terminate()
+        _p.wait()
+shutil.rmtree(_orph_dir, ignore_errors=True)
+for _leftover in pathlib.Path(_orph_dir).parent.glob(
+        pathlib.Path(_orph_dir).name + "-elsewhere-*"):
+    _leftover.unlink(missing_ok=True)
+
+print("\nA node reports what its machine is doing:")
 check("stats survive a round trip through the database",
       lambda: (db.upsert_node("statnode", "Stats", [], [], 1, stats={
                    "cpu_percent": 41.2, "memory_percent": 28.1,

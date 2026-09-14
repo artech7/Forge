@@ -16,6 +16,7 @@ when not: an older worker that hasn't reinstalled its requirements keeps
 working and shows no stats, rather than failing to start.
 """
 
+import os
 import shutil
 import subprocess
 
@@ -121,3 +122,72 @@ def collect():
     except Exception:
         pass
     return stats
+
+
+# The prefix a mounted job writes beside the source. Distinctive enough
+# to match on by itself — nothing else names a file ".forge-".
+#
+# A streamed job writes "job-<id>.<ext>" instead, which is far too
+# ordinary a string to match on: someone's own encode of
+# "job-interview.mp4" would look identical, and this function's caller
+# kills what it returns. That form is recognised by the work directory
+# it sits in, which is an absolute path and unmistakable.
+SCRATCH_PREFIX = ".forge-"
+
+
+def orphaned_encodes(work_dir=None):
+    """FFmpeg processes left over from a worker that died without cleaning up.
+
+    Only safe to act on because the caller has already claimed the
+    single-instance lock: past that point this is the only worker on the
+    machine, so any FFmpeg writing to one of our scratch files belongs
+    to a previous run that is no longer around to finish it.
+
+    A normal exit stops its own encodes (agent.stop_all_encodes), and a
+    reboot takes everything with it. What is left is the middle case —
+    the process killed outright, or a console window closed before
+    Python could run its shutdown — where FFmpeg carries on encoding for
+    a job nobody will ever collect, holding its memory the whole time.
+    """
+    if not psutil:
+        return []
+    mine = os.getpid()
+    found = []
+    for proc in psutil.process_iter(["pid", "name", "cmdline"]):
+        try:
+            if proc.info["pid"] == mine:
+                continue
+            name = (proc.info["name"] or "").lower()
+            if "ffmpeg" not in name:
+                continue
+            args = " ".join(proc.info["cmdline"] or [])
+            # The separator matters: a bare substring test on the work
+            # directory also matches a sibling that merely starts with
+            # the same characters, so "<temp>/forge" would claim
+            # "<temp>/forge-holiday.mkv" — someone else's encode, which
+            # the caller then kills.
+            here = (str(work_dir).rstrip("/\\") + os.sep) if work_dir else None
+            if SCRATCH_PREFIX in args or (here and here in args):
+                found.append(proc)
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+    return found
+
+
+def kill_orphaned_encodes(work_dir=None, grace=5):
+    """Stop the lot. Returns how many were actually stopped."""
+    procs = orphaned_encodes(work_dir)
+    for proc in procs:
+        try:
+            proc.terminate()
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            pass
+    if not procs:
+        return 0
+    _gone, alive = psutil.wait_procs(procs, timeout=grace)
+    for proc in alive:
+        try:
+            proc.kill()
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            pass
+    return len(procs)

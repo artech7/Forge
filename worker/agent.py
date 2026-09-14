@@ -689,6 +689,16 @@ def claim_single_instance():
 
 def main():
     lock = claim_single_instance()
+    # Past the lock this is the only worker on the machine, which is what
+    # makes this safe: any FFmpeg still writing one of our scratch files
+    # belongs to a run that is no longer around to finish it. A clean
+    # exit stops its own encodes and a reboot takes everything with it —
+    # this is for the process killed outright, or the console window
+    # closed before Python could run its shutdown, where FFmpeg carries
+    # on encoding for a job nobody will collect.
+    orphans = sysinfo.kill_orphaned_encodes(WORK_DIR)
+    if orphans:
+        print(f"Stopped {orphans} encode(s) left over from a previous run.")
     nid = node_id()
     print(f"Detecting encoders on {NAME}…")
     caps, rejected = encoders.detect(explain=True)
