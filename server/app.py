@@ -1657,9 +1657,15 @@ def _tidy_problems_for(detail, library):
 @app.get("/api/stats/untidy")
 async def stats_untidy(library_id: int = None):
     """Files whose tracks are out of order, mislabelled, or unwanted."""
+    files = await asyncio.to_thread(
+        db.files_with_untidy_tracks, library_id, _tidy_problems_for)
+    # A file stays on this list until it has actually been repackaged and
+    # re-probed, so without this the button looks like it did nothing.
+    queued = await asyncio.to_thread(db.paths_with_active_jobs)
+    for f in files:
+        f["queued"] = f["path"] in queued
     return {
-        "files": await asyncio.to_thread(
-            db.files_with_untidy_tracks, library_id, _tidy_problems_for),
+        "files": files,
         # Anything probed before the cache started recording stream order
         # can't be judged. Said out loud so an empty list isn't read as
         # "everything is tidy" when it means "nothing has been looked at".
@@ -1698,6 +1704,7 @@ async def tidy_tracks(req: Request):
         spec["codec"] = "copy"
         spec["audio"] = "copy"
         spec["action"] = "remux"
+        spec["repackage"] = True
         spec["why"] = "tidying up the track layout"
         spec["original_action"] = library.get("original_action")
         if db.enqueue(path, spec, None, library["id"]):

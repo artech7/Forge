@@ -152,13 +152,16 @@ def lease_job(node_id):
     # considered — the queue showed them waiting while every node kept
     # picking up measurements. Moving one to the top by hand worked
     # because that dragged it into the window; nothing else did.
-    tiers = [db.next_queued(kind, limit=TIER_LIMIT)
-             for kind in ("convert", "level", "measure")]
-    real_work = tiers[0]
-    housekeeping = tiers[1] + tiers[2]
+    tiers = {kind: db.next_queued(kind, limit=TIER_LIMIT)
+             for kind in ("convert", "repackage", "level", "measure")}
+    # Conversions first, then repackages — both were asked for, and a
+    # repackage is minutes of disk rather than an encode, so putting it
+    # ahead of the loudness tiers costs a conversion almost nothing.
+    real_work = tiers["convert"] + tiers["repackage"]
+    housekeeping = tiers["level"] + tiers["measure"]
 
     def is_housekeeping(job):
-        return db.job_kind(job.get("spec")) != "convert"
+        return db.job_kind(job.get("spec")) not in db.REAL_KINDS
 
     # What this node has been set up to do at all.
     role = node.get("role") or "both"

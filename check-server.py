@@ -845,6 +845,46 @@ check("requeueing clears the phase, so nothing describes stale work",
 db.delete_jobs(["queued"], library_id=_ph_lib)
 db.delete_library(_ph_lib)
 
+print("\nRepackaging is its own kind of work:")
+check("a tidy repair is not filed as an ordinary conversion",
+      lambda: db.job_kind({"repackage": True, "codec": "copy"}),
+      lambda r: r == "repackage")
+# The scanner also produces remuxes, for a plain container change. Those
+# are conversions that happen to be cheap, not Track Layout repairs.
+check("a scanner remux is still a conversion",
+      lambda: db.job_kind({"action": "remux", "codec": "copy"}),
+      lambda r: r == "convert")
+check("loudness work is unaffected",
+      lambda: (db.job_kind({"measure": "loudness"}),
+               db.job_kind({"level_only": True})),
+      lambda r: r == ("measure", "level"))
+check("it counts as work someone asked for, not housekeeping",
+      lambda: "repackage" in db.REAL_KINDS and "measure" not in db.REAL_KINDS,
+      lambda r: r is True)
+# The whole point of the tiers: a repackage must not sit behind a
+# loudness backlog, and must not get in front of a conversion either.
+_rk_lib = db.create_library("Kinds", str(base / "kinds"), "", profile, "archive")
+for _i in range(5):
+    db.enqueue(f"/kinds/m{_i}.mkv", {"measure": "loudness"}, 1, _rk_lib)
+_rp = [db.enqueue(f"/kinds/r{_i}.mkv", {"repackage": True, "codec": "copy"},
+                  1, _rk_lib) for _i in range(3)]
+_cv = db.enqueue("/kinds/c.mkv", {"codec": "hevc"}, 1, _rk_lib)
+check("a repackage is found without reading the loudness backlog",
+      lambda: [j["id"] for j in db.next_queued("repackage", 50)],
+      lambda r: r == _rp)
+check("the conversion lands in the conversion tier, not this one",
+      lambda: ([j["id"] for j in db.next_queued("convert", 500)
+                if j["library_id"] == _rk_lib],
+               [j["id"] for j in db.next_queued("repackage", 500)]),
+      lambda r: r == ([_cv], _rp))
+# Order within real work is the tier order in lease_job, and the whole
+# point is that a conversion is still picked ahead of a repackage.
+check("and the scheduler takes conversions before repackages",
+      lambda: inspect.getsource(scheduler.lease_job),
+      lambda r: 'real_work = tiers["convert"] + tiers["repackage"]' in r)
+with db.connect() as _c:
+    _c.execute("DELETE FROM jobs WHERE library_id=?", (_rk_lib,))
+
 print("\nFinding files whose tracks are laid out badly:")
 # These are faults that are wrong on their own terms, not "differs from
 # what Forge would write" — the worker owns the naming and ordering

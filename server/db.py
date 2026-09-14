@@ -369,9 +369,15 @@ ACTIVE_STATES = ("queued", "leased", "running")
 # what makes one "loudness work" is what it was asked to do.
 JOB_KINDS = {
     "convert": "Conversions",
+    "repackage": "Repackaging",
     "measure": "Loudness measuring",
     "level": "Loudness levelling",
 }
+
+# Work someone asked for, as against housekeeping Forge decided to do.
+# A repackage is cheap but it is still a request, so it goes with the
+# conversions rather than behind a loudness backlog that never empties.
+REAL_KINDS = ("convert", "repackage")
 
 
 def job_kind(spec):
@@ -380,6 +386,12 @@ def job_kind(spec):
         return "measure"
     if spec.get("level_only"):
         return "level"
+    # Marked explicitly rather than inferred from action == "remux": the
+    # scanner also produces remuxes, for a plain container change, and
+    # those are ordinary conversions that happen to be cheap. This is
+    # the Track Layout repair specifically.
+    if spec.get("repackage"):
+        return "repackage"
     return "convert"
 
 
@@ -1000,6 +1012,20 @@ def files_without_audio(library_id=None):
         })
     out.sort(key=lambda f: f["name"].lower())
     return out
+
+
+def paths_with_active_jobs():
+    """Every path with a job queued, leased or running right now.
+
+    One set rather than a query per file: the lists that need this are
+    whole-library lists, and asking per row turns one query into
+    thousands.
+    """
+    placeholders = ",".join("?" * len(ACTIVE_STATES))
+    with connect() as conn:
+        return {r["path"] for r in conn.execute(
+            f"SELECT path FROM jobs WHERE state IN ({placeholders})",
+            ACTIVE_STATES).fetchall()}
 
 
 def files_with_untidy_tracks(library_id=None, problems_for=None):

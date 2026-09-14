@@ -661,6 +661,13 @@
                    color:var(--muted)}
   input[type=range]{width:100%;accent-color:var(--signal);cursor:pointer}
 
+  /* A row whose repair is already waiting. Dimmed and unselectable, so
+     ticking "select all" on a list that is mostly queued doesn't send a
+     few hundred paths the server is only going to skip. */
+  .drill-row.is-queued{opacity:.6}
+  .drill-queued{font-size:11.5px;color:var(--signal);margin-top:4px;
+                line-height:1.45}
+
   .count-badge{font-family:'Chivo Mono',monospace;font-size:10.5px;
     padding:1px 6px;border-radius:5px;background:rgba(255,255,255,.1);
     font-variant-numeric:tabular-nums;margin-left:6px}
@@ -1855,6 +1862,7 @@ function renderLibTabs(libs) {
 const KIND_LABELS = {
   all: 'Everything',
   convert: 'Conversions',
+  repackage: 'Repackaging',
   measure: 'Loudness measuring',
   level: 'Loudness levelling',
 };
@@ -1865,7 +1873,7 @@ function renderKindFilter(kinds) {
   const el = document.getElementById('kindfilter');
   if (!el) return;
   if (view.name !== 'waiting' || !kinds) { el.innerHTML = ''; return; }
-  const shown = ['all', 'convert', 'measure', 'level']
+  const shown = ['all', 'convert', 'repackage', 'measure', 'level']
     .filter(k => k === 'all' || kinds[k]);
   // Nothing to split when it's all one kind.
   if (shown.length <= 2) { el.innerHTML = ''; return; }
@@ -2075,6 +2083,7 @@ function workLabel(j) {
   const convertingAudio = (spec.audio || 'copy') !== 'copy';
   if (spec.measure === 'loudness') return 'measuring loudness';
   if (spec.level_only) return 'leveling audio';
+  if (spec.repackage) return 'repackaging tracks';
   if (ACTION_LABEL[spec.action]) return ACTION_LABEL[spec.action];
   if (copyingVideo) {
     return convertingAudio ? 'audio only'
@@ -5225,13 +5234,16 @@ function renderTidy() {
       </div>
       <button class="primary" onclick="tidySelected()">Repackage selected</button>
     </div>
-    <div class="drill-list">${tidyFiles.map(f => `<div class="drill-row with-checkbox">
-      <input type="checkbox" data-path="${attr(f.path)}">
+    <div class="drill-list">${tidyFiles.map(f => `<div class="drill-row with-checkbox${
+        f.queued ? ' is-queued' : ''}">
+      <input type="checkbox" data-path="${attr(f.path)}" ${f.queued ? 'disabled' : ''}>
       <div class="drill-row-body">
         <div class="drill-name"><span data-fileinfo="${attr(f.path)}"
           >${attr(f.name)}</span></div>
         <div class="drill-meta">${attr(f.library_name || 'no library')} &middot;
           ${f.problems.map(attr).join(' &middot; ')}</div>
+        ${f.queued ? `<div class="drill-queued">Repackage queued \u2014 this
+          row clears once the file has been rewritten and re-checked.</div>` : ''}
       </div>
     </div>`).join('')}</div>`;
 
@@ -5250,12 +5262,14 @@ function updateTidySelCount() {
   const el = document.getElementById('td-selcount');
   if (el) el.textContent = `${selectedTidy.size} selected`;
   const all = document.getElementById('td-selectall');
-  if (all) all.checked = tidyFiles.length > 0
-    && tidyFiles.every(f => selectedTidy.has(f.path));
+  const selectable = tidyFiles.filter(f => !f.queued);
+  if (all) all.checked = selectable.length > 0
+    && selectable.every(f => selectedTidy.has(f.path));
 }
 
 function selectAllTidy(checked) {
   tidyFiles.forEach(f => {
+    if (f.queued) return;          // already waiting; nothing to ask for
     if (checked) selectedTidy.add(f.path);
     else selectedTidy.delete(f.path);
   });
