@@ -155,6 +155,70 @@ def video_is_efficient(info, filters):
     return kbps <= ceiling
 
 
+# Channel counts as a person writes them in a track title. Only used to
+# catch a title that contradicts the track it is on.
+_LAYOUT_WORDS = {
+    "5.1": 6, "5,1": 6, "7.1": 8, "7,1": 8, "2.0": 2, "stereo": 2,
+    "mono": 1, "1.0": 1, "2.1": 3,
+}
+
+
+def tidy_problems(detail, want_subtitle_languages=None):
+    """What is objectively wrong with how this file's tracks are laid out.
+
+    Deliberately not "differs from what Forge would write". Forge's
+    naming and ordering rules live in the worker, which the server image
+    does not ship, and a second copy of them here would drift — that is
+    how a job came to be described one way in one list and another way
+    in the next. So this reports only faults that are wrong on their own
+    terms, whoever made the file:
+
+      * streams out of order — a subtitle or audio track muxed ahead of
+        the video, which players list in file order
+      * a title claiming a channel layout the track does not have, the
+        "English 5.1" sitting on a stereo track
+      * the release group's name left in the video track's title
+      * subtitle tracks in languages the library did not ask for
+
+    Returns a list of short phrases, empty when there is nothing wrong.
+    """
+    detail = detail or {}
+    problems = []
+
+    order = [k for k in (detail.get("stream_order") or [])]
+    if order:
+        rank = {"video": 0, "audio": 1, "subtitle": 2}
+        ranked = [rank[k] for k in order if k in rank]
+        if ranked != sorted(ranked):
+            problems.append("tracks are out of order")
+
+    for track in detail.get("audio_tracks") or []:
+        title = (track.get("title") or "").lower()
+        channels = track.get("channels")
+        if not title or not channels:
+            continue
+        for word, expected in _LAYOUT_WORDS.items():
+            if word in title and channels != expected:
+                problems.append(
+                    f"a track titled \"{track['title']}\" is actually "
+                    f"{channels}-channel")
+                break
+
+    if (detail.get("video_title") or "").strip():
+        problems.append("the picture track carries a leftover title")
+
+    wanted = [l.lower() for l in (want_subtitle_languages or [])]
+    if wanted:
+        extra = [t for t in (detail.get("subtitle_tracks") or [])
+                 if (t.get("language") or "").lower() not in wanted]
+        if extra:
+            problems.append(f"{len(extra)} subtitle track"
+                            f"{'s' if len(extra) > 1 else ''} in languages "
+                            f"this library does not want")
+
+    return problems
+
+
 def plan_conversion(path, info, spec, filters):
     """Decide what actually needs doing to this file.
 

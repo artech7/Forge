@@ -845,6 +845,50 @@ check("requeueing clears the phase, so nothing describes stale work",
 db.delete_jobs(["queued"], library_id=_ph_lib)
 db.delete_library(_ph_lib)
 
+print("\nFinding files whose tracks are laid out badly:")
+# These are faults that are wrong on their own terms, not "differs from
+# what Forge would write" — the worker owns the naming and ordering
+# rules and the server image does not ship it, so a second copy here
+# would drift.
+check("subtitles muxed ahead of the video is out of order",
+      lambda: watcher.tidy_problems(
+          {"stream_order": ["subtitle", "video", "audio"]}),
+      lambda r: any("out of order" in x for x in r))
+check("video, audio then subtitles is not",
+      lambda: watcher.tidy_problems(
+          {"stream_order": ["video", "audio", "audio", "subtitle"]}),
+      lambda r: r == [])
+check("a title claiming 5.1 on a stereo track is caught",
+      lambda: watcher.tidy_problems(
+          {"stream_order": ["video", "audio"],
+           "audio_tracks": [{"title": "English 5.1", "channels": 2}]}),
+      lambda r: any("actually 2-channel" in x for x in r))
+check("and the same title on a real 5.1 track is left alone",
+      lambda: watcher.tidy_problems(
+          {"stream_order": ["video", "audio"],
+           "audio_tracks": [{"title": "English 5.1", "channels": 6}]}),
+      lambda r: r == [])
+check("a release group left in the picture title is caught",
+      lambda: watcher.tidy_problems(
+          {"stream_order": ["video"], "video_title": "RARBG"}),
+      lambda r: any("leftover title" in x for x in r))
+check("subtitles in unwanted languages are counted",
+      lambda: watcher.tidy_problems(
+          {"stream_order": ["video", "subtitle"],
+           "subtitle_tracks": [{"language": "eng"}, {"language": "fre"},
+                               {"language": "kor"}]}, ["eng"]),
+      lambda r: any("2 subtitle tracks" in x for x in r))
+check("and are ignored when the library keeps everything",
+      lambda: watcher.tidy_problems(
+          {"stream_order": ["video", "subtitle"],
+           "subtitle_tracks": [{"language": "fre"}]}, None),
+      lambda r: r == [])
+# A file probed before the cache recorded order can't be judged. It must
+# not be reported as clean, or an empty list reads as a tidy library.
+check("a file with no order on record is not judged either way",
+      lambda: watcher.tidy_problems({"audio_tracks": [{"title": "x", "channels": 2}]}),
+      lambda r: not any("out of order" in x for x in r))
+
 print("\nConverting HDR to SDR:")
 # The setting only does anything if the picture is re-encoded. An HDR
 # file already in the target codec was copied, so a library set to

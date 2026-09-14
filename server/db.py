@@ -1002,6 +1002,69 @@ def files_without_audio(library_id=None):
     return out
 
 
+def files_with_untidy_tracks(library_id=None, problems_for=None):
+    """Files whose track layout is objectively wrong, and why.
+
+    problems_for is called with (detail, library) and returns the list of
+    faults — passed in rather than imported so the rules live in one
+    place (watcher.tidy_problems) and this stays a query.
+
+    Read from the probe cache. A file probed before the cache recorded
+    stream order has nothing to judge, so it simply does not appear
+    rather than being reported as clean: a deep scan brings those in.
+    """
+    with connect() as conn:
+        libraries = [row_to_dict(r) for r in conn.execute(
+            "SELECT id, name, watch_path, profile FROM libraries").fetchall()]
+        rows = [dict(r) for r in conn.execute(
+            """SELECT path, size, detail FROM files
+               WHERE probed_at IS NOT NULL AND detail IS NOT NULL""").fetchall()]
+
+    library_for = library_matcher(libraries)
+    by_id = {l["id"]: l for l in libraries}
+    out = []
+    for f in rows:
+        lib = library_for(f["path"]) or {}
+        if library_id is not None and lib.get("id") != library_id:
+            continue
+        detail = parse_json(f.get("detail"), {}) or {}
+        # Nothing recorded about order means this row predates the check.
+        if "stream_order" not in detail:
+            continue
+        found = problems_for(detail, by_id.get(lib.get("id")) or {})
+        if not found:
+            continue
+        out.append({
+            "path": f["path"], "name": Path(f["path"]).name,
+            "size": f.get("size"), "problems": found,
+            "library_id": lib.get("id"), "library_name": lib.get("name"),
+        })
+    out.sort(key=lambda f: f["name"].lower())
+    return out
+
+
+def count_unprobed_for_tidy(library_id=None):
+    """How many cached files predate the stream-order record.
+
+    Shown beside the list so an empty result is not mistaken for a tidy
+    library when it actually means nothing has been looked at yet.
+    """
+    with connect() as conn:
+        libraries = [row_to_dict(r) for r in conn.execute(
+            "SELECT id, watch_path FROM libraries").fetchall()]
+        rows = [dict(r) for r in conn.execute(
+            "SELECT path, detail FROM files WHERE probed_at IS NOT NULL").fetchall()]
+    library_for = library_matcher(libraries)
+    stale = 0
+    for f in rows:
+        lib = library_for(f["path"]) or {}
+        if library_id is not None and lib.get("id") != library_id:
+            continue
+        if "stream_order" not in (parse_json(f.get("detail"), {}) or {}):
+            stale += 1
+    return stale
+
+
 def library_inventory(library_id):
     """Every scanned file in one library with the bits Standardize needs.
 

@@ -1159,6 +1159,27 @@
       <div id="no-audio-detail"><div class="stats-empty">Loading…</div></div>
     </div>
 
+    <!-- Track Layout -->
+    <div class="health-section" data-health="tidy" hidden>
+      <div class="queue-head" style="margin-top:4px">
+        <h2 style="margin:0">Track Layout</h2>
+        <div class="actions">
+          <button onclick="loadTidy()">Refresh</button>
+        </div>
+      </div>
+      <div class="note" style="margin:-4px 0 14px;color:var(--muted);font-size:12.5px">
+        Files whose tracks are muxed in an odd order, carry a title that
+        contradicts the track it sits on, or hold subtitle languages this
+        library didn't ask for. Fixing one is a repackage, not a
+        conversion — the picture and sound are copied across untouched, so
+        it costs a read and a write and changes nothing you can see or
+        hear. Mostly this catches files that already matched their library
+        and so were filed without ever being opened.
+      </div>
+      <div class="sec" id="tidy-status"></div>
+      <div id="tidy-detail"><div class="stats-empty">Loading…</div></div>
+    </div>
+
     <!-- Missing Chapters -->
     <div class="health-section" data-health="chapters" hidden>
       <div class="queue-head" style="margin-top:4px">
@@ -4669,6 +4690,7 @@ const HEALTH_TABS = [
   ['loudness', 'Audio Leveling'],
   ['language', 'Missing Preferred Languages'],
   ['no-audio', 'No Audio Track'],
+  ['tidy', 'Track Layout'],
   ['chapters', 'Missing Chapters'],
   ['standardize', 'Standardize'],
 ];
@@ -4692,6 +4714,7 @@ function switchHealthSection(id) {
   if (id === 'loudness') loadLoudness();
   if (id === 'language') { renderLanguageControls(); loadLanguageChecks(); }
   if (id === 'no-audio') loadNoAudio();
+  if (id === 'tidy') loadTidy();
   if (id === 'chapters') loadChapterCheck();
   if (id === 'standardize') loadStandardize();
 }
@@ -5149,6 +5172,124 @@ function languageSection(kindLabel, files, offerBazarr) {
 // the only repair is a different copy of it.
 let noAudioFiles = [];
 let selectedNoAudio = new Set();
+
+let tidyFiles = [];
+let selectedTidy = new Set();
+
+async function loadTidy() {
+  const box = document.getElementById('tidy-detail');
+  if (!box) return;
+  box.innerHTML = '<div class="stats-empty">Loading…</div>';
+  const params = new URLSearchParams();
+  if (audioLibId !== 'all') params.set('library_id', audioLibId);
+  let data;
+  try {
+    data = await (await fetch('/api/stats/untidy?' + params)).json();
+  } catch (e) {
+    box.innerHTML = '<div class="stats-empty">Could not load this.</div>';
+    return;
+  }
+  tidyFiles = data.files || [];
+  selectedTidy.clear();
+  const status = document.getElementById('tidy-status');
+  // An empty list means two very different things depending on this.
+  if (status) status.textContent = data.not_yet_scanned
+    ? `${data.not_yet_scanned} file(s) were scanned before Forge started `
+      + 'recording track order, so they can\'t be judged yet. A deep scan '
+      + 'from the Stats tab brings them in.'
+    : '';
+  renderTidy();
+}
+
+function renderTidy() {
+  const box = document.getElementById('tidy-detail');
+  if (!box) return;
+  if (!tidyFiles.length) {
+    box.innerHTML = `<div class="stats-empty">Nothing found — every scanned
+      file has its tracks in order.</div>`;
+    return;
+  }
+  box.innerHTML = `
+    <p class="lead">${tidyFiles.length} file${tidyFiles.length === 1 ? '' : 's'}
+      worth repackaging</p>
+    <div class="glass drill-convert">
+      <label class="drill-selectall">
+        <input type="checkbox" id="td-selectall" onclick="selectAllTidy(this.checked)">
+        select all <span id="td-selcount">0 selected</span>
+      </label>
+      <div style="font-size:12.5px;color:var(--muted);line-height:1.5">
+        Queues a repackage for each one. Nothing is re-encoded, so quality
+        is untouched and it runs at disk speed — but each file is rewritten
+        in full, and if this library archives originals you'll get an
+        archived copy of every one.
+      </div>
+      <button class="primary" onclick="tidySelected()">Repackage selected</button>
+    </div>
+    <div class="drill-list">${tidyFiles.map(f => `<div class="drill-row with-checkbox">
+      <input type="checkbox" data-path="${attr(f.path)}">
+      <div class="drill-row-body">
+        <div class="drill-name"><span data-fileinfo="${attr(f.path)}"
+          >${attr(f.name)}</span></div>
+        <div class="drill-meta">${attr(f.library_name || 'no library')} &middot;
+          ${f.problems.map(attr).join(' &middot; ')}</div>
+      </div>
+    </div>`).join('')}</div>`;
+
+  box.querySelectorAll('.drill-row input[type=checkbox]').forEach(cb => {
+    cb.checked = selectedTidy.has(cb.dataset.path);
+    cb.onchange = () => {
+      if (cb.checked) selectedTidy.add(cb.dataset.path);
+      else selectedTidy.delete(cb.dataset.path);
+      updateTidySelCount();
+    };
+  });
+  updateTidySelCount();
+}
+
+function updateTidySelCount() {
+  const el = document.getElementById('td-selcount');
+  if (el) el.textContent = `${selectedTidy.size} selected`;
+  const all = document.getElementById('td-selectall');
+  if (all) all.checked = tidyFiles.length > 0
+    && tidyFiles.every(f => selectedTidy.has(f.path));
+}
+
+function selectAllTidy(checked) {
+  tidyFiles.forEach(f => {
+    if (checked) selectedTidy.add(f.path);
+    else selectedTidy.delete(f.path);
+  });
+  document.querySelectorAll('#tidy-detail .drill-row input[type=checkbox]')
+    .forEach(cb => { cb.checked = checked; });
+  updateTidySelCount();
+}
+
+async function tidySelected() {
+  const paths = [...selectedTidy];
+  const status = document.getElementById('tidy-status');
+  if (!paths.length) {
+    if (status) status.textContent = 'Select at least one file first.';
+    return;
+  }
+  if (!await ask(`Repackage ${paths.length} file${paths.length === 1 ? '' : 's'}? `
+             + 'The picture and sound are copied across untouched — only the '
+             + 'track order, titles and unwanted subtitles change.',
+      {yes: 'Queue them'})) return;
+  let r;
+  try {
+    r = await (await fetch('/api/files/tidy-tracks', {method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({paths})})).json();
+  } catch (e) {
+    if (status) status.textContent = 'Could not reach the server.';
+    return;
+  }
+  const skipped = (r.skipped || []).length;
+  notifyGood(`Queued ${r.queued}.`
+    + (skipped ? ` ${skipped} skipped — already queued.` : ''));
+  selectedTidy.clear();
+  loadTidy();
+}
 
 async function loadNoAudio() {
   const box = document.getElementById('no-audio-detail');
@@ -5754,7 +5895,9 @@ async function drawStep() {
     const langs = draft.subtitle_mode === 'languages' ? `
       <label class="fld" style="margin-top:18px"><span>Languages to keep</span>
         <em>Three-letter codes, separated by commas. eng = English,
-            jpn = Japanese, spa = Spanish.</em>
+            jpn = Japanese, spa = Spanish. Forced tracks are always kept
+            whatever you list here, so foreign dialogue still gets
+            subtitled.</em>
         <input type="text" value="${(draft.subtitle_languages||[]).join(', ')}"
           placeholder="eng, jpn"
           oninput="draft.subtitle_languages=this.value.split(',').map(s=>s.trim()).filter(Boolean)">

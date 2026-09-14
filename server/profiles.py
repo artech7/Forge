@@ -136,8 +136,9 @@ SUBTITLE_MODES = [
     {
         "id": "languages",
         "name": "Keep only certain languages",
-        "detail": "Keeps the languages you list and drops the rest. Useful for "
-                  "discs that ship with thirty tracks you'll never use.",
+        "detail": "Keeps the languages you list and drops the rest — forced "
+                  "tracks always survive regardless. Useful for discs that "
+                  "ship with a hundred tracks you'll never use.",
     },
     {
         "id": "strip",

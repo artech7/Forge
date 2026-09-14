@@ -490,16 +490,26 @@ def probe(path):
             "hdr": hdr,
             "color_transfer": transfer or None,
             "color_primaries": (video or {}).get("color_primaries"),
+            # The order streams appear in the file, as codec types. Kept
+            # because the per-kind lists below lose it, and "are the
+            # subtitles muxed before the video" is not answerable without
+            # it — see watcher.tidy_problems.
+            "stream_order": [s.get("codec_type") for s in streams
+                             if s.get("codec_type") in
+                             ("video", "audio", "subtitle")],
+            "video_title": (video or {}).get("tags", {}).get("title"),
             "audio_tracks": [
                 {"codec": s.get("codec_name"),
                  "language": (s.get("tags") or {}).get("language"),
+                 "title": (s.get("tags") or {}).get("title"),
                  "channels": s.get("channels"),
                  "channel_layout": s.get("channel_layout")}
                 for s in audio_streams
             ],
             "subtitle_tracks": [
                 {"codec": s.get("codec_name"),
-                 "language": (s.get("tags") or {}).get("language")}
+                 "language": (s.get("tags") or {}).get("language"),
+                 "title": (s.get("tags") or {}).get("title")}
                 for s in sub_streams
             ],
             "chapters": len(data.get("chapters") or []),
@@ -1634,6 +1644,69 @@ async def stats_language_check(kind: str, language: str = None, library_id: int 
     if kind not in ("audio", "subtitle"):
         raise HTTPException(400, "kind must be 'audio' or 'subtitle'")
     return {"files": db.files_missing_language(kind, language, library_id)}
+
+
+def _tidy_problems_for(detail, library):
+    """Bind the library's own subtitle preference to the shared rules."""
+    spec = profiles.resolve((library or {}).get("profile") or {})
+    wanted = (spec.get("subtitle_languages")
+              if spec.get("subtitle_mode") == "languages" else None)
+    return watcher.tidy_problems(detail, wanted)
+
+
+@app.get("/api/stats/untidy")
+async def stats_untidy(library_id: int = None):
+    """Files whose tracks are out of order, mislabelled, or unwanted."""
+    return {
+        "files": await asyncio.to_thread(
+            db.files_with_untidy_tracks, library_id, _tidy_problems_for),
+        # Anything probed before the cache started recording stream order
+        # can't be judged. Said out loud so an empty list isn't read as
+        # "everything is tidy" when it means "nothing has been looked at".
+        "not_yet_scanned": await asyncio.to_thread(
+            db.count_unprobed_for_tidy, library_id),
+    }
+
+
+@app.post("/api/files/tidy-tracks")
+async def tidy_tracks(req: Request):
+    """Queue a remux that puts these files' tracks in order.
+
+    A remux, not a conversion: the video and audio streams are copied
+    byte for byte, so this costs a read and a write and changes nothing
+    you can see or hear. What it does change is the mux — tracks in
+    video/audio/subtitle order, titles that match the tracks they are
+    on, and the library's subtitle language preference applied, which
+    for a file that already matched its profile has never happened
+    before because Forge moved it without opening it.
+    """
+    body = await req.json()
+    paths = body.get("paths") or []
+    if not paths:
+        raise HTTPException(400, "No files given.")
+
+    libraries = db.list_libraries()
+    library_for = db.library_matcher(libraries)
+    queued, skipped = 0, []
+    for path in paths:
+        library = library_for(path)
+        if not library:
+            skipped.append({"path": path, "why": "no library watches this file"})
+            continue
+        spec = dict(profiles.resolve(library["profile"]))
+        # Copy both streams: the point is the container, not the content.
+        spec["codec"] = "copy"
+        spec["audio"] = "copy"
+        spec["action"] = "remux"
+        spec["why"] = "tidying up the track layout"
+        spec["original_action"] = library.get("original_action")
+        if db.enqueue(path, spec, None, library["id"]):
+            queued += 1
+        else:
+            skipped.append({"path": path, "why": "already queued"})
+    if queued:
+        await broadcast()
+    return {"queued": queued, "skipped": skipped}
 
 
 @app.get("/api/stats/no-audio")
