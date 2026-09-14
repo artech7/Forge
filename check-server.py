@@ -536,6 +536,38 @@ check("language guessed from the old title", lambda: _st.describe_audio(
        "channel_layout": "5.1", "disposition": {}})[1], lambda r: r == "fre")
 check("unknown language gets no title", lambda: _st.describe_audio(
       {"tags": {}, "channels": 2, "disposition": {}})[0], lambda r: r is None)
+# A 5.1 source downmixed to stereo used to keep a title saying 5.1,
+# which Jellyfin then printed beside its own reading of the finished
+# file: "English 5.1 - AAC - Stereo". The title has to describe what is
+# written, not what was read.
+_surround = {"tags": {"language": "eng"}, "channels": 6,
+             "channel_layout": "5.1", "disposition": {}}
+check("a downmixed track is titled by what it becomes",
+      lambda: _st.describe_audio(_surround, {"downmix": "stereo"})[0],
+      lambda r: r == "English Stereo")
+check("and is still 5.1 when nothing downmixes it",
+      lambda: _st.describe_audio(_surround, {"audio": "aac"})[0],
+      lambda r: r == "English 5.1")
+check("the numeric form of the same setting counts too",
+      lambda: _st.describe_audio(_surround, {"downmix": "2"})[0],
+      lambda r: r == "English Stereo")
+check("naming_args passes the spec through, not just the stream",
+      lambda: " ".join(_st.naming_args([_surround], [],
+                                       {"downmix": "stereo"})),
+      lambda r: "title=English Stereo" in r and "5.1" not in r)
+# The companion is a stereo fold of a surround track and sits among
+# titles like "English 5.1", so a bare "Stereo" read as a different kind
+# of thing entirely.
+check("the added stereo track says whose language it is",
+      lambda: " ".join(_st.plan_streams(
+          {"streams": [
+              {"index": 0, "codec_type": "video", "codec_name": "h264"},
+              {"index": 1, "codec_type": "audio", "codec_name": "eac3",
+               "channels": 6, "channel_layout": "5.1",
+               "tags": {"language": "eng"}, "disposition": {}}]},
+          {"add_stereo_track": True, "audio": "aac"})[1]),
+      lambda r: "title=English Stereo" in r)
+
 check("forced subtitle labelled", lambda: _st.describe_subtitle(
       {"tags": {"language": "eng"}, "disposition": {"forced": 1}})[0],
       lambda r: r == "English (Forced)")

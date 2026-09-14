@@ -552,8 +552,12 @@ def _plan(info, spec):
         position = len(audios)
         codec_args += [f"-disposition:a:{position}", "0"]
         # Named so it's obvious which is which in a player's track list.
-        codec_args += [f"-metadata:s:a:{position}", "title=Stereo"]
+        # Same shape as every other title — language then layout — rather
+        # than a bare "Stereo" sitting among "English 5.1" and the rest.
         lang = (stereo_source.get("tags") or {}).get("language")
+        spoken = language_name(lang) if lang else None
+        codec_args += [f"-metadata:s:a:{position}",
+                       f"title={spoken + ' Stereo' if spoken else 'Stereo'}"]
         if lang:
             codec_args += [f"-metadata:s:a:{position}", f"language={lang}"]
     for position, stream in enumerate(kept_subs):
@@ -681,15 +685,36 @@ def is_sdh(stream):
             or "cc" == _title(stream).strip())
 
 
-def describe_audio(stream):
-    """A title a person would recognise: 'English 5.1', 'Japanese (Commentary)'."""
+def output_channel_label(stream, spec=None):
+    """The layout the track will have once written, not the one it had.
+
+    Titles were built from the source stream, so a 5.1 track downmixed to
+    stereo kept a title saying 5.1. Jellyfin puts its own reading of the
+    finished file next to that title, which is how a track ends up
+    announcing itself as "English 5.1 - AAC - Stereo" — Forge's stale
+    half first, the truth second.
+
+    Downmix applies -ac 2 to every audio output, so when it is on there
+    is no such thing as a surround track left to describe.
+    """
+    if (spec or {}).get("downmix") in ("stereo", "2"):
+        return CHANNEL_NAMES.get(2, "Stereo")
+    return channel_label(stream)
+
+
+def describe_audio(stream, spec=None):
+    """A title a person would recognise: 'English 5.1', 'Japanese (Commentary)'.
+
+    Describes the track as it will be written. Passing no spec describes
+    the source, which is what the standalone callers in the checks want.
+    """
     code = _lang(stream)
     name = language_name(code) or language_name(language_from_title(_title(stream)))
     if not name:
         return None, None
 
     parts = [name]
-    layout = channel_label(stream)
+    layout = output_channel_label(stream, spec)
     if layout:
         parts.append(layout)
 
@@ -731,7 +756,7 @@ def naming_args(audios, subs, spec):
 
     args = []
     for position, stream in enumerate(audios):
-        title, code = describe_audio(stream)
+        title, code = describe_audio(stream, spec)
         if title:
             args += [f"-metadata:s:a:{position}", f"title={title}"]
         # Fill in a missing language tag when the title made it obvious;
