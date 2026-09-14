@@ -694,6 +694,40 @@ check('slot control at limits', () => {
         throw new Error(`points at "${named}", which is not a tab`);
     }
   });
+  // The prose points readers at other tabs by name — "see No Audio
+  // Track", "the language check on Track Layout". Those are not in the
+  // "Library Health -> X" shape the check above covers, so a rename
+  // would leave them pointing at nothing.
+  check('tabs named in the section prose still exist', () => {
+    const src = require('fs').readFileSync(
+      __dirname + '/server/static/index.html', 'utf8');
+    const labels = new Set(__x.HEALTH_TABS.map(([, l]) => l));
+    for (const named of ['No Audio Track', 'Track Layout']) {
+      if (!src.includes(named))
+        throw new Error(`the prose no longer mentions "${named}"`);
+      if (!labels.has(named))
+        throw new Error(`prose points at "${named}", which is not a tab`);
+    }
+  });
+  // Three of these checks can now repair what they find, so the section
+  // can no longer describe itself as things a transcode won't fix, and
+  // Standardize can no longer claim to be the only fixable one.
+  check('the section does not claim nothing here is fixable', () => {
+    const src = require('fs').readFileSync(
+      __dirname + '/server/static/index.html', 'utf8');
+    if (src.includes("a transcode alone won't fix"))
+      throw new Error('the lead still says nothing here can be fixed');
+    if (src.includes('Unlike\n        the other checks here, these are fixable'))
+      throw new Error('Standardize still claims to be the only fixable one');
+  });
+  check('Track Layout mentions audio, not only subtitles', () => {
+    const src = require('fs').readFileSync(
+      __dirname + '/server/static/index.html', 'utf8');
+    const at = src.indexOf('Files whose tracks');
+    const note = src.slice(at, at + 420);
+    if (!/audio and subtitle languages/.test(note))
+      throw new Error('the note still lists only subtitle languages');
+  });
   check('no two health tabs read as the same thing', () => {
     // The pair that prompted this: one tab about tracks being in the
     // wrong language, one about there being no audio stream at all.

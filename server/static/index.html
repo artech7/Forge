@@ -1139,9 +1139,10 @@
 
   <div class="tabpanel" data-panel="audio" id="panel-audio">
     <h2>Library Health</h2>
-    <p class="lead">Checks for things a transcode alone won't fix — the
-      gaps between what's in your library and what you'd consider a
-      consistent standard across all of it.</p>
+    <p class="lead">Where your library and its settings disagree. Some of
+      these Forge can put right from here — by repackaging, converting or
+      asking Radarr/Sonarr for another copy — and some it can only show
+      you, because nothing can add a track that was never recorded.</p>
     <div class="stats-libpick" id="audio-libpick"></div>
     <div class="tabs" id="health-tabs"></div>
 
@@ -1181,7 +1182,10 @@
       <div class="note" style="margin:-4px 0 14px;color:var(--muted);font-size:12.5px">
         Files that do have sound and subtitles, just not in a language this
         library asked for — an English library holding a Japanese-only
-        release, say. For files with no sound at all, see No Audio Track.
+        release, say. The mirror image of the language check on Track
+        Layout: that one finds languages you didn't ask for and can strip
+        them out, this one finds the ones you wanted and aren't there.
+        For files with no sound at all, see No Audio Track.
         Read straight from your regular scans — nothing to run or wait on.
         Informational only: Forge can't create a track that was never
         there, so this is a list to act on yourself (Bazarr, a different
@@ -1220,13 +1224,14 @@
         </div>
       </div>
       <div class="note" style="margin:-4px 0 14px;color:var(--muted);font-size:12.5px">
-        Files whose tracks are muxed in an odd order, carry a title that
-        contradicts the track it sits on, or hold subtitle languages this
-        library didn't ask for. Fixing one is a repackage, not a
-        conversion — the picture and sound are copied across untouched, so
-        it costs a read and a write and changes nothing you can see or
-        hear. Mostly this catches files that already matched their library
-        and so were filed without ever being opened.
+        Files whose tracks don't match how this library is set up: muxed
+        in an odd order, carrying a title that contradicts the track it
+        sits on, or holding audio and subtitle languages you didn't ask
+        for. Fixing one is a repackage rather than a conversion — picture
+        and sound are copied across untouched, so it costs a read and a
+        write and changes nothing you can see or hear. Most of these are
+        files that already matched their library and were filed without
+        ever being opened, so nothing has ever tidied them.
       </div>
       <div class="sec" id="tidy-status"></div>
       <div id="tidy-detail"><div class="stats-empty">Loading…</div></div>
@@ -1257,9 +1262,10 @@
         </div>
       </div>
       <div class="note" style="margin:-4px 0 14px;color:var(--muted);font-size:12.5px">
-        Files that don't match what this library is set up to want. Unlike
-        the other checks here, these are fixable — select any of them and
-        queue the conversion that brings them into line.
+        Files whose codec, audio format or container isn't what this
+        library asks for. Putting one right is a real conversion, unlike
+        the repackage on Track Layout — the picture is encoded again, so
+        it takes as long as any other job. Select any of them and queue it.
       </div>
       <div id="standardize-detail"><div class="stats-empty">Pick a single library above.</div></div>
     </div>
