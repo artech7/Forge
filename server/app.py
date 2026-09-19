@@ -9,7 +9,7 @@ import subprocess
 import tempfile
 import time
 from datetime import datetime
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 from fastapi import FastAPI, HTTPException, Request, UploadFile, File, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
@@ -699,6 +699,17 @@ async def complete(job_id: int, result: UploadFile = File(None),
         else:
             node = db.get_node(job["node_id"]) or {}
             written = Path(scheduler.reverse_path(node, output_local))
+            if not written.is_file():
+                # A job given up on after its lease expired has no node
+                # left, so there are no mounts to map through — yet the
+                # worker was never told and reports in when it finishes.
+                # Its work file always sits beside the source under a name
+                # only this job uses, so look there by that name alone.
+                name = PureWindowsPath(output_local or "").name
+                if name == f"{watcher.WORK_PREFIX}{job_id}.{container}":
+                    beside = source.parent / name
+                    if beside.is_file():
+                        written = beside
             if not written.is_file():
                 raise FileNotFoundError(f"Worker output not visible: {written}")
             shutil.move(str(written), staged)

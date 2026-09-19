@@ -1822,6 +1822,73 @@ check("restore_original without one", lambda: watcher.restore_original(
       {"id": 9999, "path": "/x.mkv", "final_path": None}, {"id": 1}),
       lambda r: r[0] is False)
 
+print("\nPlacing a finished file whose job has lost its node:")
+# A Windows worker reports where it wrote in its own path space, and the
+# server maps that back through the mounts of the job's node. A job given
+# up on after its lease expired has no node any more — but the worker
+# never hears, finishes, and reports in. The mapping then has nothing to
+# map with, and "\\Fenrir\..." was looked for literally inside the
+# container: "Worker output not visible", on a file that was right there.
+_pl = base / "placing"
+_pl_watch, _pl_out = _pl / "Media" / "Movies", _pl / "out"
+_pl_dir = _pl_watch / "Some Film (1997)"
+_pl_dir.mkdir(parents=True)
+_pl_src = _pl_dir / "Some Film (1997).mkv"
+_pl_src.write_bytes(b"x" * 4000)
+_pl_lib = db.create_library(
+    "Placing", str(_pl_watch), str(_pl_out),
+    {**profile, "container": "mp4"}, "delete", filters={},
+    naming={"enabled": False})
+db.upsert_node("win", "desktop", ["libx265"],
+               [{"server": str(_pl / "Media"),
+                 "local": "//Fenrir/homes/Dylan/Media"}], 1)
+_pl_job = db.enqueue(str(_pl_src), {"codec": "hevc", "container": "mp4"},
+                     4000, _pl_lib)
+_pl_lease = None
+for _ in range(200):                     # other checks' jobs may be queued
+    _pl_lease = scheduler.lease_job("win")
+    if not _pl_lease or _pl_lease["id"] == _pl_job:
+        break
+check("the job is leased to the Windows worker by its UNC path",
+      lambda: _pl_lease and _pl_lease["path"],
+      lambda r: r == "//Fenrir/homes/Dylan/Media/Movies/Some Film (1997)/"
+                     "Some Film (1997).mkv")
+# What the worker does: write beside the source, and report that path the
+# way Windows prints it.
+(_pl_dir / f".forge-{_pl_job}.mp4").write_bytes(b"y" * 1000)
+_pl_reported = (r"\\Fenrir\homes\Dylan\Media\Movies\Some Film (1997)"
+                f"\\.forge-{_pl_job}.mp4")
+# The lease runs out while the worker is still going, often enough to be
+# given up on.
+with db.connect() as _c:
+    _c.execute("UPDATE jobs SET lease_expires=0, bounces=? WHERE id=?",
+               (scheduler.BOUNCE_LIMIT - 1, _pl_job))
+scheduler.requeue_expired()
+check("given up on, it has no node left to map through",
+      lambda: (db.get_job(_pl_job)["state"], db.get_job(_pl_job)["node_id"]),
+      lambda r: r == ("failed", None))
+_pl_result = check("the worker's report still places the file", lambda: _run(
+      app.complete(_pl_job, None, 1000, "libx265", _pl_reported)),
+      lambda r: r.get("ok") is True)
+check("and it lands where the library files it",
+      lambda: sorted(p.name for p in _pl_out.rglob("*") if p.is_file()),
+      lambda r: r == ["Some Film (1997).mp4"])
+check("with no work file left behind",
+      lambda: list(_pl_dir.glob(".forge-*")), lambda r: r == [])
+# Only the job's own work file is ever taken. A path that is neither
+# mappable nor this job's file must still be refused, not guessed at.
+_pl_job2 = db.enqueue(str(_pl_dir / "Other.mkv"),
+                      {"codec": "hevc", "container": "mp4"}, 4000, _pl_lib)
+(_pl_dir / "Other.mkv").write_bytes(b"x" * 4000)
+(_pl_dir / "unrelated.mp4").write_bytes(b"z" * 1000)
+db.update_job(_pl_job2, state="running", node_id=None)
+check("someone else's file beside it is not taken instead", lambda: _run(
+      app.complete(_pl_job2, None, 1000, "libx265",
+                   r"\\Fenrir\homes\Dylan\Media\Movies\Some Film (1997)"
+                   r"\unrelated.mp4")),
+      lambda r: r.get("ok") is False
+      and (_pl_dir / "unrelated.mp4").is_file())
+
 print()
 if failures:
     print(f"{len(failures)} problem(s):")
