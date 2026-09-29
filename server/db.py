@@ -108,6 +108,14 @@ CREATE TABLE IF NOT EXISTS jobs (
     node_id       TEXT,
     transport     TEXT,               -- local|stream
     lease_expires REAL,
+    -- Random, reissued on every lease. Two attempts at the same job can
+    -- overlap (a lease expires, the job goes back in the pool and is
+    -- handed out again while the first worker is still encoding), and
+    -- the job id alone can't tell them apart. The worker puts this in
+    -- its work file's name so each attempt writes its own file, and
+    -- sends it back when finishing so a superseded attempt can't place
+    -- a result over the one that replaced it. NULL means nobody holds it.
+    lease_token   TEXT,
     progress      REAL DEFAULT 0,
     fps           REAL DEFAULT 0,
     speed         REAL DEFAULT 0,
@@ -720,8 +728,8 @@ def requeue_jobs(states, library_id=None, q=None):
             with connect() as conn:
                 conn.execute(
                     """UPDATE jobs SET state='queued', node_id=NULL,
-                       lease_expires=NULL, progress=0, fps=0, speed=0,
-                       phase=NULL,
+                       lease_expires=NULL, lease_token=NULL,
+                       progress=0, fps=0, speed=0, phase=NULL,
                        error=NULL, started_at=NULL, finished_at=NULL,
                        bounces=0 WHERE id=?""", (job["id"],))
             moved += 1
@@ -1408,6 +1416,7 @@ def migrate():
         "jobs": [("library_id", "INTEGER"), ("output_local", "TEXT"),
                  ("final_path", "TEXT"),
                  ("attempt", "INTEGER NOT NULL DEFAULT 1"),
+                 ("lease_token", "TEXT"),
                  ("size_now", "INTEGER"), ("outcome", "TEXT"),
                  ("progress_at", "REAL"), ("phase", "TEXT"),
                  ("bounces", "INTEGER NOT NULL DEFAULT 0"),

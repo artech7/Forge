@@ -3,6 +3,7 @@
 The scheduler's only real job is answering: which of these idle nodes can
 satisfy this spec, and should it read the file directly or have it streamed?
 """
+import secrets
 import time
 import db
 
@@ -108,7 +109,8 @@ def requeue_expired():
             if (job["bounces"] or 0) + 1 >= BOUNCE_LIMIT:
                 conn.execute(
                     """UPDATE jobs SET state='failed', node_id=NULL,
-                           lease_expires=NULL, finished_at=?, error=?
+                           lease_expires=NULL, lease_token=NULL,
+                           finished_at=?, error=?
                        WHERE id=?""",
                     (now,
                      f"Lease expired {BOUNCE_LIMIT} times in a row with no "
@@ -121,6 +123,7 @@ def requeue_expired():
                 conn.execute(
                     """UPDATE jobs
                        SET state='queued', node_id=NULL, lease_expires=NULL,
+                           lease_token=NULL,
                            progress=0, fps=0, speed=0, phase=NULL,
                            bounces=bounces+1
                        WHERE id=?""",
@@ -232,14 +235,20 @@ def lease_job(node_id):
         # is still the same stuck attempt, not a fresh one, and auto_fail's
         # limit/stall thresholds need the real elapsed time since it first
         # started to ever have a chance of catching it.
+        #
+        # Each claim mints a fresh token. It names this attempt's work
+        # file and proves, when the result comes back, that the attempt
+        # reporting in is still the one holding the job.
+        token = secrets.token_hex(4)
         with db.connect() as conn:
             claimed = conn.execute(
                 """UPDATE jobs
                    SET state='leased', node_id=?, transport=?,
-                       lease_expires=?, started_at=COALESCE(started_at, ?)
+                       lease_expires=?, lease_token=?,
+                       started_at=COALESCE(started_at, ?)
                    WHERE id=? AND state='queued'""",
                 (node_id, transport, time.time() + LEASE_SECONDS,
-                 time.time(), job["id"]),
+                 token, time.time(), job["id"]),
             ).rowcount
         if claimed:
             return {
@@ -248,6 +257,7 @@ def lease_job(node_id):
                 "transport": transport,
                 "path": node_path,
                 "source_path": job["path"],
+                "lease_token": token,
                 "encoders": CODEC_FAMILIES.get(spec.get("codec", "hevc"), []),
             }
     return None

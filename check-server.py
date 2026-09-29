@@ -1889,6 +1889,122 @@ check("someone else's file beside it is not taken instead", lambda: _run(
       lambda r: r.get("ok") is False
       and (_pl_dir / "unrelated.mp4").is_file())
 
+
+# ------------------------------------------------------------------
+# Two attempts at one job overlapping
+#
+# A lease is two minutes. When one expires the job goes straight back in
+# the pool and is handed out again -- while the worker that had it is
+# still encoding, because nothing interrupts FFmpeg mid-file. Both
+# attempts used to derive their work file's name from the job id alone,
+# so both wrote to one path: whichever finished first had its output
+# deleted or moved out from under the other, and the loser reported a
+# bare FileNotFoundError from stat() against a file it thought was its
+# own. The file it was converting was never the problem.
+print("\nTwo attempts at one job don't collide:")
+
+check("a work file's job id is read from the name",
+      lambda: watcher.work_file_job_id(".forge-1234-a1b2c3d4.mkv"),
+      lambda r: r == 1234)
+check("the name workers wrote before tokens still reads",
+      lambda: watcher.work_file_job_id(".forge-1234.mkv"),
+      lambda r: r == 1234)
+check("and something that isn't a work file reads as none",
+      lambda: (watcher.work_file_job_id("Some Film (1997).mkv"),
+               watcher.work_file_job_id(".forge-part")),
+      lambda r: r == (None, None))
+
+_ov = base / "overlap"
+(_ov / "Movies").mkdir(parents=True)
+_ov_src = _ov / "Movies" / "Overlap (2004).mkv"
+_ov_src.write_bytes(b"x" * 4000)
+_ov_lib = db.create_library("Overlap", str(_ov), str(base / "overlap-out"),
+                            {**profile, "container": "mp4"}, "delete",
+                            filters={}, naming={"enabled": False})
+db.upsert_node("ov1", "one", ["libx265"],
+               [{"server": str(_ov), "local": str(_ov)}], 1)
+db.upsert_node("ov2", "two", ["libx265"],
+               [{"server": str(_ov), "local": str(_ov)}], 1)
+_ov_job = db.enqueue(str(_ov_src), {"codec": "hevc", "container": "mp4"},
+                     4000, _ov_lib)
+
+
+def _lease_ours(node):
+    """Lease until this job comes round; other checks queue jobs too."""
+    for _ in range(400):
+        got = scheduler.lease_job(node)
+        if not got or got["id"] == _ov_job:
+            return got
+    return None
+
+
+_first = _lease_ours("ov1")
+check("the first attempt is given a lease token",
+      lambda: bool(_first and _first.get("lease_token")), lambda r: r is True)
+
+# The lease runs out. The job goes back in the pool and the other node
+# picks it up, while the first node is still encoding.
+with db.connect() as _c:
+    _c.execute("UPDATE jobs SET lease_expires=0 WHERE id=?", (_ov_job,))
+scheduler.requeue_expired()
+check("a job back in the pool is held by nobody",
+      lambda: db.get_job(_ov_job)["lease_token"], lambda r: r is None)
+_second = _lease_ours("ov2")
+check("the second attempt gets a different token",
+      lambda: bool(_second) and _second["lease_token"] != _first["lease_token"],
+      lambda r: r is True)
+
+# What each worker would name its own file. The point of the token: two
+# different names, so neither can tidy up or overwrite the other's.
+_name1 = f".forge-{_ov_job}-{_first['lease_token']}.mp4"
+_name2 = f".forge-{_ov_job}-{_second['lease_token']}.mp4"
+check("so the two attempts write to two different files",
+      lambda: _name1 != _name2, lambda r: r is True)
+check("and the sweep still recognises both as this job's",
+      lambda: (watcher.work_file_job_id(_name1),
+               watcher.work_file_job_id(_name2)),
+      lambda r: r == (_ov_job, _ov_job))
+
+# Both finish. The first attempt lost the job while it was encoding, so
+# its result must be refused -- placing it would run handle_original
+# against a source the winning attempt still needs, and this library
+# deletes originals.
+(_ov_src.parent / _name1).write_bytes(b"1" * 1000)
+(_ov_src.parent / _name2).write_bytes(b"2" * 1000)
+check("the attempt that lost the job is refused", lambda: _run(
+      app.complete(_ov_job, None, 1000, "libx265",
+                   str(_ov_src.parent / _name1), _first["lease_token"])),
+      lambda r: r.get("ok") is False and r.get("superseded") is True)
+check("so the source it would have archived is untouched",
+      lambda: _ov_src.is_file(), lambda r: r is True)
+check("and its failure doesn't fail a job it no longer holds", lambda: (
+      _run(app.fail(_ov_job, _FakeReq({
+          "error": "FileNotFoundError: [WinError 2] ... .forge-x.mp4",
+          "lease_token": _first["lease_token"]}))),
+      db.get_job(_ov_job)["state"])[1],
+      lambda r: r in ("leased", "running"))
+
+# The attempt that does hold it is placed exactly as before.
+check("the attempt that holds the job is placed", lambda: _run(
+      app.complete(_ov_job, None, 1000, "libx265",
+                   str(_ov_src.parent / _name2), _second["lease_token"])),
+      lambda r: r.get("ok") is True)
+check("and it is the winner's bytes that landed",
+      lambda: [f.read_bytes()[:1] for f in (base / "overlap-out").rglob("*.mp4")],
+      lambda r: r == [b"2"])
+
+# A worker too old to send a token still works against this server, and
+# so does a job row from before the column existed.
+_old_job = db.enqueue(str(_ov / "Movies" / "Old (1999).mkv"),
+                      {"codec": "hevc", "container": "mp4"}, 4000, _ov_lib)
+(_ov / "Movies" / "Old (1999).mkv").write_bytes(b"x" * 4000)
+db.update_job(_old_job, state="running", node_id="ov1", lease_token="abcd1234")
+(_ov / "Movies" / f".forge-{_old_job}.mp4").write_bytes(b"3" * 1000)
+check("a worker that sends no token is still placed", lambda: _run(
+      app.complete(_old_job, None, 1000, "libx265",
+                   str(_ov / "Movies" / f".forge-{_old_job}.mp4"))),
+      lambda r: r.get("ok") is True)
+
 print()
 if failures:
     print(f"{len(failures)} problem(s):")

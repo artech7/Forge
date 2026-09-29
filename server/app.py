@@ -666,7 +666,7 @@ async def source(job_id: int):
 @app.post("/api/jobs/{job_id}/complete")
 async def complete(job_id: int, result: UploadFile = File(None),
                    size_after: int = 0, encoder: str = "",
-                   output_local: str = ""):
+                   output_local: str = "", lease_token: str = ""):
     """Finish a job: place the new file, then deal with the original.
 
     Remote nodes upload the result. Nodes with the share mounted wrote it
@@ -679,6 +679,20 @@ async def complete(job_id: int, result: UploadFile = File(None),
     if job["state"] in ("cancelled", "queued"):
         # Abandoned mid-flight; don't place a file for a job that was called off.
         return {"ok": False, "error": f"job was {job['state']}"}
+
+    # A lease that expired gets handed out again, so two attempts at one
+    # job can be encoding at the same time — and the one that lost the
+    # job usually finishes first, because it started first. Letting it
+    # report in would place its result and then run handle_original
+    # against a source the winning attempt still needs: with the
+    # original_action set to delete, that source is simply gone when the
+    # winner lands. Whoever holds the lease now is the only attempt whose
+    # result counts. A blank on either side is an older worker or an
+    # older job row, and pairs up the way it always did.
+    held = job.get("lease_token")
+    if lease_token and held and lease_token != held:
+        return {"ok": False, "superseded": True,
+                "error": "another attempt holds this job now"}
 
     source = Path(job["path"])
     library = db.get_library(job["library_id"]) if job.get("library_id") else None
@@ -706,7 +720,7 @@ async def complete(job_id: int, result: UploadFile = File(None),
                 # Its work file always sits beside the source under a name
                 # only this job uses, so look there by that name alone.
                 name = PureWindowsPath(output_local or "").name
-                if name == f"{watcher.WORK_PREFIX}{job_id}.{container}":
+                if watcher.work_file_job_id(name) == job_id:
                     beside = source.parent / name
                     if beside.is_file():
                         written = beside
@@ -949,6 +963,19 @@ async def fail(job_id: int, req: Request):
     error = body.get("error", "Unknown")
     job = db.get_job(job_id)
     spec = (job or {}).get("spec") or {}
+
+    # An attempt that lost the job doesn't get to fail it. This is how
+    # the overlap used to surface: the superseded worker tripped over
+    # the work file it no longer owned, reported that, and a job another
+    # node was busy converting perfectly well landed in Failed. Nothing
+    # is retried or counted here — whatever holds the lease now is still
+    # running and will report for itself.
+    token = body.get("lease_token")
+    held = (job or {}).get("lease_token")
+    if job and token and held and token != held:
+        print(f"[job {job_id}] ignoring a failure from a superseded "
+              f"attempt: {error[:120]}")
+        return {"ok": False, "superseded": True}
 
     if job and body.get("unhealthy_video"):
         return await handle_unhealthy_video(job, error)
@@ -2807,6 +2834,7 @@ async def retry_job(job_id: int):
 
     try:
         db.update_job(job_id, state="queued", node_id=None, lease_expires=None,
+                      lease_token=None,
                       progress=0, fps=0, speed=0, phase=None,
                       error=None, outcome=None,
                       started_at=None, finished_at=None, bounces=0)

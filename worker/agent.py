@@ -332,6 +332,14 @@ def run_job(job, caps):
     """Encode one job. The server decides where the result finally lands."""
     job_id = job["id"]
     spec = job["spec"]
+    # Identifies this attempt, not this job. A lease that expires is
+    # handed out again while this worker is still encoding, so the job id
+    # on its own names a file two attempts would both write to — the
+    # first to finish would then have its output deleted or moved out
+    # from under the other. A server too old to issue one gets a locally
+    # made substitute, which is just as unique and only lacks the
+    # server's half of the check.
+    token = job.get("lease_token") or uuid.uuid4().hex[:8]
 
     if spec.get("measure") == "loudness":
         report_measurement(job)
@@ -356,7 +364,7 @@ def run_job(job, caps):
     else:
         encoder = encoders.pick(job["encoders"], caps, source_depth, spec)
         if not encoder:
-            report_fail(job_id, "No matching encoder on this node")
+            report_fail(job_id, "No matching encoder on this node", token)
             return
 
     WORK_DIR.mkdir(parents=True, exist_ok=True)
@@ -365,7 +373,7 @@ def run_job(job, caps):
 
     try:
         if job["transport"] == "stream":
-            fetched = WORK_DIR / f"src-{job_id}{Path(job['source_path']).suffix}"
+            fetched = WORK_DIR / f"src-{job_id}-{token}{Path(job['source_path']).suffix}"
             with Phase(job_id, "copying the file to this machine"), \
                     requests.get(f"{SERVER}/api/jobs/{job_id}/source",
                                  headers=AUTH_HEADERS,
@@ -374,14 +382,16 @@ def run_job(job, caps):
                 with fetched.open("wb") as fh:
                     shutil.copyfileobj(resp.raw, fh)
             src = str(fetched)
-            scratch = WORK_DIR / f"job-{job_id}.{container}"
+            scratch = WORK_DIR / f"job-{job_id}-{token}.{container}"
         else:
             src = job["path"]
             if not Path(src).is_file():
-                report_fail(job_id, f"Mounted path not found: {src}")
+                report_fail(job_id, f"Mounted path not found: {src}", token)
                 return
             # Write beside the source so the move is on the same filesystem.
-            scratch = Path(src).parent / f".forge-{job_id}.{container}"
+            # The token in the name is what keeps two overlapping attempts
+            # at this job from writing to, and tidying up, one file.
+            scratch = Path(src).parent / f".forge-{job_id}-{token}.{container}"
             local_out = str(scratch)
 
         duration = source_duration(src)
@@ -413,7 +423,7 @@ def run_job(job, caps):
                     job_id,
                     "Health check failed — the video stream itself won't "
                     f"decode: {video_msg}",
-                    unhealthy_video=True)
+                    token, unhealthy_video=True)
                 return
             bad_audio = [idx for idx, (ok, msg) in health["audio"].items()
                         if not ok]
@@ -488,12 +498,26 @@ def run_job(job, caps):
             # The phrase is only ever appended when explain_failure decided
             # the cause was audio-related — cheaper than re-deriving the
             # same judgement a second time from the raw stderr.
-            report_fail(job_id, explanation,
+            report_fail(job_id, explanation, token,
                         audio_related="Leave audio alone" in explanation)
             return
 
+        # FFmpeg said it was happy, so anything missing here is the file
+        # going astray rather than the encode failing. Said plainly:
+        # reaching for it anyway raised a bare pathlib FileNotFoundError,
+        # which reported a stat() call in a traceback and told nobody
+        # looking at the queue anything about the file they queued.
+        if not scratch.is_file():
+            report_fail(job_id,
+                        "The encode finished, but its work file "
+                        f"({scratch.name}) was gone before it could be "
+                        "measured. The source file is untouched — queue it "
+                        "again.", token)
+            return
+
         size_after = scratch.stat().st_size
-        params = {"size_after": size_after, "encoder": encoder or "remux"}
+        params = {"size_after": size_after, "encoder": encoder or "remux",
+                  "lease_token": token}
 
         if job["transport"] == "stream":
             with scratch.open("rb") as fh:
@@ -505,7 +529,16 @@ def run_job(job, caps):
         else:
             # Leave it in place; the server moves it and handles the original.
             params["output_local"] = local_out
-            post(f"/api/jobs/{job_id}/complete", None, params=params)
+            reply = post(f"/api/jobs/{job_id}/complete", None, params=params)
+            if reply and reply.get("superseded"):
+                # This attempt lost the job while it was encoding, so the
+                # server kept whatever replaced it. Nothing is left for
+                # anyone to collect here, and a discarded encode is often
+                # gigabytes — take it away rather than wait for the sweep.
+                print(f"[job {job_id}] another attempt finished this one "
+                      f"first; discarding what this node made")
+                scratch.unlink(missing_ok=True)
+                return
 
         print(f"[job {job_id}] done - {size_after / 1e6:.0f} MB")
 
@@ -526,7 +559,7 @@ def run_job(job, caps):
         where = traceback.extract_tb(exc.__traceback__)[-1]
         report_fail(job_id, f"{type(exc).__name__}: {exc} "
                             f"(at {Path(where.filename).name} line "
-                            f"{where.lineno}, in {where.name})"[:400])
+                            f"{where.lineno}, in {where.name})"[:400], token)
     finally:
         if fetched:
             Path(fetched).unlink(missing_ok=True)
@@ -546,9 +579,16 @@ def post(path, payload, params=None):
         return None
 
 
-def report_fail(job_id, message, **extra):
+def report_fail(job_id, message, token=None, **extra):
+    """Tell the server this job didn't work.
+
+    The lease token goes with it so the server can tell a live attempt's
+    failure from one reported by an attempt that has already lost the
+    job — the latter is not this job's news to report.
+    """
     print(f"[job {job_id}] failed: {message}")
-    post(f"/api/jobs/{job_id}/fail", {"error": message, **extra})
+    post(f"/api/jobs/{job_id}/fail",
+         {"error": message, "lease_token": token, **extra})
 
 
 def report_measurement(job):
@@ -560,11 +600,13 @@ def report_measurement(job):
     isn't worth the bandwidth on a remote node.
     """
     job_id, src = job["id"], job["path"]
+    token = job.get("lease_token")
     if job["transport"] != "local":
-        report_fail(job_id, "Loudness measurement needs a locally mounted path.")
+        report_fail(job_id,
+                    "Loudness measurement needs a locally mounted path.", token)
         return
     if not Path(src).is_file():
-        report_fail(job_id, f"Mounted path not found: {src}")
+        report_fail(job_id, f"Mounted path not found: {src}", token)
         return
     print(f"[job {job_id}] measuring loudness: {Path(src).name}")
     # This is one blocking FFmpeg call with no progress heartbeat during
@@ -577,7 +619,7 @@ def report_measurement(job):
     with Phase(job_id, "measuring how loud it is"):
         values, error = streams.measure_loudness(src)
     if not values:
-        report_fail(job_id, f"Could not measure loudness: {error}")
+        report_fail(job_id, f"Could not measure loudness: {error}", token)
         return
     post(f"/api/jobs/{job_id}/measured", {"loudness": values})
 

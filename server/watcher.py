@@ -578,6 +578,26 @@ def sweep_originals(settings):
     return {"deleted": deleted, "kept": kept, "freed": freed}
 
 
+def work_file_job_id(name):
+    """The job id out of a work file's name, or None if it isn't one.
+
+    Two shapes are in circulation. ".forge-1234.mkv" is what workers
+    wrote before overlapping attempts at one job were told apart;
+    ".forge-1234-a1b2c3d4.mkv" is what they write now, where the tail is
+    the lease token of the attempt that owns it. Both begin with the job
+    id, so read up to the first separator and ignore whatever follows.
+    Keeping that knowledge here means the sweep below and the placement
+    in app.complete() can't drift apart on it.
+    """
+    if not name.startswith(WORK_PREFIX):
+        return None
+    stem = name[len(WORK_PREFIX):].rsplit(".", 1)[0]
+    try:
+        return int(stem.split("-", 1)[0])
+    except ValueError:
+        return None
+
+
 def sweep_work_files(watch_path, active_job_ids, older_than=3600):
     """Delete leftover scratch files from jobs that died hard.
 
@@ -601,12 +621,7 @@ def sweep_work_files(watch_path, active_job_ids, older_than=3600):
     for path in root.rglob(".forge-*"):
         if not path.is_file():
             continue
-        # ".forge-1234.mkv" -> 1234
-        stem = path.stem[len(WORK_PREFIX):]      # ".forge-1234" -> "1234"
-        try:
-            job_id = int(stem)
-        except ValueError:
-            job_id = None
+        job_id = work_file_job_id(path.name)
         if job_id is not None and job_id in active_job_ids:
             continue
         try:
