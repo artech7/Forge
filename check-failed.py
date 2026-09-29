@@ -1,7 +1,12 @@
 #!/usr/bin/env python3
 """Look over the files behind failed jobs and say what actually happened to them.
 
-    python check-failed.py --server http://192.168.1.50:58420
+    python check-failed.py --server http://192.168.1.50:58420 --user dylan
+
+Once Forge has a login, this needs it — the node token the worker uses
+opens only the handful of addresses a worker needs, and reading the
+queue is deliberately not one of them. The password is asked for rather
+than passed, so it stays out of the shell's history.
 
 Run it on the worker — the machine that can see the media — not the NAS.
 It reads the failed queue from the server, then goes and looks at each
@@ -19,6 +24,8 @@ and look at them, which is what this does.
 """
 import argparse
 import ast
+import getpass
+import http.cookiejar
 import json
 import os
 import re
@@ -40,18 +47,46 @@ MEDIA_SUFFIXES = {".mkv", ".mp4", ".m4v", ".avi", ".ts", ".m2ts",
 VANISHED = re.compile(r"\.forge-(\d+)\.[A-Za-z0-9]+")
 
 
-def get(server, path, token, timeout=30):
+# Signing in stores a session cookie here, and every later request
+# carries it.
+OPENER = urllib.request.build_opener(
+    urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
+
+
+def get(server, path, timeout=30):
     req = urllib.request.Request(server.rstrip("/") + path)
-    if token:
-        req.add_header("X-Forge-Token", token)
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with OPENER.open(req, timeout=timeout) as resp:
             return json.load(resp)
     except urllib.error.HTTPError as exc:
         if exc.code in (401, 403):
-            sys.exit("The server wants a token. Pass --token, or set "
-                     "FORGE_TOKEN — it's on the node card in Forge.")
+            # Not a bad token — the node token deliberately opens only
+            # what a worker needs (WORKER_PATHS in server/app.py), and
+            # reading the queue is not one of those. This needs the same
+            # login the browser uses.
+            sys.exit("Forge has a login, and reading the failed queue needs "
+                     "it — a node token only opens what a worker uses.\n"
+                     "Pass --user <name> and it will ask for the password.")
         sys.exit(f"{server} answered {exc.code} for {path}")
+    except urllib.error.URLError as exc:
+        sys.exit(f"Can't reach {server}: {exc.reason}")
+
+
+def sign_in(server, user, password):
+    """Trade the browser login for a session cookie."""
+    body = json.dumps({"username": user, "password": password}).encode()
+    req = urllib.request.Request(server.rstrip("/") + "/api/auth/login",
+                                 data=body, method="POST")
+    req.add_header("Content-Type", "application/json")
+    try:
+        OPENER.open(req, timeout=30).read()
+    except urllib.error.HTTPError as exc:
+        detail = ""
+        try:
+            detail = json.load(exc).get("detail", "")
+        except Exception:
+            pass
+        sys.exit(f"Couldn't sign in: {detail or exc.code}")
     except urllib.error.URLError as exc:
         sys.exit(f"Can't reach {server}: {exc.reason}")
 
@@ -143,8 +178,13 @@ def main():
         description="Check the files behind failed Forge jobs.")
     ap.add_argument("--server", default=os.environ.get("SERVER", ""),
                     help="Forge's address, e.g. http://192.168.1.50:58420")
-    ap.add_argument("--token", default=os.environ.get("FORGE_TOKEN", ""),
-                    help="node token, if the server has a login")
+    ap.add_argument("--user", default=os.environ.get("FORGE_USER", ""),
+                    help="the username you sign into Forge with, if it has "
+                         "a login. The node token won't do: it only opens "
+                         "what a worker needs.")
+    ap.add_argument("--password", default=os.environ.get("FORGE_PASSWORD", ""),
+                    help="asked for if not given, which keeps it out of the "
+                         "shell's history")
     ap.add_argument("--all", action="store_true",
                     help="look at every failed job, not just the ones whose "
                          "work file vanished")
@@ -162,7 +202,14 @@ def main():
         sys.exit("Say where Forge is: --server http://your-nas:58420")
     server = args.server if args.server.startswith("http") else "http://" + args.server
 
-    data = get(server, "/api/jobs/all?view=failed&sort=newest", args.token)
+    # Nothing to sign into until a login has actually been set up, and
+    # asking for one that isn't there would be a puzzle rather than a help.
+    if get(server, "/api/auth/state").get("configured"):
+        user = args.user or input("Forge username: ").strip()
+        password = args.password or getpass.getpass(f"Password for {user}: ")
+        sign_in(server, user, password)
+
+    data = get(server, "/api/jobs/all?view=failed&sort=newest")
     jobs = data.get("jobs") or []
     if not jobs:
         print("Nothing in the failed queue.")
