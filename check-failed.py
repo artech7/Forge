@@ -154,6 +154,21 @@ def decode_check(path, seconds, timeout=1800):
     return True, None
 
 
+def signature(error):
+    """Collapse an error to something countable.
+
+    Two jobs that failed the same way differ only in the filename and the
+    numbers inside the message, so taking those out leaves one line per
+    *kind* of failure — which is the thing worth counting when a queue
+    has thousands of them.
+    """
+    text = " ".join((error or "").split())
+    text = re.sub(r"'[^']*'", "'…'", text)
+    text = re.sub(r'"[^"]*"', '"…"', text)
+    text = re.sub(r"\d+", "#", text)
+    return text[:90]
+
+
 def video_of(info):
     for stream in (info or {}).get("streams", []):
         if stream.get("codec_type") == "video" and not stream.get("disposition", {}).get("attached_pic"):
@@ -215,27 +230,26 @@ def main():
         print("Nothing in the failed queue.")
         return 0
 
-    picked, other = [], 0
+    picked, skipped = [], []
     for job in jobs:
-        if VANISHED.search(job.get("error") or ""):
-            picked.append(job)
-        elif args.all:
+        if VANISHED.search(job.get("error") or "") or args.all:
             picked.append(job)
         else:
-            other += 1
+            skipped.append(job)
 
     print(f"{len(jobs)} failed job(s); {len(picked)} to look at"
-          + (f", {other} failed for other reasons (--all to include them)"
-             if other else "") + ".")
+          + (f", {len(skipped)} failed for other reasons"
+             if skipped else "") + ".")
     print()
 
     if args.limit:
         picked = picked[:args.limit]
 
-    tally = {}
+    tally, named = {}, {}
 
     def verdict(key, text):
         tally[key] = tally.get(key, 0) + 1
+        named.setdefault(key, []).append(name)
         print(f"  verdict: {text}")
         print()
 
@@ -358,6 +372,33 @@ def main():
     for key, label in labels.items():
         if tally.get(key):
             print(f"{tally[key]:5}  {label}")
+
+    # Which files, by name and nothing else -- long enough lists that
+    # anything alongside the name gets in the way of reading them.
+    for key, label in labels.items():
+        if named.get(key):
+            print()
+            print(f"{label} ({len(named[key])}):")
+            for one in sorted(named[key]):
+                print(f"  {one}")
+
+    # What everything else failed for. Without this the headline reads as
+    # "1894 failed, 99 looked at" and leaves the other 1795 a mystery --
+    # they are not work-file failures, and mostly not the same problem.
+    if skipped:
+        groups = {}
+        for job in skipped:
+            groups.setdefault(signature(job.get("error")), []).append(job)
+        print()
+        print("-" * 60)
+        print(f"The other {len(skipped)} failed for reasons this doesn't "
+              f"check. By kind:")
+        print()
+        for sig, rows in sorted(groups.items(), key=lambda kv: -len(kv[1])):
+            print(f"{len(rows):5}  {sig}")
+        print()
+        print("--all looks at the files behind those too.")
+
     if tally.get("requeue") and not args.deep:
         print()
         print("Those were cleared on their headers alone. Run again with "
