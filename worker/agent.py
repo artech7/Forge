@@ -707,6 +707,85 @@ def pid_exists(pid):
     return True
 
 
+def _mounts_json():
+    """MOUNTS the way the launchers write it themselves.
+
+    Compact, with no space after the colons: run-node.sh reads the local
+    path back out with a sed matching "local":"..." exactly, so a space
+    there leaves it empty and quietly skips the warning that the share
+    isn't mounted — the most useful thing that script says.
+    """
+    return json.dumps(MOUNTS, separators=(",", ":"))
+
+
+def restart_command():
+    """The line that starts this worker again on this machine.
+
+    Forge only offers this from its "no machines are connected" panel,
+    which is gone for good the moment a node registers — so at the one
+    moment it's wanted, when a worker has stopped and needs starting
+    again, it isn't anywhere near the node that stopped. Printing it at
+    startup puts it in the console of the machine it belongs to.
+
+    Built from what this process is actually running with, so it carries
+    this machine's own mounts, name and slots rather than an example.
+    """
+    system = platform.system()                  # Windows | Darwin | Linux
+    # The token is what makes the line usable as it stands, which is the
+    # point of printing one. Held back when stdout isn't a terminal:
+    # that's run-node-forever.ps1 capturing to worker.log, and a secret
+    # belongs in a console someone is reading, not in a file on disk.
+    on_screen = sys.stdout.isatty()
+    token = TOKEN if (TOKEN and on_screen) else None
+
+    # One mount reads as the pair of paths a person would type; anything
+    # more unusual than that is passed back as the JSON it came in as.
+    single = MOUNTS[0] if len(MOUNTS) == 1 else None
+    work_dir = os.environ.get("WORK_DIR")
+    if work_dir and work_dir == str(Path(tempfile.gettempdir()) / "forge"):
+        work_dir = None                         # the default, not worth saying
+
+    if system == "Windows":
+        parts = [f".\\run-node.ps1 -Server {SERVER}"]
+        if single:
+            local = single.get("local", "").replace("/", "\\")
+            parts.append(f'-Mounts "{local}" -ServerPath {single.get("server", "")}')
+        elif MOUNTS:
+            parts.append(f"-Mounts '{_mounts_json()}'")
+        if NAME != socket.gethostname():
+            parts.append(f'-NodeName "{NAME}"')
+        if MAX_JOBS != 1:
+            parts.append(f"-MaxJobs {MAX_JOBS}")
+        if work_dir:
+            parts.append(f'-WorkDir "{work_dir}"')
+        line = " ".join(parts)
+        # PowerShell has no "VAR=value command" form, and the two
+        # statements need the semicolon or it's a parse error rather
+        # than two commands.
+        if token:
+            line = f'$env:FORGE_TOKEN="{token}"; {line}'
+        elif TOKEN:
+            line = f'$env:FORGE_TOKEN="<token from Settings -> Access>"; {line}'
+        return "Windows (PowerShell)", line
+
+    env = []
+    if token:
+        env.append(f"FORGE_TOKEN={token}")
+    elif TOKEN:
+        env.append("FORGE_TOKEN=<token from Settings -> Access>")
+    if MOUNTS:
+        env.append(f"MOUNTS='{_mounts_json()}'")
+    if NAME != socket.gethostname():
+        env.append(f"NODE_NAME='{NAME}'")
+    if MAX_JOBS != 1:
+        env.append(f"MAX_JOBS={MAX_JOBS}")
+    if work_dir:
+        env.append(f"WORK_DIR='{work_dir}'")
+    prefix = " ".join(env) + " " if env else ""
+    label = "Mac" if system == "Darwin" else "Linux"
+    return label, f"{prefix}./run-node.sh {SERVER}"
+
+
 def claim_single_instance():
     """Refuse to start if another worker is already using this node id.
 
@@ -798,6 +877,14 @@ def main():
         register(nid, caps)
     except requests.RequestException as exc:
         print(f"Could not reach the server ({exc}); will keep trying")
+
+    where, line = restart_command()
+    print()
+    print(f"To start this worker again \u2014 {where}:")
+    print(f"  {line}")
+    if TOKEN and not sys.stdout.isatty():
+        print("  (the token is left out because this is being written to a "
+              "log; Forge shows it under Settings \u2192 Access)")
 
     threading.Thread(target=heartbeat, args=(nid, caps), daemon=True).start()
 
