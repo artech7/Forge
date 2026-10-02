@@ -2005,6 +2005,536 @@ check("a worker that sends no token is still placed", lambda: _run(
                    str(_ov / "Movies" / f".forge-{_old_job}.mp4"))),
       lambda r: r.get("ok") is True)
 
+
+# ------------------------------------------------------------------
+# Codec levels
+#
+# A file labelled with a higher level than its content needs gets
+# transcoded by Jellyfin for a device that could have played it. The
+# calculator says what a stream honestly needs; the decision logic
+# relabels when that fits the library's devices and refuses when it
+# doesn't; the worker proves the relabel before the server places it.
+import levels                                       # noqa: E402
+import verify as _verify                            # noqa: E402
+
+print("\nThe level calculator:")
+check("1920x818 at 23.976 and 1.9 Mbps needs HEVC 4.1",
+      lambda: levels.required_level("hevc", 1920, 818, 24000 / 1001, 1.9e6),
+      lambda r: r == "4.1")
+# 20 Mbps x 2.5 = 50,000 kbps, past 5.1 Main's 40,000 ceiling.
+check("3840x2160 at 23.976 and 20 Mbps needs 5.2, above a 5.1 device",
+      lambda: levels.required_level("hevc", 3840, 2160, 24000 / 1001, 20e6),
+      lambda r: r == "5.2")
+check("3840x2160 at 60 and 50 Mbps needs more than 5.1",
+      lambda: levels.required_level("hevc", 3840, 2160, 60, 50e6),
+      lambda r: r is not None and float(r) > 5.1)
+check("and both of those are Case B against the default ceiling",
+      lambda: [levels.assess({"video_codec": "hevc", "width": 3840,
+                              "height": 2160, "detail": {
+                                  "level": 156, "frame_rate": fps,
+                                  "level_bitrate": bps}}, {})["verdict"]
+               for fps, bps in ((23.976, 20e6), (60, 50e6))],
+      lambda r: r == ["too_high", "too_high"])
+check("the margin is one constant, and it's what decides that 4K case",
+      lambda: (levels.BITRATE_MARGIN,
+               levels.required_level("hevc", 3840, 2160, 23.976, 20e6,
+                                     margin=2.0)),
+      lambda r: r == (2.5, "5.1"))
+check("1080p is never labelled below 4.1, however small",
+      lambda: levels.required_level("hevc", 1920, 1080, 23.976, 300e3),
+      lambda r: r == "4.1")
+check("anything above 1080p never below 5.0",
+      lambda: levels.required_level("hevc", 2560, 1440, 23.976, 1e6),
+      lambda r: r == "5.0")
+check("H.264 1080p24 at 8 Mbps High needs 4.1, 1080p60 needs 4.2",
+      lambda: (levels.required_level("h264", 1920, 1080, 23.976, 8e6, "High"),
+               levels.required_level("h264", 1920, 1080, 60, 8e6, "High")),
+      lambda r: r == ("4.1", "4.2"))
+check("ffprobe's numbers read as levels both ways",
+      lambda: (levels.from_ffprobe("hevc", 156), levels.to_ffprobe("hevc", "4.1"),
+               levels.from_ffprobe("h264", 41), levels.from_ffprobe("hevc", -99)),
+      lambda r: r == ("5.2", 123, "4.1", None))
+check("the defaults are the Fire TV's limits",
+      lambda: (levels.max_for({}, "hevc"), levels.max_for({}, "h264"),
+               profiles.resolve({})["max_video_level"]),
+      lambda r: r == ("5.1", "4.1", {"hevc": "5.1", "h264": "4.1"}))
+# A re-encode whose source bitrate would need more than the ceiling is
+# capped and held to it; one whose picture can't fit at any bitrate is
+# labelled honestly instead, because no cap could make that true.
+check("a re-encode is capped at the ceiling and held to it",
+      lambda: levels.encode_target("hevc", {"video_codec": "hevc",
+          "width": 3840, "height": 2160,
+          "detail": {"frame_rate": 23.976, "level_bitrate": 60e6}}, {}),
+      lambda r: (r["level"], r["enforce"], r["too_high"], r["max_kbps"])
+                == ("5.1", True, False, 40000))
+check("but a picture too big for any bitrate isn't capped into a lie",
+      lambda: levels.encode_target("hevc", {"video_codec": "hevc",
+          "width": 3840, "height": 2160,
+          "detail": {"frame_rate": 120, "level_bitrate": 10e6}}, {}),
+      lambda r: r["too_high"] and float(r["level"]) > 5.1)
+
+print("\nWhat the scanner decides about a level:")
+_lv_info = {"video_codec": "hevc", "width": 1920, "height": 818,
+            "audio_codecs": ["aac"], "video_bitrate": 1900000,
+            "detail": {"level": 156, "frame_rate": 23.976,
+                       "level_bitrate": 1900000, "profile": "Main"}}
+_lv_spec = profiles.resolve({"video_codec": "hevc", "container": "mkv",
+                             "audio_codec": "aac"})
+check("an otherwise-right file is relabelled and nothing else",
+      lambda: watcher.plan_conversion(pathlib.Path("/x/a.mkv"), _lv_info,
+                                      _lv_spec, {}),
+      lambda r: r[0] == "relabel" and r[1]["relabel_only"]
+                and r[1]["relabel_level"] == "4.1" and r[1]["codec"] == "copy"
+                and r[1]["health_check"] == "off"
+                and r[2] == "Level relabel 5.2 → 4.1")
+check("switching the setting off leaves it alone",
+      lambda: watcher.plan_conversion(pathlib.Path("/x/a.mkv"), _lv_info,
+          {**_lv_spec, "fix_video_levels": False}, {})[0],
+      lambda r: r == "skip")
+check("an audio conversion relabels in the same pass",
+      lambda: watcher.plan_conversion(pathlib.Path("/x/a.mkv"),
+          {**_lv_info, "audio_codecs": ["eac3"]}, _lv_spec, {}),
+      lambda r: r[0] == "audio_only" and r[1]["relabel_level"] == "4.1"
+                and not r[1].get("relabel_only") and "level relabel" in r[2])
+check("a level problem it can't fix is said, not relabelled",
+      lambda: watcher.plan_conversion(pathlib.Path("/x/a.mkv"),
+          {**_lv_info, "width": 3840, "height": 2160,
+           "detail": {**_lv_info["detail"], "level_bitrate": 50e6,
+                      "frame_rate": 60}}, _lv_spec, {}),
+      lambda r: r[0] == "skip" and "relabel_level" not in r[1]
+                and "needs re-encode" in r[2])
+check("a re-encode carries its level, capped at the ceiling",
+      lambda: watcher.plan_conversion(pathlib.Path("/x/a.mkv"),
+          {**_lv_info, "video_codec": "h264", "detail": {
+              **_lv_info["detail"], "level": 51}}, _lv_spec, {})[1],
+      lambda r: r["encode_level"]["level"] == "4.1" and r["codec"] == "hevc")
+check("a relabel is its own kind of job, and counts as real work",
+      lambda: (db.job_kind({"relabel_only": True, "codec": "copy"}),
+               "relabel" in db.REAL_KINDS),
+      lambda r: r == ("relabel", True))
+
+print("\nA codec skip rule doesn't hide a wrong level:")
+_cs = base / "codec-skip"
+_cs.mkdir()
+(_cs / "Over (2001).mkv").write_bytes(b"x" * 2048)
+(_cs / "Over sample (2001).mkv").write_bytes(b"x" * 2048)
+_old = time.time() - 3600
+for _f in _cs.iterdir():
+    os.utime(_f, (_old, _old))
+_cs_lib = db.create_library(
+    "CodecSkip", str(_cs), None, {**profile, "container": "mkv"}, "keep",
+    filters={"skip_video_codecs": ["hevc"], "skip_name_contains": ["sample"]},
+    naming={"enabled": False})
+_cs_report = check("scanning a library that skips HEVC", lambda: watcher.scan_library(
+    db.get_library(_cs_lib), lambda p: _lv_info), lambda r: "queued" in r)
+_cs_jobs = {pathlib.Path(j["path"]).name: j for j in
+            db.list_jobs(["queued"], 500, library_id=_cs_lib)}
+check("an over-labelled HEVC file gets a relabel and nothing more",
+      lambda: _cs_jobs.get("Over (2001).mkv", {}).get("spec", {}),
+      lambda r: r.get("relabel_only") and r.get("in_place")
+                and r.get("codec") == "copy" and r.get("audio") == "copy")
+check("a file a name rule skips is still skipped",
+      lambda: "Over sample (2001).mkv" in _cs_jobs, lambda r: r is False)
+
+print("\nOnly a worker that can relabel is given one:")
+_cs_job = _cs_jobs["Over (2001).mkv"]["id"]
+db.upsert_node("oldworker", "old", ["libx265"],
+               [{"server": str(_cs), "local": str(_cs)}], 1)
+db.upsert_node("newworker", "new", ["libx265"],
+               [{"server": str(_cs), "local": str(_cs)}], 1,
+               features=["video_level"])
+
+
+def _lease_for(node, job_id):
+    """Lease until this job comes round. Other checks leave jobs queued,
+    so the node gets enough slots to work through them rather than
+    stopping at the first — which would let a broken gate pass."""
+    db.set_slots(node, 16)
+    for _ in range(400):
+        got = scheduler.lease_job(node)
+        if not got or got["id"] == job_id:
+            return got
+    return None
+
+
+check("a worker that doesn't know how is passed over",
+      lambda: (_lease_for("oldworker", _cs_job) or {}).get("id"),
+      lambda r: r != _cs_job)
+check("one that does gets it",
+      lambda: (_lease_for("newworker", _cs_job) or {}).get("id"),
+      lambda r: r == _cs_job)
+check("features survive a round trip through the database",
+      lambda: db.get_node("newworker")["features"], lambda r: r == ["video_level"])
+
+print("\nThe server places a relabel only when it was proved:")
+(_cs / f".forge-{_cs_job}-t.mkv").write_bytes(b"y" * 2048)
+db.update_job(_cs_job, lease_token="t")
+check("one arriving with no check is refused",
+      lambda: _run(app.complete(_cs_job, None, 2048, "remux",
+                                str(_cs / f".forge-{_cs_job}-t.mkv"), "t")),
+      lambda r: r.get("ok") is False)
+check("and fails, saying the original is untouched",
+      lambda: db.get_job(_cs_job), lambda r: r["state"] == "failed"
+      and "untouched" in r["error"])
+check("the original really is untouched, and the work file is gone",
+      lambda: ((_cs / "Over (2001).mkv").read_bytes()[:1],
+               (_cs / f".forge-{_cs_job}-t.mkv").exists()),
+      lambda r: r == (b"x", False))
+# A failure the worker knows can only repeat isn't retried.
+_pm_job = db.enqueue("/m/permanent.mkv", {"codec": "hevc", "container": "mkv"},
+                     10, lib_id)
+check("a permanent failure goes straight to Failed",
+      lambda: (_run(app.fail(_pm_job, _FakeReq(
+          {"error": "Level check failed: x", "permanent": True}))),
+          db.get_job(_pm_job)["state"], db.get_job(_pm_job)["attempt"])[1:],
+      lambda r: r == ("failed", 1))
+
+print("\nEach encoder is told the level in its own words:")
+
+
+def _help_for(names, option_type="int"):
+    """What 'ffmpeg -h encoder=X' prints, shaped as FFmpeg prints it."""
+    lines = ["X AVOptions:",
+             "  -preset            <int>        E..V....... Set the preset",
+             "     default         0            E..V.......",
+             f"  -level             <{option_type}>        E..V....... Set the level"]
+    lines += [f"     {n:<15} {i:<12} E..V......." for i, n in enumerate(names)]
+    lines += ["  -tier              <int>        E..V....... Set the tier",
+              "     main            0            E..V......."]
+    return "\n".join(lines)
+
+
+# Value names as FFmpeg's own option tables spell them: nvenc_hevc.c,
+# amfenc_hevc.c and vaapi_encode_h265.c. qsvenc has no -level of its own.
+_HELP = {
+    "hevc_nvenc": _help_for(["auto", "1", "1.0", "4", "4.0", "4.1", "5", "5.0",
+                             "5.1", "5.2", "6", "6.0", "6.1", "6.2"]),
+    "hevc_amf": _help_for(["auto", "1.0", "4.0", "4.1", "5.0", "5.1", "5.2",
+                           "6.0", "6.1", "6.2"]),
+    "hevc_vaapi": _help_for(["1", "2", "4", "4.1", "5", "5.1", "5.2", "6",
+                             "6.1", "6.2"]),
+    "h264_vaapi": _help_for(["1", "4", "4.1", "4.2", "5", "5.1"]),
+    "hevc_qsv": "X AVOptions:\n  -tier              <int>        E..V....... tier",
+    "h264_qsv": "X AVOptions:\n  -look_ahead        <int>        E..V....... la",
+    "libx264": _help_for([], "string"),
+    "libx265": "X AVOptions:\n  -x265-params       <dictionary> E..V....... x",
+    "hevc_videotoolbox": "X AVOptions:\n  -profile           <int>        E..V....... p",
+}
+_enc.LEVEL_SUPPORT.clear()
+for _name, _text in _HELP.items():
+    _enc.LEVEL_SUPPORT[_name] = _enc.learn_level_support(_name, _text)
+_t41 = {"level": "4.1", "max_kbps": 20000, "cpb_kbits": 20000}
+_t50 = {"level": "5.0", "max_kbps": 25000, "cpb_kbits": 25000}
+check("libx265: level-idc, kept to Main tier, enforced by x265 itself",
+      lambda: _enc.level_args("libx265", "hevc", _t41),
+      lambda r: r == (["-x265-params", "level-idc=4.1:no-high-tier=1"], None, True))
+check("libx264: -level, held to it with maxrate and bufsize",
+      lambda: _enc.level_args("libx264", "h264", _t41),
+      lambda r: r == (["-level", "4.1", "-maxrate", "20000k",
+                       "-bufsize", "20000k"], None, True))
+check("NVENC: its named level, held to it with maxrate and bufsize",
+      lambda: _enc.level_args("hevc_nvenc", "hevc", _t41),
+      lambda r: r == (["-level", "4.1", "-maxrate", "20000k",
+                       "-bufsize", "20000k"], None, True))
+check("QSV: Intel's numbering, and Main tier asked for explicitly",
+      lambda: (_enc.level_args("hevc_qsv", "hevc", _t41),
+               _enc.level_args("h264_qsv", "h264", _t41)),
+      lambda r: r == ((["-level", "41", "-tier", "main"], None, False),
+                      (["-level", "41"], None, False)))
+check("AMF: its named level, checked afterwards",
+      lambda: _enc.level_args("hevc_amf", "hevc", _t41),
+      lambda r: r == (["-level", "4.1"], None, False))
+check("VAAPI: whole levels spelled the way it spells them",
+      lambda: (_enc.level_args("hevc_vaapi", "hevc", _t50),
+               _enc.level_args("h264_vaapi", "h264", _t41)),
+      lambda r: r == ((["-level", "5"], None, False),
+                      (["-level", "4.1"], None, False)))
+check("VideoToolbox HEVC has no level option, so it's written afterwards",
+      lambda: _enc.level_args("hevc_videotoolbox", "hevc", _t41),
+      lambda r: r == ([], "hevc_metadata=level=4.1", False))
+check("AV1 is left alone",
+      lambda: _enc.level_args("libsvtav1", "av1", _t41),
+      lambda r: r == ([], None, False))
+_enc.LEVEL_SUPPORT.clear()          # the real ones are learned below
+
+print("\nThe database a previous release made still starts:")
+
+
+def _upgrade_from_head():
+    """Make a database with the last release's db.py, then start on it."""
+    old_src = subprocess.run(["git", "show", "HEAD:server/db.py"],
+                             capture_output=True, text=True,
+                             cwd=pathlib.Path(__file__).parent).stdout
+    if "def migrate" not in old_src:
+        return "skipped: no git history"
+    import importlib.util
+    tmp = pathlib.Path(tempfile.mkdtemp())
+    (tmp / "old_db.py").write_text(old_src)
+    spec = importlib.util.spec_from_file_location("old_db", tmp / "old_db.py")
+    old = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(old)
+    old.DB_PATH = tmp / "forge.db"
+    old.init()
+    old.migrate()
+    old.upsert_node("legacy", "Legacy", ["libx265"], [], 1)
+    saved = db.DB_PATH
+    db.DB_PATH = old.DB_PATH
+    try:
+        db.init()
+        db.migrate()
+        before = db.get_node("legacy")["features"]
+        db.upsert_node("legacy", "Legacy", ["libx265"], [], 1,
+                       features=["video_level"])
+        return before, db.get_node("legacy")["features"]
+    finally:
+        db.DB_PATH = saved
+
+
+check("the previous release's database upgrades, and nodes gain features",
+      _upgrade_from_head,
+      lambda r: r == ([], ["video_level"]) or str(r).startswith("skipped"))
+
+print("\nThe whole path, from a file arriving to a relabelled file:")
+# A real 1080p file labelled 5.2, made the way the problem files are, put
+# through the scanner, the scheduler, the worker and the server exactly
+# as a user's file would be. Run once for each container, since the
+# level lives in a different header box in each.
+import agent as _agent_lv                            # noqa: E402
+import streams as _streams_lv                        # noqa: E402
+
+
+def _route(path, payload, params=None):
+    """The worker's post(), answered by the server's own endpoints."""
+    match = re.match(r"/api/jobs/(\d+)/(\w+)", path)
+    job, what = int(match.group(1)), match.group(2)
+    if what == "progress":
+        return _run(app.progress(job, _FakeReq(payload)))
+    if what == "fail":
+        return _run(app.fail(job, _FakeReq(payload)))
+    if what == "complete":
+        keep = ("size_after", "encoder", "output_local", "lease_token",
+                "verified")
+        return _run(app.complete(job, None, **{k: v for k, v in
+                                              (params or {}).items() if k in keep}))
+    return {}
+
+
+def _packets(path):
+    """Every video packet's size and hash — an independent read, not the
+    worker's own comparison."""
+    out = subprocess.run(["ffmpeg", "-v", "error", "-i", str(path),
+                          "-map", "0:v:0", "-c", "copy", "-f", "framemd5", "-"],
+                         capture_output=True, text=True).stdout
+    return [tuple(x.strip() for x in l.split(",")[4:6])
+            for l in out.splitlines() if l and not l.startswith("#")]
+
+
+def _ffprobe_level(path):
+    return subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0",
+                           "-show_entries", "stream=level", "-of", "csv=p=0",
+                           str(path)], capture_output=True, text=True).stdout.strip()
+
+
+_real_post, _real_requests_post = _agent_lv.post, _agent_lv.requests.post
+_agent_lv.post = _route
+_agent_lv.requests.post = lambda *a, **k: (_ for _ in ()).throw(
+    _agent_lv.requests.RequestException("no server in a check"))
+try:
+    for _ct in ("mkv", "mp4"):
+        _e2e = base / f"e2e-{_ct}"
+        _e2e_watch = _e2e / "Movies"
+        _e2e_watch.mkdir(parents=True)
+        _e2e_src = _e2e_watch / f"Labelled High (2020).{_ct}"
+        _made = subprocess.run(
+            ["ffmpeg", "-v", "error", "-y",
+             "-f", "lavfi", "-i", "testsrc2=size=1920x1080:rate=24000/1001:duration=4",
+             "-f", "lavfi", "-i", "sine=duration=4",
+             "-c:v", "libx265", "-preset", "ultrafast",
+             "-x265-params", "level-idc=5.2:log-level=error",
+             "-c:a", "aac", str(_e2e_src)], capture_output=True)
+        check(f"[{_ct}] a 1080p sample labelled 5.2 is made",
+              lambda: _ffprobe_level(_e2e_src), lambda r: r == "156")
+        _before = _packets(_e2e_src)
+        os.utime(_e2e_src, (_old, _old))
+        _e2e_lib = db.create_library(
+            f"E2E {_ct}", str(_e2e_watch), None,
+            {**profile, "container": _ct}, "archive",
+            filters={}, naming={"enabled": False})
+        check(f"[{_ct}] the scanner queues a relabel for it",
+              lambda: watcher.scan_library(db.get_library(_e2e_lib), app.probe),
+              lambda r: r["queued"] == 1)
+        _e2e_job = db.list_jobs(["queued"], 500, library_id=_e2e_lib)[0]
+        check(f"[{_ct}] described in the queue the way a person reads it",
+              lambda: (_e2e_job["kind"], _e2e_job["spec"]["why"]),
+              lambda r: r == ("relabel", "Level relabel 5.2 → 4.1"))
+        db.upsert_node(f"e2e-{_ct}", "e2e", ["libx265"],
+                       [{"server": str(_e2e), "local": str(_e2e)}], 1,
+                       features=_agent_lv.FEATURES)
+        _leased = _lease_for(f"e2e-{_ct}", _e2e_job["id"])
+        check(f"[{_ct}] a worker that can relabel leases it",
+              lambda: (_leased or {}).get("id"), lambda r: r == _e2e_job["id"])
+        _agent_lv.run_job(_leased, ["libx265"])
+        _done = db.get_job(_e2e_job["id"])
+        check(f"[{_ct}] the job finishes, verified",
+              lambda: (_done["state"], _done["outcome"] or _done["error"]),
+              lambda r: r[0] == "done" and "verified" in r[1]
+                        and "every video packet unchanged" in r[1])
+        check(f"[{_ct}] the file now reads as level 123 (4.1)",
+              lambda: _ffprobe_level(_e2e_src), lambda r: r == "123")
+        check(f"[{_ct}] in the container's own header too",
+              lambda: _verify.header_level(str(_e2e_src), 0, "hevc")[0],
+              lambda r: r == 123)
+        check(f"[{_ct}] every video packet is the one it was",
+              lambda: (_packets(_e2e_src) == _before, len(_before)),
+              lambda r: r[0] is True and r[1] > 0)
+        _archived = db.original_for_job(_e2e_job["id"])
+        check(f"[{_ct}] the original is archived, still labelled 5.2",
+              lambda: _ffprobe_level(_archived["archived_path"]),
+              lambda r: r == "156")
+        check(f"[{_ct}] and the file is marked done for the scanner",
+              lambda: db.was_processed(str(_e2e_src), _e2e_src.stat().st_mtime,
+                                       _e2e_src.stat().st_size),
+              lambda r: r is True)
+
+    print("\nThe worker's check catches what it's there to catch:")
+    _vf = base / "verify"
+    _vf.mkdir()
+
+    def _ff(*args):
+        subprocess.run(["ffmpeg", "-v", "error", "-y", *map(str, args)],
+                       capture_output=True)
+
+    def _relabel_report(src, out, codec="hevc", level="4.1"):
+        spec = {"relabel_codec": codec, "relabel_level": level}
+        return _verify.verify_relabel(str(src), str(out), spec,
+                                      _streams_lv.analyze(str(src)),
+                                      _streams_lv.analyze(str(out)))
+
+    # Many real encodes repeat the parameter sets before every keyframe,
+    # so the relabel rewrites those packets too. That must still pass:
+    # it's the reason parameter sets are left out of the comparison.
+    _rh = _vf / "repeat-headers.mkv"
+    _ff("-f", "lavfi", "-i", "testsrc2=size=1920x1080:rate=24:duration=3",
+        "-c:v", "libx265", "-preset", "ultrafast",
+        "-x265-params", "level-idc=5.2:repeat-headers=1:keyint=24:log-level=error",
+        _rh)
+    _rh_out = _vf / "repeat-headers-relabelled.mkv"
+    _ff("-i", _rh, "-c", "copy", "-bsf:v", "hevc_metadata=level=4.1", _rh_out)
+    check("a stream that repeats its headers still verifies once relabelled",
+          lambda: (_packets(_rh) != _packets(_rh_out),
+                   _relabel_report(_rh, _rh_out)["ok"]),
+          lambda r: r == (True, True))
+    _same = _vf / "copied.mkv"
+    _ff("-i", _rh, "-c", "copy", _same)
+    check("a copy that wasn't relabelled fails on its label",
+          lambda: _relabel_report(_rh, _same)["error"],
+          lambda r: "level 5.2, not 4.1" in (r or ""))
+    _reenc = _vf / "re-encoded.mkv"
+    _ff("-i", _rh, "-c:v", "libx265", "-preset", "ultrafast",
+        "-x265-params", "level-idc=4.1:log-level=error", _reenc)
+    check("a changed picture fails, even with the right label",
+          lambda: _relabel_report(_rh, _reenc)["error"],
+          lambda r: "differs from the original" in (r or ""))
+    # Damage that keeps every packet the same size is what the hashes are
+    # for: one byte flipped in the middle of a single frame's data.
+    _flip = _vf / "one-byte-changed.mkv"
+    shutil.copy(_rh_out, _flip)
+    _pk = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0",
+                          "-show_entries", "packet=pos,size,flags", "-of", "csv=p=0",
+                          str(_flip)], capture_output=True, text=True).stdout.split()
+    _pos, _size = next((int(p), int(s)) for p, s, f in
+                       (l.split(",")[:3] for l in _pk) if "K" not in f)
+    with open(_flip, "r+b") as _fh:
+        _fh.seek(_pos + _size // 2)
+        _byte = _fh.read(1)
+        _fh.seek(_pos + _size // 2)
+        _fh.write(bytes([_byte[0] ^ 0xFF]))
+    check("a changed frame fails even when every packet is the same size",
+          lambda: _relabel_report(_rh, _flip)["error"],
+          lambda r: "differs from the original" in (r or ""))
+    _short = _vf / "one-frame-short.mkv"
+    _ff("-i", _rh, "-c", "copy", "-frames:v", "71", "-bsf:v",
+        "hevc_metadata=level=4.1", _short)
+    check("a missing frame fails",
+          lambda: _relabel_report(_rh, _short)["error"],
+          lambda r: "video packets where the original had" in (r or ""))
+    _avc = _vf / "h264.mp4"
+    _ff("-f", "lavfi", "-i", "testsrc2=size=1920x1080:rate=24:duration=2",
+        "-c:v", "libx264", "-preset", "ultrafast", "-level", "5.2", _avc)
+    _avc_out = _vf / "h264-relabelled.mp4"
+    _ff("-i", _avc, "-c", "copy", "-bsf:v", "h264_metadata=level=4.1", _avc_out)
+    check("an H.264 relabel is checked the same way, in its avcC header",
+          lambda: (_relabel_report(_avc, _avc_out, "h264")["ok"],
+                   _verify.header_level(str(_avc_out), 0, "h264")[0]),
+          lambda r: r == (True, 41))
+
+    # The re-encode path, on the software encoders every worker has.
+    for _sw, _codec in (("libx265", "hevc"), ("libx264", "h264")):
+        _target = levels.encode_target(_codec, app.probe(str(_rh)), {})
+        _espec = {"codec": _codec, "audio": "copy", "container": "mkv",
+                  "quality": 26, "encode_level": _target, "subtitle_mode": "keep"}
+        _eout = _vf / f"encoded-{_sw}.mkv"
+        _cmd = _enc.build_command(str(_rh), str(_eout), _sw, _espec,
+                                  _streams_lv.analyze(str(_rh)))
+        subprocess.run(_cmd, capture_output=True)
+        check(f"{_sw} writes the level it was asked for, and it's checked",
+              lambda: (_target["level"], _verify.verify_encode(
+                  str(_eout), _espec, _streams_lv.analyze(str(_eout)),
+                  _enc.level_args(_sw, _codec, _target)[2], _sw)),
+              lambda r: r[0] == "4.1" and r[1]["ok"]
+                        and "labelled 4.1" in r[1]["checks"])
+    check("x265 stays at Main tier",
+          lambda: _verify.header_level(str(_vf / "encoded-libx265.mkv"), 0, "hevc"),
+          lambda r: r == (123, False))
+
+    print("\nChecking a library's existing files:")
+    # A file that finished long ago, sitting in the output folder where
+    # the scanner never looks again.
+    _ex = base / "existing"
+    (_ex / "inbox").mkdir(parents=True)
+    _ex_done = _ex / "library" / "Old Film (2010)" / "Old Film (2010).mkv"
+    _ex_done.parent.mkdir(parents=True)
+    subprocess.run(["ffmpeg", "-v", "error", "-y",
+                    "-f", "lavfi", "-i", "testsrc2=size=1920x800:rate=24:duration=3",
+                    "-c:v", "libx265", "-preset", "ultrafast",
+                    "-x265-params", "level-idc=5.2:log-level=error",
+                    str(_ex_done)], capture_output=True)
+    _ex_before = _packets(_ex_done)
+    _ex_lib = db.create_library(
+        "Existing", str(_ex / "inbox"), str(_ex / "library"),
+        {**profile, "container": "mkv", "video_codec": "copy"}, "archive",
+        originals_path=str(_ex / "originals"), filters={},
+        naming={"enabled": False})
+    _run(app.run_level_check([_ex_lib]))
+    check("it queues a relabel for a file in the output folder",
+          lambda: app.LEVEL_CHECK_STATE["results"][str(_ex_lib)],
+          lambda r: r["checked"] == 1 and r["queued"] == 1)
+    _ex_job = db.list_jobs(["queued"], 500, library_id=_ex_lib)[0]
+    check("relabel only, in place, with no health check first",
+          lambda: _ex_job["spec"],
+          lambda r: r["relabel_only"] and r["in_place"]
+                    and r["health_check"] == "off")
+    db.upsert_node("e2e-ex", "e2e", ["libx265"],
+                   [{"server": str(_ex), "local": str(_ex)}], 1,
+                   features=_agent_lv.FEATURES)
+    _agent_lv.run_job(_lease_for("e2e-ex", _ex_job["id"]), ["libx265"])
+    check("it's relabelled where it sits rather than refiled",
+          lambda: (db.get_job(_ex_job["id"])["state"], _ffprobe_level(_ex_done),
+                   _packets(_ex_done) == _ex_before),
+          lambda r: r == ("done", "123", True))
+    check("and the Library Health list no longer offers it",
+          lambda: _run(app.stats_levels(_ex_lib))["files"], lambda r: r == [])
+    check("its details say it's fine for this library's devices",
+          lambda: _run(app.file_detail(str(_ex_done)))["level_check"]["verdict"],
+          lambda r: r == "ok")
+    _again = _run(app.run_level_check([_ex_lib]))
+    check("checking again finds nothing more to do",
+          lambda: app.LEVEL_CHECK_STATE["results"][str(_ex_lib)]["queued"],
+          lambda r: r == 0)
+finally:
+    _agent_lv.post = _real_post
+    _agent_lv.requests.post = _real_requests_post
+
 print()
 if failures:
     print(f"{len(failures)} problem(s):")

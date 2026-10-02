@@ -25,6 +25,7 @@ import watcher
 import schedule
 import explain
 import arr
+import levels
 
 STATIC = Path(__file__).parent / "static"
 MEDIA_ROOTS = [r.strip() for r in os.environ.get("MEDIA_ROOTS", "/media").split(",") if r.strip()]
@@ -61,13 +62,15 @@ REQUIRED = {
                  "overrun_reason", "describe_auto_fail", "limit_seconds"],
     "lookup": ["TMDB", "enrich"],
     "explain": ["walk", "find"],
+    "levels": ["required_level", "assess", "encode_target", "describe"],
 }
 
 
 def check_modules():
     modules = {"db": db, "scheduler": scheduler, "watcher": watcher,
                "profiles": profiles, "naming": naming, "schedule": schedule,
-               "lookup": lookup, "explain": explain, "auth": auth}
+               "lookup": lookup, "explain": explain, "auth": auth,
+               "levels": levels}
     problems = []
     for name, needed in REQUIRED.items():
         module = modules.get(name)
@@ -382,6 +385,7 @@ async def build_state():
         "active_kinds": db.count_active_by_kind(),
         "stats": db.stats(),
         "deep_scan": DEEP_SCAN_STATE,
+        "level_check": LEVEL_CHECK_STATE,
         "libraries": _libraries_with_originals(),
         "settings": db.get_settings(),
         "schedule_open": _text(schedule, "is_open", db.get_settings(),
@@ -459,6 +463,23 @@ def probe(path):
         # judge whether a file is bloated.
         vbits = max(0, total - 192000 * max(1, len(audio)))
 
+    def level_bitrate():
+        """The video stream's bitrate, for judging its codec level.
+
+        Separate from vbits above on purpose. That one feeds the bitrate
+        ceilings, and changing how it's worked out would quietly change
+        which files those re-encode. This one has to err high rather
+        than low: an estimate that's too low could relabel a file below
+        what it really needs. So audio is only subtracted where ffprobe
+        actually reports a rate for it — a track with no reported rate
+        counts as nothing, leaving its bits counted as video.
+        """
+        own = int((video or {}).get("bit_rate", 0) or 0)
+        if own:
+            return own
+        audio_bits = sum(int(s.get("bit_rate", 0) or 0) for s in audio_streams)
+        return max(0, total - audio_bits) if total else 0
+
     def frame_rate():
         raw = (video or {}).get("r_frame_rate") or "0/1"
         try:
@@ -487,6 +508,7 @@ def probe(path):
             "frame_rate": frame_rate(),
             "profile": (video or {}).get("profile"),
             "level": (video or {}).get("level"),
+            "level_bitrate": level_bitrate(),
             "hdr": hdr,
             "color_transfer": transfer or None,
             "color_primaries": (video or {}).get("color_primaries"),
@@ -535,6 +557,7 @@ async def register_node(req: Request):
         int(body.get("max_jobs", 1)),
         body.get("recipes"), body.get("benchmarks"), body.get("cpus"),
         body.get("benchmarks_10bit"), body.get("stats"),
+        body.get("features"),
     )
     await broadcast()
     # The server owns concurrency, so the worker is told how many to run.
@@ -663,10 +686,85 @@ async def source(job_id: int):
     return FileResponse(job["path"], filename=Path(job["path"]).name)
 
 
+class LevelCheckFailed(Exception):
+    """The finished file's level label isn't the one the job asked for."""
+
+
+def _level_expectation(spec):
+    """What level label this job's output must carry, if it changes one.
+
+    A relabel only happens when the video is copied; an encode level only
+    when it isn't. A re-encode that fell back to copying the picture (a
+    salvage) carries both, and the copy decides which applies.
+    """
+    spec = spec or {}
+    if spec.get("codec") == "copy":
+        if spec.get("relabel_level"):
+            return {"kind": "relabel", "codec": spec.get("relabel_codec"),
+                    "level": spec["relabel_level"],
+                    "from": spec.get("relabel_from")}
+        return None
+    target = spec.get("encode_level") or {}
+    if target.get("level") and spec.get("codec") in levels.FFPROBE_SCALE:
+        return {"kind": "encode", "codec": spec.get("codec"),
+                "level": target["level"]}
+    return None
+
+
+def _confirm_level(path, expected):
+    """Read the level back out of the file the server is about to place.
+
+    The worker has already checked this on its own copy. Checked again
+    here because the file that matters is the one on the server's side
+    of the network, and it costs one header read. Returns None when it's
+    right, or a sentence saying what's wrong.
+    """
+    info = probe(str(path))
+    if not info:
+        return "the finished file couldn't be read back to check its level"
+    if info.get("video_codec") != expected["codec"]:
+        return (f"the finished file's video is {info.get('video_codec')}, "
+                f"not {expected['codec']}")
+    got = levels.from_ffprobe(expected["codec"],
+                              (info.get("detail") or {}).get("level"))
+    if got != levels.name(expected["level"]):
+        return (f"the finished file is labelled level {got or 'nothing'}, "
+                f"not the {expected['level']} it was meant to be")
+    return None
+
+
+def _discard_worker_output(job, output_local):
+    """Remove a mounted worker's result that isn't going to be placed."""
+    if not output_local:
+        return
+    node = db.get_node(job.get("node_id")) or {}
+    written = Path(scheduler.reverse_path(node, output_local))
+    if not written.is_file():
+        name = PureWindowsPath(output_local).name
+        if watcher.work_file_job_id(name) == job["id"]:
+            written = Path(job["path"]).parent / name
+    try:
+        if written.is_file() and watcher.work_file_job_id(written.name) == job["id"]:
+            written.unlink()
+    except OSError:
+        pass        # the work-file sweep collects it later
+
+
+def _verification_summary(report, expected):
+    """One line for the queue saying what was checked and what it found."""
+    checks = (report or {}).get("checks") or []
+    said = ", ".join(checks) if checks else "the label"
+    if expected["kind"] == "relabel":
+        return (f"Level relabelled {expected.get('from') or '?'} \u2192 "
+                f"{expected['level']} \u2014 verified: {said}")
+    return f"Level set to {expected['level']} \u2014 verified: {said}"
+
+
 @app.post("/api/jobs/{job_id}/complete")
 async def complete(job_id: int, result: UploadFile = File(None),
                    size_after: int = 0, encoder: str = "",
-                   output_local: str = "", lease_token: str = ""):
+                   output_local: str = "", lease_token: str = "",
+                   verified: str = ""):
     """Finish a job: place the new file, then deal with the original.
 
     Remote nodes upload the result. Nodes with the share mounted wrote it
@@ -694,11 +792,40 @@ async def complete(job_id: int, result: UploadFile = File(None),
         return {"ok": False, "superseded": True,
                 "error": "another attempt holds this job now"}
 
+    # A job that changes a level label is only finished once the worker
+    # has proved the change: the label is right, the length is right and
+    # every packet of picture came through untouched. No report means a
+    # worker that predates the check, and for a relabel that's a refusal
+    # — such a worker copies the stream without changing it, so the file
+    # it made is the problem the job was meant to fix. The original has
+    # not been touched yet, and isn't now.
+    expected = _level_expectation(job.get("spec"))
+    try:
+        report = json.loads(verified) if verified else None
+    except ValueError:
+        report = None
+    if expected and (report or expected["kind"] == "relabel") \
+            and not (report or {}).get("ok"):
+        _discard_worker_output(job, output_local)
+        why = ((report or {}).get("error")
+               or "the worker did not confirm it — update that worker, "
+                  "then retry this job")
+        db.update_job(job_id, state="failed",
+                      error=f"Level check failed: {why}. The original file "
+                            "is untouched."[:400],
+                      finished_at=time.time())
+        await broadcast()
+        return {"ok": False, "error": why}
+
     source = Path(job["path"])
     library = db.get_library(job["library_id"]) if job.get("library_id") else None
     container = job["spec"].get("container", "mkv")
 
-    if library:
+    if job["spec"].get("in_place"):
+        # Already where it belongs — a finished file being corrected,
+        # not a new arrival to be filed.
+        final = source.with_suffix("." + container)
+    elif library:
         final = watcher.destination_for(library, job["path"], container)
     else:
         final = source.with_suffix("." + container)
@@ -733,6 +860,13 @@ async def complete(job_id: int, result: UploadFile = File(None),
             staged.unlink(missing_ok=True)
             raise ValueError("Result file was empty")
 
+        # Before the original is archived or deleted, never after.
+        if expected and report:
+            problem = await asyncio.to_thread(_confirm_level, staged, expected)
+            if problem:
+                staged.unlink(missing_ok=True)
+                raise LevelCheckFailed(problem)
+
         # Deal with the source while it still exists — including when it
         # and `final` are the very same path (no rename, no container
         # change). Doing this after the replace below would be too late in
@@ -741,6 +875,13 @@ async def complete(job_id: int, result: UploadFile = File(None),
         handle_original(job, library, final)
         os.replace(staged, final)          # atomic within a filesystem
 
+    except LevelCheckFailed as exc:
+        db.update_job(job_id, state="failed",
+                      error=f"Level check failed: {exc}. The original file "
+                            "is untouched."[:400],
+                      finished_at=time.time())
+        await broadcast()
+        return {"ok": False, "error": str(exc)}
     except Exception as exc:
         db.update_job(job_id, state="failed", error=f"Placing file: {exc}"[:400],
                       finished_at=time.time())
@@ -752,6 +893,26 @@ async def complete(job_id: int, result: UploadFile = File(None),
 
     profile = (library or {}).get("profile") or {}
     spec = job.get("spec") or {}
+    level_outcome = (_verification_summary(report, expected) if expected and report
+                     else "Level not set — the worker that did this predates "
+                          "level labels; update it" if expected else None)
+
+    # A relabel changes one byte of header and nothing else, so there is
+    # no saving to judge — and a library asking for a minimum saving would
+    # otherwise reject every one of them and put the wrong label back.
+    if spec.get("relabel_only"):
+        db.update_job(job_id, state="done", progress=100,
+                      outcome=level_outcome, finished_at=time.time())
+        if library:
+            try:
+                st = final.stat()
+                db.mark_processed(str(final), st.st_mtime, st.st_size, library["id"])
+                await asyncio.to_thread(refresh_cache_after_conversion,
+                                        final, job.get("path"))
+            except OSError:
+                pass
+        await broadcast()
+        return {"ok": True, "path": str(final), "relabelled": True}
 
     # A salvage pass deliberately keeps the original picture, so there is no
     # size saving to judge — the point was the audio, tracks and filing.
@@ -759,7 +920,8 @@ async def complete(job_id: int, result: UploadFile = File(None),
         db.record_completion(job.get("size_before"), size_after)
         db.update_job(job_id, state="done", progress=100,
                       outcome="picture kept as it was — it was already "
-                              "efficient — everything else applied",
+                              "efficient — everything else applied"
+                              + (f". {level_outcome}" if level_outcome else ""),
                       finished_at=time.time())
         if library:
             try:
@@ -782,7 +944,7 @@ async def complete(job_id: int, result: UploadFile = File(None),
         return await handle_bloated(db.get_job(job_id), library, percent, reason)
 
     db.record_completion(job.get("size_before"), size_after)
-    db.update_job(job_id, state="done", progress=100, outcome=None,
+    db.update_job(job_id, state="done", progress=100, outcome=level_outcome,
                   finished_at=time.time())
     if library:
         try:
@@ -979,6 +1141,14 @@ async def fail(job_id: int, req: Request):
 
     if job and body.get("unhealthy_video"):
         return await handle_unhealthy_video(job, error)
+
+    # The worker knows when trying again can only repeat the result — a
+    # finished encode whose level didn't fit, say, would just spend
+    # another few hours arriving at the same file.
+    if job and body.get("permanent"):
+        db.update_job(job_id, state="failed", error=error, finished_at=time.time())
+        await broadcast()
+        return {"ok": True}
 
     # Only worth retrying when audio was actually being re-encoded — if it
     # was already a straight copy (the library's own setting, or Forge's
@@ -1623,6 +1793,202 @@ async def run_deep_scan(library_ids=None):
         await broadcast()
 
 
+def _library_owning(path, libraries=None):
+    """The library a path belongs to, counting its output folder too.
+
+    db.library_matcher only knows watch folders, which is right for new
+    arrivals — but a finished file in a library's output folder is just
+    as much that library's, and its level is judged by that library's
+    settings.
+    """
+    best, best_len = None, -1
+    for lib in libraries if libraries is not None else db.list_libraries():
+        for root in (lib.get("watch_path"), lib.get("output_path")):
+            root = str(root or "").rstrip("/")
+            if root and (path == root or path.startswith(root + "/")) \
+                    and len(root) > best_len:
+                best, best_len = lib, len(root)
+    return best
+
+
+def _with_level_plan(spec, path, library):
+    """Add what the codec level needs to a job queued outside the scanner.
+
+    The Library Health and Stats actions build their own specs rather
+    than going through plan_conversion, so they'd otherwise leave a wrong
+    label in place or re-encode without setting one. Worked out from the
+    cached probe, which is what those lists were built from anyway.
+    """
+    cached = db.get_cached_file(path)
+    if not cached:
+        return spec
+    resolved = profiles.resolve((library or {}).get("profile") or {})
+    if spec.get("codec") == "copy":
+        level = levels.assess(cached, resolved)
+        if (level and level["verdict"] == "relabel"
+                and resolved.get("fix_video_levels", True)):
+            spec.update(watcher.relabel_fields(level))
+    else:
+        target = levels.encode_target(spec.get("codec"), cached, resolved)
+        if target:
+            spec["encode_level"] = target
+    return spec
+
+
+# The whole-library level check: every file the library has finished
+# with, probed afresh and judged against its settings. Same shape as the
+# deep scan — progress over the existing websocket, one run at a time.
+LEVEL_CHECK_STATE = {"active": False, "library": None, "current": None,
+                     "done": 0, "total": 0, "results": {}}
+
+
+def _level_check_targets(library):
+    """Every file this library has finished with, wherever it ended up.
+
+    The whole output folder when there is one. In the watch folder, only
+    files the scanner has already processed: anything still waiting to
+    be converted gets its level fixed as part of that, and relabelling it
+    first would mark it processed and leave it unconverted.
+    """
+    found = []
+    output = library.get("output_path")
+    if output:
+        found += list(watcher.walk_library(output))
+    for path in watcher.walk_library(library["watch_path"]):
+        try:
+            st = path.stat()
+        except OSError:
+            continue
+        if db.was_processed(str(path), st.st_mtime, st.st_size):
+            found.append(path)
+    seen, unique = set(), []
+    for path in found:
+        if str(path) not in seen:
+            seen.add(str(path))
+            unique.append(path)
+    return unique
+
+
+async def run_level_check(library_ids=None):
+    if LEVEL_CHECK_STATE["active"]:
+        return
+    libraries = [l for l in db.list_libraries()
+                 if library_ids is None or l["id"] in library_ids]
+    LEVEL_CHECK_STATE.update(active=True, done=0, total=0, library=None,
+                             current=None)
+    await broadcast()
+    try:
+        plan = []
+        for lib in libraries:
+            for path in await asyncio.to_thread(_level_check_targets, lib):
+                plan.append((lib, path))
+        LEVEL_CHECK_STATE["total"] = len(plan)
+        active = await asyncio.to_thread(db.paths_with_active_jobs)
+        tally = {lib["id"]: {"checked": 0, "queued": 0, "already_queued": 0,
+                             "too_high": 0, "waiting_on_you": 0}
+                 for lib in libraries}
+        for i, (lib, path) in enumerate(plan):
+            LEVEL_CHECK_STATE["library"] = lib["name"]
+            LEVEL_CHECK_STATE["current"] = path.name
+            counts = tally[lib["id"]]
+            try:
+                info = await asyncio.to_thread(probe, str(path))
+                if info:
+                    db.cache_probe(str(path), info)
+                    counts["checked"] += 1
+                    level = levels.assess(info, profiles.resolve(lib["profile"]))
+                    verdict = (level or {}).get("verdict")
+                    if verdict == "too_high":
+                        counts["too_high"] += 1
+                    elif verdict == "relabel":
+                        size = path.stat().st_size
+                        stuck = db.unresolved_job_for(str(path))
+                        if str(path) in active:
+                            counts["already_queued"] += 1
+                        elif stuck and stuck.get("size_before") == size:
+                            # Failed before on this very file — the
+                            # Failed list is where a person decides.
+                            counts["waiting_on_you"] += 1
+                        elif db.enqueue(str(path), watcher.relabel_spec(
+                                path, level, lib, in_place=True),
+                                size, lib["id"]):
+                            counts["queued"] += 1
+                        else:
+                            counts["already_queued"] += 1
+            except Exception as exc:
+                print(f"level check: {path} ({exc})")
+            LEVEL_CHECK_STATE["done"] = i + 1
+            await broadcast()
+        for lib in libraries:
+            LEVEL_CHECK_STATE["results"][str(lib["id"])] = {
+                **tally[lib["id"]], "at": time.time()}
+    finally:
+        LEVEL_CHECK_STATE.update(active=False, current=None, library=None)
+        await broadcast()
+
+
+@app.post("/api/levels/check")
+async def check_levels(req: Request):
+    """Check existing files for level problems, and queue the relabels.
+
+    Relabels only — nothing found here is ever re-encoded. A file whose
+    content really needs a higher level than the library allows is
+    counted and listed instead.
+    """
+    if LEVEL_CHECK_STATE["active"]:
+        raise HTTPException(409, "A level check is already running.")
+    try:
+        body = await req.json()
+    except Exception:
+        body = {}
+    library_ids = (body or {}).get("library_ids")
+    asyncio.create_task(run_level_check(library_ids))
+    return {"started": True}
+
+
+@app.get("/api/stats/levels")
+async def stats_levels(library_id: int = None):
+    """Files whose level label is wrong for this library's devices.
+
+    Read from the probe cache, so it shows what the last scan or level
+    check saw. Both kinds are listed: ones a relabel fixes, and ones that
+    genuinely need more than the devices can do.
+    """
+    libraries = [l for l in db.list_libraries()
+                 if library_id is None or l["id"] == library_id]
+    active = await asyncio.to_thread(db.paths_with_active_jobs)
+    every_library = db.list_libraries()
+    files, unjudged = [], 0
+    for lib in libraries:
+        spec = profiles.resolve(lib.get("profile") or {})
+        rows = await asyncio.to_thread(
+            db.cached_files_under, [lib["watch_path"], lib.get("output_path")])
+        for row in rows:
+            # Shared roots mean one row can turn up under two libraries;
+            # the folder that most specifically owns it decides.
+            if (_library_owning(row["path"], every_library)
+                    or {}).get("id") != lib["id"]:
+                continue
+            level = levels.assess(row, spec)
+            if level is None:
+                # HEVC or H.264 with nothing to judge it by — no level or
+                # no picture size on record. Said out loud so an empty
+                # list isn't read as "everything is fine".
+                if row.get("video_codec") in levels.FFPROBE_SCALE:
+                    unjudged += 1
+                continue
+            if level["verdict"] == "ok":
+                continue
+            files.append({
+                "path": row["path"], "name": Path(row["path"]).name,
+                "library_name": lib["name"], **level,
+                "describe": levels.describe(level),
+                "queued": row["path"] in active,
+            })
+    files.sort(key=lambda f: (f["verdict"] != "relabel", f["name"].lower()))
+    return {"files": files, "not_yet_checked": unjudged}
+
+
 @app.post("/api/scan/deep")
 async def scan_deep(req: Request):
     """Start a full, forced reprobe of every file — see run_deep_scan."""
@@ -1754,6 +2120,9 @@ async def tidy_tracks(req: Request):
         spec["repackage"] = True
         spec["why"] = "tidying up the track layout"
         spec["original_action"] = library.get("original_action")
+        # The video is copied anyway, so a wrong level label is fixed in
+        # the same pass rather than left for a second rewrite later.
+        _with_level_plan(spec, path, library)
         if db.enqueue(path, spec, None, library["id"]):
             queued += 1
         else:
@@ -1851,6 +2220,13 @@ async def file_detail(path: str):
     info["name"] = Path(path).name
     if not live and not cached:
         raise HTTPException(404, "Nothing known about that file, and it isn't on disk.")
+    # Judged against the settings of the library it's in, since "too
+    # high" only means anything relative to someone's devices.
+    owner = _library_owning(path)
+    if owner:
+        level = levels.assess(info, profiles.resolve(owner.get("profile") or {}))
+        if level:
+            info["level_check"] = {**level, "describe": levels.describe(level)}
     return info
 
 
@@ -2130,7 +2506,9 @@ async def stats_queue(req: Request):
         if not Path(path).is_file():
             skipped.append({"path": path, "reason": "file no longer exists"})
             continue
-        spec = {**profiles.resolve(lib.get("profile") or {}), **overrides}
+        spec = _with_level_plan(
+            {**profiles.resolve(lib.get("profile") or {}), **overrides},
+            path, lib)
         cached = db.get_cached_file(path)
         size_before = (cached or {}).get("size")
         new_id = db.enqueue(path, spec, size_before, lib["id"])

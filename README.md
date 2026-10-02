@@ -22,10 +22,14 @@ wizard; per-library skip rules, bitrate ceilings, and work schedules; a
 health check before every encode that catches damaged audio automatically
 and can hand truly unrecoverable files to Radarr/Sonarr for a fresh copy;
 HDR handling, subtitle and audio-track tidying, chapter and metadata
-cleanup, automatic renaming with optional TMDB lookup; a Stats view with
-per-library breakdowns you can click into down to individual files; and a
-Library Health tab for the things a transcode alone won't fix — audio
-loudness leveling, missing English audio/subtitles, missing chapters.
+cleanup, automatic renaming with optional TMDB lookup; lossless fixing of
+video level labels that claim a file needs a more powerful player than it
+does (the reason a Fire TV gets a transcode for a file it could have
+played), checked packet by packet before anything is replaced; a Stats
+view with per-library breakdowns you can click into down to individual
+files; and a Library Health tab for the things a transcode alone won't fix
+— audio loudness leveling, missing English audio/subtitles, missing
+chapters, video level labels across files already in the library.
 
 ## Installing
 

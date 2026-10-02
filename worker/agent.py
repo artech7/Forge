@@ -24,6 +24,7 @@ import requests
 import encoders
 import streams
 import sysinfo
+import verify
 
 SERVER = os.environ.get("SERVER", "http://localhost:8420").rstrip("/")
 NAME = os.environ.get("NODE_NAME", socket.gethostname())
@@ -170,6 +171,25 @@ def explain_401():
             "start this worker with FORGE_TOKEN set to the value it shows.")
 
 
+FEATURES = ["video_level"]
+
+
+def level_expectation(spec, encoder):
+    """Which level check this job's output needs, if any.
+
+    Mirrors the server's own reading of the spec: a relabel when the
+    video is copied, an encode level when it's re-encoded to HEVC or
+    H.264. The two sides have to agree, since the server refuses to
+    place a relabel that arrives without the check.
+    """
+    if spec.get("codec") == "copy" or encoder is None:
+        return "relabel" if spec.get("relabel_level") else None
+    if (spec.get("encode_level") or {}).get("level") \
+            and spec.get("codec") in ("hevc", "h264"):
+        return "encode"
+    return None
+
+
 def register(nid, caps):
     resp = requests.post(f"{SERVER}/api/nodes/register", timeout=15,
                          headers=AUTH_HEADERS, json={
@@ -182,6 +202,10 @@ def register(nid, caps):
         # heartbeat. Empty on a worker whose requirements predate it,
         # which the card copes with by showing nothing extra.
         "stats": sysinfo.collect(),
+        # What this version can do that older ones can't. The server
+        # only hands relabel work to a worker that says video_level: one
+        # without it would copy the stream and leave the label as it was.
+        "features": FEATURES,
     })
     if resp.status_code == 401:
         raise PermissionError(explain_401())
@@ -519,6 +543,33 @@ def run_job(job, caps):
         params = {"size_after": size_after, "encoder": encoder or "remux",
                   "lease_token": token}
 
+        # A job that changes a level label is only reported done once the
+        # change is proved, against the original that's still sitting
+        # untouched. A failure here can only repeat if tried again, so
+        # the server is told not to.
+        expected = level_expectation(spec, encoder)
+        if expected:
+            with Phase(job_id, "checking the result against the original"):
+                out_info = streams.analyze(str(scratch))
+                if expected == "relabel":
+                    report = verify.verify_relabel(
+                        src, str(scratch), spec,
+                        info or streams.analyze(src), out_info)
+                else:
+                    _a, _b, enforced = encoders.level_args(
+                        encoder, spec.get("codec"), spec.get("encode_level"))
+                    report = verify.verify_encode(str(scratch), spec, out_info,
+                                                  enforced, encoder)
+            if not report["ok"]:
+                scratch.unlink(missing_ok=True)
+                report_fail(job_id, f"Level check failed: {report['error']}. "
+                                    "The original file is untouched.",
+                            token, permanent=True)
+                return
+            print(f"[job {job_id}] level check passed: "
+                  f"{', '.join(report['checks'])}")
+            params["verified"] = json.dumps(report)
+
         if job["transport"] == "stream":
             with scratch.open("rb") as fh:
                 requests.post(f"{SERVER}/api/jobs/{job_id}/complete",
@@ -833,6 +884,13 @@ def main():
     if notes:
         print("Settings chosen:")
         for enc, how in notes.items():
+            print(f"  {enc:22} {how}")
+    # Read from each encoder's own help at startup, so this is what this
+    # machine's FFmpeg actually accepts rather than what it's assumed to.
+    level_notes = encoders.level_note()
+    if level_notes:
+        print("How each encoder is told the video level:")
+        for enc, how in level_notes.items():
             print(f"  {enc:22} {how}")
     ranked = encoders.ranking()
     if ranked:

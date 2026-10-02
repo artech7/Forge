@@ -248,6 +248,161 @@ def detect(verify=True, explain=False):
     return (working, rejected) if explain else working
 
 
+# ---------------------------------------------------------------- levels
+#
+# Every encoder takes the codec level in its own dialect, and the dialect
+# can change between FFmpeg versions. So rather than a table written from
+# memory, each working encoder is asked at startup ("ffmpeg -h
+# encoder=X") and its answer decides how it is told. What was learned
+# from FFmpeg's and Intel's own source, and why:
+#
+#   libx265     no -level of its own; the level goes in -x265-params
+#               as level-idc. x265 then holds the encode to it with VBV.
+#               no-high-tier matters: left out, x265 picks High tier,
+#               which allows 2.5x the bitrate at the same level and is
+#               not what a "5.1" device limit means.
+#   libx264     -level takes a string ("4.1").
+#   *_nvenc     -level with named values ("4.1"; "5" and "5.0" both).
+#   *_amf       -level with named values ("4.1").
+#   *_vaapi     -level with named values; HEVC names whole levels "5",
+#               not "5.0".
+#   *_qsv       no -level of its own, so it doesn't appear in -h; the
+#               generic -level is passed straight to Intel's library,
+#               which numbers both codecs as level x 10 (MFX_LEVEL_*_41
+#               = 41). hevc_qsv also defaults to High tier once a level
+#               of 4 or more is set, so Main is asked for explicitly.
+#   hevc_videotoolbox  no level option at all. The level is written
+#               after encoding instead, with the same bitstream filter a
+#               relabel uses.
+#
+# Only some of these can be made to keep the promise the label makes:
+# x265 enforces its level itself, and x264 and NVENC honour -maxrate
+# with -bufsize alongside constant quality. The rest (QSV in ICQ, AMF and
+# VAAPI in CQP, VideoToolbox) can only be checked afterwards.
+LEVEL_SUPPORT = {}       # encoder id -> how it's told the level, see below
+ENFORCES_LEVEL = {"libx265", "libx264", "nvenc"}   # by _family()
+
+
+def encoder_help(enc):
+    try:
+        return subprocess.run(["ffmpeg", "-hide_banner", "-h", f"encoder={enc}"],
+                              capture_output=True, text=True, encoding="utf-8",
+                              errors="replace", timeout=30).stdout or ""
+    except (OSError, subprocess.SubprocessError):
+        return ""
+
+
+def _level_option(help_text):
+    """(type, [named values]) for an encoder's own -level, or None.
+
+    The named values are the indented lines straight after the option,
+    e.g. "     4.1             41           E..V......." — a string
+    option (libx264) has none and takes whatever it's given.
+    """
+    lines = help_text.splitlines()
+    for i, line in enumerate(lines):
+        match = re.match(r"\s*-level\s+<(\w+)>", line)
+        if not match:
+            continue
+        names = []
+        for following in lines[i + 1:]:
+            const = re.match(r"\s{4,}(\S+)\s+\S+\s+[E.][D.][F.]?[V.]", following)
+            if not const or following.lstrip().startswith("-"):
+                break
+            names.append(const.group(1))
+        return match.group(1), names
+    return None
+
+
+def learn_level_support(enc, help_text=None):
+    """Work out how this encoder is told a level, from its own help."""
+    text = encoder_help(enc) if help_text is None else help_text
+    family = _family(enc)
+    if enc == "libx265":
+        how = {"how": "x265-params"} if "-x265-params" in text \
+            else {"how": "bsf"}
+    else:
+        option = _level_option(text)
+        if option:
+            kind, names = option
+            how = {"how": "option", "type": kind, "names": names}
+        elif family == "qsv":
+            how = {"how": "generic-x10"}
+        else:
+            how = {"how": "bsf"}
+    how["enforces"] = family in ENFORCES_LEVEL and how["how"] != "bsf"
+    return how
+
+
+def level_support(enc):
+    if enc not in LEVEL_SUPPORT:
+        LEVEL_SUPPORT[enc] = learn_level_support(enc)
+    return LEVEL_SUPPORT[enc]
+
+
+def _level_name(level, names):
+    """The spelling this encoder uses for a level, or None if it has none."""
+    if not names:
+        return level                        # free-form string option
+    whole = level[:-2] if level.endswith(".0") else level
+    for candidate in (level, whole):
+        if candidate in names:
+            return candidate
+    return None
+
+
+def level_args(encoder, codec, target):
+    """Arguments that make this encoder write `target`'s level.
+
+    Returns (args, bsf, enforced). bsf is a bitstream filter to run on
+    the encoder's output when it can't be told directly; enforced says
+    whether the encoder itself keeps the stream inside the level's
+    bitrate limits, as opposed to it only being checked afterwards.
+    """
+    level = (target or {}).get("level")
+    if not encoder or not level or codec not in ("hevc", "h264"):
+        return [], None, False
+    support = level_support(encoder)
+    how, family = support["how"], _family(encoder)
+    args, bsf = [], None
+    if how == "x265-params":
+        args += ["-x265-params", f"level-idc={level}:no-high-tier=1"]
+    elif how == "option" and _level_name(level, support.get("names")):
+        args += ["-level", _level_name(level, support.get("names"))]
+    elif how == "generic-x10":
+        args += ["-level", str(int(round(float(level) * 10)))]
+    else:
+        bsf = f"{codec}_metadata=level={level}"
+    if family == "qsv" and codec == "hevc":
+        args += ["-tier", "main"]
+    enforced = bool(support.get("enforces")) and bsf is None
+    if enforced and encoder != "libx265" and target.get("max_kbps"):
+        args += ["-maxrate", f"{int(target['max_kbps'])}k",
+                 "-bufsize", f"{int(target.get('cpb_kbits') or target['max_kbps'])}k"]
+    return args, bsf, enforced
+
+
+def level_note():
+    """How each working HEVC/H.264 encoder is told the level, for the log."""
+    out = {}
+    for enc in WORKING_RECIPE:
+        if not (enc.startswith(("hevc", "h264")) or enc in ("libx265", "libx264")):
+            continue                        # AV1 has no levels involved here
+        support = level_support(enc)
+        if support["how"] == "x265-params":
+            how = "-x265-params level-idc"
+        elif support["how"] == "option":
+            names = [n for n in support.get("names") or [] if n[:1] in "456"]
+            how = "-level " + (", ".join(names) if names else "<any>")
+        elif support["how"] == "generic-x10":
+            how = "-level, Intel numbering (level x 10)"
+        else:
+            how = "no level option; written after encoding"
+        out[enc] = how + ("" if support.get("enforces")
+                          else " (checked afterwards, not enforced)")
+    return out
+
+
 def recipe_note():
     """Which encoders needed non-default settings, and how fast they ran."""
     out = {}
@@ -468,6 +623,59 @@ def build_level_command(src, dst, spec, info=None):
     return cmd + [str(dst)]
 
 
+def relabel_filter(spec, video_stream):
+    """The bitstream filter that rewrites a copied stream's level, or None.
+
+    hevc_metadata and h264_metadata rewrite the level in the parameter
+    sets, both the ones in the stream and the copy the container keeps
+    in its header (MKV CodecPrivate, MP4 hvcC/avcC) — FFmpeg passes the
+    filter's rewritten header to the muxer, so both agree. Checked after
+    every relabel regardless; see verify.py.
+
+    Only when the stream really is the codec the relabel was worked out
+    for. Anything else gets no filter, and the check afterwards fails the
+    job, rather than FFmpeg failing it with a less useful message.
+    """
+    level = spec.get("relabel_level")
+    codec = spec.get("relabel_codec")
+    if not level or codec not in ("hevc", "h264"):
+        return None
+    if video_stream and video_stream.get("codec_name") != codec:
+        return None
+    return f"{codec}_metadata=level={level}"
+
+
+def build_relabel_command(src, dst, spec, info=None):
+    """Fix the video's level label and change nothing else.
+
+    Separate from build_command for the same reason the loudness pass is:
+    a file being relabelled is otherwise being left alone, and the normal
+    path would bring the library's track reordering, renaming and
+    dropping along with it. Every stream is copied, in its own order.
+    """
+    all_streams = (info or {}).get("streams", [])
+    videos = [st for st in all_streams if st.get("codec_type") == "video"]
+    real = next((st for st in videos if not streams.is_image(st)), None)
+    position = videos.index(real) if real in videos else 0
+
+    cmd = ["ffmpeg", "-hide_banner", "-nostdin", "-y", "-i", str(src),
+           "-map", "0", "-c", "copy", "-map_metadata", "0",
+           "-map_chapters", "0"]
+    relabel = relabel_filter(spec, real)
+    if relabel:
+        # Addressed by its place among video streams, since cover art can
+        # come first and a codec filter can't be applied to a picture.
+        cmd += [f"-bsf:v:{position}", relabel]
+    for stat_tag in ("_STATISTICS_TAGS", "_STATISTICS_WRITING_APP",
+                     "_STATISTICS_WRITING_DATE_UTC"):
+        for stream_type in ("v", "a", "s"):
+            cmd += [f"-metadata:s:{stream_type}", f"{stat_tag}="]
+    cmd += ["-max_muxing_queue_size", "1024"]
+    if spec.get("container") == "mp4":
+        cmd += ["-movflags", "+faststart"]
+    return cmd + ["-progress", "pipe:1", "-nostats", str(dst)]
+
+
 # Audio formats FFmpeg can read but not write, or shouldn't re-encode to
 # themselves. Levelling one of these has to land somewhere, and AAC is
 # the widely-playable choice.
@@ -561,6 +769,8 @@ def build_command(src, dst, encoder, spec, info=None):
     """
     if spec.get("level_only"):
         return build_level_command(src, dst, spec, info)
+    if spec.get("relabel_only"):
+        return build_relabel_command(src, dst, spec, info)
 
     quality = int(spec.get("quality", 22))
     container = spec.get("container", "mkv")
@@ -625,8 +835,14 @@ def build_command(src, dst, encoder, spec, info=None):
         disposition_args = []
 
     # ---- video --------------------------------------------------------
+    # The real picture is always the first video stream mapped above, so
+    # ":v:0" is it and never a piece of cover art (which a codec bitstream
+    # filter would refuse outright).
     if video_copy:
         cmd += ["-c:v", "copy"]
+        relabel = relabel_filter(spec, video_stream)
+        if relabel:
+            cmd += ["-bsf:v:0", relabel]
     else:
         filters = []
         if tonemapping:
@@ -640,6 +856,11 @@ def build_command(src, dst, encoder, spec, info=None):
 
         cmd += ["-c:v", encoder]
         cmd += QUALITY_FLAGS[_family(encoder)](quality)
+        level_flags, level_bsf, _enforced = level_args(
+            encoder, spec.get("codec"), spec.get("encode_level"))
+        cmd += level_flags
+        if level_bsf:
+            cmd += ["-bsf:v:0", level_bsf]
         cmd += streams.colour_args(spec, video_stream, tonemapping)
 
     # ---- audio ---------------------------------------------------------

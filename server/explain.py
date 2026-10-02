@@ -127,6 +127,12 @@ def walk(target: Path, probe_fn):
     reason = watcher.filter_verdict(target, stat.st_size, info, filters)
     if reason:
         p(f"   SKIPPED - {reason}")
+        relabel = watcher.codec_skip_relabel(target, stat.st_size, info,
+                                             filters, spec, owner)
+        if relabel:
+            p(f"   ...but its video level label is wrong: {relabel['why']}.")
+            p("   That is fixed anyway, losslessly — the picture is copied,")
+            p("   not converted, so the skip rule's promise still holds.")
         return out
     p("   passes every skip rule")
 

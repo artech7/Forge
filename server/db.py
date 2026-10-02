@@ -29,9 +29,11 @@ CREATE TABLE IF NOT EXISTS nodes (
     last_seen    REAL NOT NULL,
     enabled      INTEGER NOT NULL DEFAULT 1,
     role         TEXT NOT NULL DEFAULT 'both',  -- both|transcode|housekeeping
-    housekeeping_slots INTEGER NOT NULL DEFAULT 0  -- of this node's slots, how many
+    housekeeping_slots INTEGER NOT NULL DEFAULT 0, -- of this node's slots, how many
                                                     -- stay reserved for loudness work
                                                     -- regardless of the conversion backlog
+    features     TEXT NOT NULL DEFAULT '[]'    -- what this worker's version can do
+                                               -- that older ones can't, e.g. video_level
 );
 
 CREATE TABLE IF NOT EXISTS libraries (
@@ -221,16 +223,16 @@ def row_to_dict(row):
     d = dict(row)
     for key in ("encoders", "mounts", "spec", "profile", "filters",
                 "recipes", "benchmarks", "benchmarks_10bit", "naming",
-                "stats"):
+                "stats", "features"):
         if key in d:
             d[key] = parse_json(d[key], {} if key not in
-                                ("encoders", "mounts") else [])
+                                ("encoders", "mounts", "features") else [])
     return d
 
 
 def upsert_node(node_id, name, encoders, mounts, max_jobs,
                 recipes=None, benchmarks=None, cpus=None, benchmarks_10bit=None,
-                stats=None):
+                stats=None, features=None):
     """Register or refresh a node.
 
     slots is deliberately NOT overwritten on re-registration: it's set from
@@ -240,8 +242,9 @@ def upsert_node(node_id, name, encoders, mounts, max_jobs,
         conn.execute(
             """INSERT INTO nodes
                (id, name, encoders, mounts, max_jobs, slots, cpus,
-                recipes, benchmarks, benchmarks_10bit, stats, last_seen)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                recipes, benchmarks, benchmarks_10bit, stats, features,
+                last_seen)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT(id) DO UPDATE SET
                  name=excluded.name, encoders=excluded.encoders,
                  mounts=excluded.mounts, max_jobs=excluded.max_jobs,
@@ -249,11 +252,13 @@ def upsert_node(node_id, name, encoders, mounts, max_jobs,
                  recipes=excluded.recipes, benchmarks=excluded.benchmarks,
                  benchmarks_10bit=excluded.benchmarks_10bit,
                  stats=excluded.stats,
+                 features=excluded.features,
                  last_seen=excluded.last_seen""",
             (node_id, name, json.dumps(encoders), json.dumps(mounts),
              max_jobs, max_jobs, cpus, json.dumps(recipes or {}),
              json.dumps(benchmarks or {}), json.dumps(benchmarks_10bit or {}),
-             json.dumps(stats or {}), time.time()),
+             json.dumps(stats or {}), json.dumps(list(features or [])),
+             time.time()),
         )
 
 
@@ -346,7 +351,10 @@ def enqueue(path, spec, size_before=None, library_id=None, attempt=1):
             pass
 
         # Real work only: one housekeeping job never displaces another.
-        if job_kind(spec) != "convert":
+        # A relabel counts as real work here — the library check queues
+        # one per file, and turning it away for a waiting loudness
+        # measurement would leave the label wrong until someone noticed.
+        if job_kind(spec) not in ("convert", "relabel"):
             return None
 
         blocking = conn.execute(
@@ -385,12 +393,14 @@ JOB_KINDS = {
     "repackage": "Repackaging",
     "measure": "Loudness measuring",
     "level": "Loudness levelling",
+    "relabel": "Level relabels",
 }
 
 # Work someone asked for, as against housekeeping Forge decided to do.
 # A repackage is cheap but it is still a request, so it goes with the
 # conversions rather than behind a loudness backlog that never empties.
-REAL_KINDS = ("convert", "repackage")
+# A relabel is the same: the file plays wrongly until it's done.
+REAL_KINDS = ("convert", "repackage", "relabel")
 
 
 def job_kind(spec):
@@ -405,6 +415,11 @@ def job_kind(spec):
     # the Track Layout repair specifically.
     if spec.get("repackage"):
         return "repackage"
+    # Its own kind so it can be asked of files the scanner has already
+    # finished with — the "never convert a processed file twice" rule is
+    # about conversions, and this isn't one.
+    if spec.get("relabel_only"):
+        return "relabel"
     return "convert"
 
 
@@ -1133,6 +1148,30 @@ def library_inventory(library_id):
     return out
 
 
+def cached_files_under(folders):
+    """Cached probes for every file under any of these folders.
+
+    By folder rather than by library, because a library's finished files
+    can live in its output folder, which library_matcher (watch folders
+    only) would never attribute to it.
+    """
+    folders = [str(f).rstrip("/") + "/" for f in folders if f]
+    if not folders:
+        return []
+    clause = " OR ".join("path LIKE ?" for _ in folders)
+    with connect() as conn:
+        rows = conn.execute(
+            f"""SELECT path, size, video_codec, width, height, video_bitrate,
+                       detail FROM files WHERE {clause}""",
+            [f + "%" for f in folders]).fetchall()
+    out = []
+    for row in rows:
+        entry = dict(row)
+        entry["detail"] = parse_json(entry.get("detail"), {}) or {}
+        out.append(entry)
+    return out
+
+
 def files_missing_chapters(library_id=None):
     """Files with no chapter markers at all.
 
@@ -1431,7 +1470,8 @@ def migrate():
                   ("benchmarks_10bit", "TEXT NOT NULL DEFAULT '{}'"),
                   ("role", "TEXT NOT NULL DEFAULT 'both'"),
                   ("housekeeping_slots", "INTEGER NOT NULL DEFAULT 0"),
-                  ("stats", "TEXT NOT NULL DEFAULT '{}'")],
+                  ("stats", "TEXT NOT NULL DEFAULT '{}'"),
+                  ("features", "TEXT NOT NULL DEFAULT '[]'")],
         "files": [("video_bitrate", "INTEGER"), ("bit_depth", "INTEGER"),
                   ("detail", "TEXT")],
     }

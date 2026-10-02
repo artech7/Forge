@@ -3,6 +3,7 @@
 Every description here is written for someone who does not know what a
 codec is. If a line needs jargon, it explains the jargon.
 """
+import levels
 
 VIDEO_CODECS = [
     {
@@ -332,6 +333,11 @@ def catalog():
         "unhealthy_video": UNHEALTHY_VIDEO_ACTIONS,
         "arr_kinds": ARR_KINDS,
         "health_checks": HEALTH_CHECKS,
+        "video_levels": {
+            "choices": levels.CHOICES,
+            "defaults": levels.DEFAULT_MAX,
+            "hint": "Fire TV Stick 4K (1st gen) and many TVs top out at 5.1",
+        },
     }
 
 
@@ -513,6 +519,17 @@ def resolve(profile):
         "audio_bitrate": profile.get("audio_bitrate") or "160k",
         "subtitle_mode": profile.get("subtitle_mode") or "keep",
         "subtitle_languages": profile.get("subtitle_languages", []),
+        # Codec levels — see levels.py. On unless switched off, including
+        # for libraries saved before the setting existed: relabelling is
+        # lossless and verified, and the files it applies to are exactly
+        # the ones a media server would otherwise transcode.
+        "fix_video_levels": profile.get("fix_video_levels", True),
+        "max_video_level": {
+            "hevc": levels.name(profile.get("max_level_hevc"))
+                    or levels.DEFAULT_MAX["hevc"],
+            "h264": levels.name(profile.get("max_level_h264"))
+                    or levels.DEFAULT_MAX["h264"],
+        },
     }
 
 

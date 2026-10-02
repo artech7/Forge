@@ -13,6 +13,7 @@ import time
 from pathlib import Path
 
 import db
+import levels
 import naming
 import profiles
 
@@ -120,6 +121,29 @@ def filter_verdict(path, size, info, filters):
         return f"already {codec} (skipped entirely — audio not checked)"
 
     return None
+
+
+def codec_skip_relabel(path, size, info, filters, spec, library):
+    """A relabel-only spec for a file skipped purely for its video codec.
+
+    None when anything other than the codec rule would skip it too — a
+    name, size or length rule means "leave this file alone" outright — or
+    when its level label needs no fixing. Lives here rather than in
+    filter_verdict so that function keeps answering one question.
+    """
+    if not info or not spec.get("fix_video_levels", True):
+        return None
+    if not (filters or {}).get("skip_video_codecs"):
+        return None
+    if filter_verdict(path, size, info,
+                      {**filters, "skip_video_codecs": []}) is not None:
+        return None
+    level = levels.assess(info, spec)
+    if not level or level["verdict"] != "relabel":
+        return None
+    # In place: a codec-skipped file is left where it sits, never filed,
+    # so its relabelled replacement belongs exactly where it is too.
+    return relabel_spec(path, level, library, in_place=True)
 
 
 # A bitrate that's fine for 720p is wasteful at the same number for 4K, so
@@ -300,14 +324,47 @@ def plan_conversion(path, info, spec, filters):
     if audio_ok:
         adjusted["audio"] = "copy"
 
+    # ---- codec level ----------------------------------------------------
+    # A label higher than the content needs is work in its own right, even
+    # on a file whose codec already matches — the same way wrong audio is
+    # on a file whose video is fine. Fixing it is a bitstream filter in the
+    # same FFmpeg pass as everything else, not a pass of its own.
+    level = levels.assess(info, spec)
+    relabel = bool(level and level["verdict"] == "relabel"
+                   and spec.get("fix_video_levels", True))
+    if relabel:
+        # Carried on a re-encode too: if that later falls back to keeping
+        # the original picture (a salvage), the copied stream still needs
+        # its label fixing, and this is the honest value for it.
+        adjusted.update(relabel_fields(level))
+    if not video_ok:
+        target = levels.encode_target(want_video, info, spec)
+        if target:
+            adjusted["encode_level"] = target
+    level_note = levels.describe(level) if video_ok and (
+        relabel or (level and level["verdict"] == "too_high")) else None
+
+    def said(why):
+        return f"{why} · {level_note[0].lower()}{level_note[1:]}" \
+            if level_note else why
+
     if video_ok and audio_ok and container_ok:
-        return "skip", adjusted, "already exactly right"
+        if relabel:
+            # Nothing else to do, so nothing else is touched: no track
+            # reordering, renaming or dropping that a normal pass would
+            # bring with it.
+            adjusted["relabel_only"] = True
+            # Nothing is decoded and every packet is compared afterwards,
+            # same as relabel_spec() below.
+            adjusted["health_check"] = "off"
+            return "relabel", adjusted, levels.describe(level)
+        return "skip", adjusted, said("already exactly right")
 
     if video_ok and audio_ok:
-        return "remux", adjusted, f"repackaging into {want_container.upper()}"
+        return "remux", adjusted, said(f"repackaging into {want_container.upper()}")
 
     if video_ok:
-        return "audio_only", adjusted, (
+        return "audio_only", adjusted, said(
             f"video is already {have_video}, converting audio "
             f"{'/'.join(sorted(set(have_audio))) or '?'} to {want_audio.upper()}")
 
@@ -317,6 +374,38 @@ def plan_conversion(path, info, spec, filters):
             f"{want_video.upper()}")
 
     return "full", adjusted, f"converting to {want_video.upper()} / {want_audio.upper()}"
+
+
+def relabel_fields(level):
+    """The spec keys that ask a worker to relabel a copied video stream."""
+    return {"relabel_level": level["need"], "relabel_from": level["have"],
+            "relabel_codec": level["codec"]}
+
+
+def relabel_spec(path, level, library, in_place=False, why=None):
+    """A job that fixes the level label and changes nothing else.
+
+    Every stream copied, every track kept in the order it was in, the
+    file's own container. Used where a file is otherwise being left alone
+    — skipped by a rule, or already finished — so that relabelling can't
+    bring the library's track tidying or renaming in with it.
+
+    in_place keeps the result at the same path rather than wherever the
+    library would file a new arrival, which is what a finished file in
+    the library needs: it is already where it belongs.
+    """
+    return {
+        "relabel_only": True, "codec": "copy", "audio": "copy",
+        "container": Path(path).suffix.lstrip(".").lower() or "mkv",
+        **relabel_fields(level),
+        "action": "relabel", "why": why or levels.describe(level),
+        "in_place": in_place,
+        # Nothing is decoded, and every packet is compared with the
+        # original afterwards, so reading the whole picture through first
+        # would only add the length of the film to a job of minutes.
+        "health_check": "off",
+        "original_action": (library or {}).get("original_action", "archive"),
+    }
 
 
 def scan_library(library, probe_fn):
@@ -389,6 +478,18 @@ def scan_library(library, probe_fn):
             reason = filter_verdict(path, stat.st_size, info, filters)
 
         if reason is not None:
+            # A codec skip is "don't convert this", not "don't look at
+            # it". A file skipped only for its codec still gets a wrong
+            # level label fixed — losslessly, and nothing else about it
+            # touched, so the rule's promise not to re-encode it holds.
+            relabel = codec_skip_relabel(path, stat.st_size, info, filters,
+                                         spec, library)
+            if relabel and db.enqueue(str(path), relabel, stat.st_size,
+                                      library["id"]):
+                db.clear_pending(str(path))
+                queued += 1
+                reasons[path.name] = relabel["why"]
+                continue
             db.mark_processed(str(path), stat.st_mtime, stat.st_size, library["id"])
             db.clear_pending(str(path))
             filtered += 1

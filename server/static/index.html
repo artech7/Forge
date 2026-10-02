@@ -1237,6 +1237,33 @@
       <div id="tidy-detail"><div class="stats-empty">Loading…</div></div>
     </div>
 
+    <!-- Video Level -->
+    <div class="health-section" data-health="levels" hidden>
+      <div class="queue-head" style="margin-top:4px">
+        <h2 style="margin:0">Video Level</h2>
+        <div class="actions">
+          <button id="levels-check-btn" onclick="startLevelCheck()">Check existing files for level problems</button>
+          <button onclick="loadLevels()">Refresh</button>
+        </div>
+      </div>
+      <div class="note" style="margin:-4px 0 14px;color:var(--muted);font-size:12.5px">
+        Every video carries a label saying how powerful a player it needs.
+        Some say far more than their picture actually needs, and a media
+        server then converts them on the fly for a device that could have
+        played them as they are. Checking reads every file the library has
+        finished with — including ones Forge filed away long ago — and
+        queues a relabel for each one that can be fixed. A relabel changes
+        the label and nothing else: the picture is copied across untouched
+        and checked packet by packet against the original before anything
+        is replaced. Files whose picture genuinely needs more than your
+        devices can do are listed too, but can't be relabelled — only
+        converting them again would make them play directly.
+      </div>
+      <div class="sec" id="levels-status"></div>
+      <div id="levels-progress"></div>
+      <div id="levels-detail"><div class="stats-empty">Loading…</div></div>
+    </div>
+
     <!-- Missing Chapters -->
     <div class="health-section" data-health="chapters" hidden>
       <div class="queue-head" style="margin-top:4px">
@@ -1352,6 +1379,7 @@ function render(state) {
   document.getElementById('s-failed').textContent = st.failed ?? 0;
 
   renderDeepScanBar(state.deep_scan);
+  renderLevelCheck(state.level_check);
   renderLoudnessProgress(state.jobs);
 
   const running = {};
@@ -1463,6 +1491,13 @@ function render(state) {
           ${s.ten}fps at 10-bit \u2014 the hardware is giving up and using
           software for 10-bit video. Set a library's colour depth to 8-bit
           if 10-bit files crawl.`);
+      // The server and the workers are updated separately, so a worker can
+      // be a version behind for a while. Without this, relabels just sit
+      // waiting with nothing saying why.
+      if (n.online && !(n.features || []).includes('video_level'))
+        notes.push(`This worker predates video level fixes, so it isn't
+          given relabel jobs — they wait for one that is up to date.
+          Update and restart it to have it take them on.`);
       const note = notes.map(t => `<div class="note">${t}</div>`).join('');
       const mine = (state.jobs || []).filter(
         j => j.node_id === n.id && j.state === 'running');
@@ -1601,6 +1636,8 @@ function renderLibs(libs) {
         <button onclick="openWizard(${l.id})">Edit</button>
         <button onclick="duplicateLib(${l.id})">Duplicate</button>
         <button onclick="scanOne(${l.id})" ${libScanBusy[l.id] ? 'disabled' : ''}>Check now</button>
+        <button onclick="startLevelCheck(${l.id})" ${levelCheckBusy() ? 'disabled' : ''}
+          title="Check existing files for level problems">Check video levels</button>
         <button onclick="toggleLib(${l.id},${l.enabled ? 0 : 1})">${l.enabled ? 'Pause' : 'Resume'}</button>
         <button onclick="removeLib(${l.id},'${safeName}')">Remove</button>
       </div>
@@ -1610,6 +1647,7 @@ function renderLibs(libs) {
       </div>` : ''}
       ${!libScanBusy[l.id] && libScanResult[l.id]
         ? `<div class="scanresult">${libScanResult[l.id]}</div>` : ''}
+      ${levelCheckCardLine(l)}
     </div>`;
   }).join('');
 }
@@ -1967,6 +2005,7 @@ const KIND_LABELS = {
   repackage: 'Repackaging',
   measure: 'Loudness measuring',
   level: 'Loudness levelling',
+  relabel: 'Level relabels',
 };
 
 // A waiting list thousands deep is mostly one kind of work. Splitting it
@@ -2180,6 +2219,24 @@ const ACTION_LABEL = {audio_only:'audio only', video_only:'video only',
 // "leveling audio" ended up on an eac3-to-AAC conversion.
 function workLabel(j) {
   const spec = j.spec || {};
+  const relabel = relabelLabel(spec);
+  if (spec.relabel_only) return relabel || 'level relabel';
+  const base = workLabelBase(spec);
+  // Said beside whatever else the job does, since it happens in the same
+  // pass: "audio only · level relabel 5.2 → 4.1".
+  return relabel ? `${base} \u00b7 ${relabel}` : base;
+}
+
+// "level relabel 5.2 → 4.1" when this job rewrites a copied stream's
+// level label, otherwise nothing. Only a copied stream is relabelled;
+// a re-encode sets its level as it encodes.
+function relabelLabel(spec) {
+  if ((spec.codec || '') !== 'copy' || !spec.relabel_level) return '';
+  return `level relabel ${spec.relabel_from ? spec.relabel_from + ' \u2192 ' : ''}`
+       + spec.relabel_level;
+}
+
+function workLabelBase(spec) {
   const copyingVideo = (spec.codec || '') === 'copy';
   const convertingAudio = (spec.audio || 'copy') !== 'copy';
   if (spec.measure === 'loudness') return 'measuring loudness';
@@ -2371,7 +2428,7 @@ function renderQueueTable(jobs, meta) {
   // reshuffle as counts change. Only offered when there is more than one
   // kind to choose between — a Completed list of nothing but conversions
   // gains nothing from a control that can only say "conversions".
-  const kindsHere = ['convert', 'repackage', 'measure', 'level']
+  const kindsHere = ['convert', 'repackage', 'relabel', 'measure', 'level']
     .filter(k => (lastKinds || {})[k]);
   const workOpts = kindsHere.length > 1
     ? ['<option value="all">Any</option>'].concat(kindsHere.map(k =>
@@ -2875,6 +2932,7 @@ async function openFileInfo(path) {
       ${row('Container', (f.name.split('.').pop() || '').toUpperCase())}
       ${row('Codec', (f.video_codec || 'unknown').toUpperCase())}
       ${row('Profile', d.profile)}
+      ${row('Level', levelText(f.level_check))}
       ${row('Resolution', f.width && f.height ? `${f.width} × ${f.height}` : '')}
       ${row('Bit depth', f.bit_depth ? f.bit_depth + '-bit' : '')}
       ${row('Frame rate', d.frame_rate ? d.frame_rate + ' fps' : '')}
@@ -2894,6 +2952,16 @@ async function openFileInfo(path) {
       ${row('Chapters', d.chapters != null ? d.chapters : '')}
     </dl>
     <div class="drill-path" style="margin-top:14px">${f.path}</div>`;
+}
+
+// The level row in a file's details: what it's labelled, and — when that
+// is a problem for this library's devices — what Forge does about it.
+function levelText(lc) {
+  if (!lc || !lc.have) return '';
+  if (lc.verdict === 'relabel') return `${lc.have} \u2014 Level relabel ${lc.have} \u2192 ${lc.need}`;
+  if (lc.verdict === 'too_high') return `${lc.have} \u2014 Level too high for target `
+    + `devices (they stop at ${lc.max}) \u2014 needs re-encode`;
+  return `${lc.have} \u2014 fine for this library's devices (up to ${lc.max})`;
 }
 
 function closeFileInfo() {
@@ -4258,6 +4326,7 @@ function blankDraft() {
     min_saving_percent:'', auto_retry:true, salvage_when_stuck:true,
     add_stereo_track:false, stereo_track_codec:'aac', stereo_track_bitrate:'160k',
     keep_existing_container:false,
+    fix_video_levels:true, max_level_hevc:'5.1', max_level_h264:'4.1',
     auto_measure_loudness:true, auto_level_loudness:true,
     loudness_range_threshold:15,
     loudness_target_i:-16, loudness_target_tp:-1.5, loudness_target_lra:11,
@@ -4814,6 +4883,7 @@ const HEALTH_TABS = [
   ['language', 'Missing Preferred Languages'],
   ['no-audio', 'No Audio Track'],
   ['tidy', 'Track Layout'],
+  ['levels', 'Video Level'],
   ['chapters', 'Missing Chapters'],
   ['standardize', 'Standardize'],
 ];
@@ -4838,6 +4908,7 @@ function switchHealthSection(id) {
   if (id === 'language') { renderLanguageControls(); loadLanguageChecks(); }
   if (id === 'no-audio') loadNoAudio();
   if (id === 'tidy') loadTidy();
+  if (id === 'levels') loadLevels();
   if (id === 'chapters') loadChapterCheck();
   if (id === 'standardize') loadStandardize();
 }
@@ -5419,6 +5490,134 @@ async function tidySelected() {
   loadTidy();
 }
 
+// ---- Video Level ------------------------------------------------------
+// The whole-library check runs on the server, one at a time, and reports
+// over the websocket like the deep scan — so the library card and this
+// section both read the same state rather than each tracking their own.
+let levelFiles = [];
+let levelCheckWasActive = false;
+
+function levelCheckBusy() {
+  return !!(((window.__state || {}).level_check) || {}).active;
+}
+
+function levelCheckSummary(r) {
+  if (!r) return '';
+  const parts = [`Checked ${r.checked}`, `queued ${r.queued} relabel${r.queued === 1 ? '' : 's'}`];
+  if (r.already_queued) parts.push(`${r.already_queued} already queued`);
+  if (r.too_high) parts.push(`${r.too_high} too high to relabel \u2014 need re-encoding`);
+  if (r.waiting_on_you) parts.push(`${r.waiting_on_you} failed before, see Failed`);
+  return parts.join(' \u00b7 ') + '.';
+}
+
+function levelCheckCardLine(l) {
+  const lc = (window.__state || {}).level_check || {};
+  if (lc.active && lc.library === l.name) {
+    const pct = lc.total ? Math.round((lc.done / lc.total) * 100) : 0;
+    return `<div class="scanbar on">
+      <div class="track"><div class="fill" style="width:${pct}%"></div></div>
+      <div class="label"><span class="current">Checking video levels \u2014 ${
+        attr(lc.current || '')}</span><span class="count">${lc.done} / ${lc.total}</span></div>
+    </div>`;
+  }
+  const result = (lc.results || {})[String(l.id)];
+  return !lc.active && result
+    ? `<div class="scanresult">Video levels: ${levelCheckSummary(result)}</div>` : '';
+}
+
+function renderLevelCheck(lc) {
+  const btn = document.getElementById('levels-check-btn');
+  const box = document.getElementById('levels-progress');
+  if (btn) btn.disabled = !!(lc && lc.active);
+  if (!box) return;
+  if (lc && lc.active) {
+    levelCheckWasActive = true;
+    const pct = lc.total ? Math.round((lc.done / lc.total) * 100) : 0;
+    box.innerHTML = `<div class="scanbar on">
+      <div class="track"><div class="fill" style="width:${pct}%"></div></div>
+      <div class="label"><span class="current">Checking "${attr(lc.library || '')}" \u2014 ${
+        attr(lc.current || '')}</span><span class="count">${lc.done} / ${lc.total}</span></div>
+    </div>`;
+    return;
+  }
+  box.innerHTML = '';
+  if (levelCheckWasActive) {
+    levelCheckWasActive = false;
+    if (healthSection === 'levels') loadLevels();
+  }
+}
+
+async function startLevelCheck(libId) {
+  const scoped = libId != null ? libId
+    : (audioLibId !== 'all' ? Number(audioLibId) : null);
+  const lib = ((window.__state || {}).libraries || []).find(l => l.id === scoped);
+  if (!await ask(`Check ${lib ? `every file in "${lib.name}"` : 'every file in every library'}`
+      + ' for video level labels your devices can\'t play? Each fixable one'
+      + ' is queued as a relabel: the picture is copied untouched, then'
+      + ' checked against the original before it replaces it. If the library'
+      + ' keeps originals, each one is archived as usual \u2014 allow the space'
+      + ' for that. Nothing here is ever re-encoded.',
+      {yes: 'Check and queue relabels'})) return;
+  try {
+    const r = await fetch('/api/levels/check', {method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(scoped != null ? {library_ids: [scoped]} : {})});
+    if (r.status === 409) notifyInfo('A level check is already running.');
+  } catch (e) {
+    notifyBad('Could not start the check \u2014 check the server is reachable.');
+  }
+}
+
+async function loadLevels() {
+  const box = document.getElementById('levels-detail');
+  if (!box) return;
+  box.innerHTML = '<div class="stats-empty">Loading…</div>';
+  const params = new URLSearchParams();
+  if (audioLibId !== 'all') params.set('library_id', audioLibId);
+  let data;
+  try {
+    data = await (await fetch('/api/stats/levels?' + params)).json();
+  } catch (e) {
+    box.innerHTML = '<div class="stats-empty">Could not load this.</div>';
+    return;
+  }
+  levelFiles = data.files || [];
+  const status = document.getElementById('levels-status');
+  if (status) status.textContent = data.not_yet_checked
+    ? `${data.not_yet_checked} H.265/H.264 file(s) have no level on record yet. `
+      + 'Checking existing files reads them.'
+    : '';
+  renderLevels();
+}
+
+function renderLevels() {
+  const box = document.getElementById('levels-detail');
+  if (!box) return;
+  if (!levelFiles.length) {
+    box.innerHTML = `<div class="stats-empty">Nothing found \u2014 every checked
+      file is labelled within what this library's devices can play.</div>`;
+    return;
+  }
+  const fixable = levelFiles.filter(f => f.verdict === 'relabel').length;
+  const tooHigh = levelFiles.length - fixable;
+  box.innerHTML = `
+    <p class="lead">${fixable} fixable by relabelling${tooHigh
+      ? ` \u00b7 ${tooHigh} too high for target devices \u2014 need re-encoding` : ''}</p>
+    <div class="drill-list">${levelFiles.map(f => `<div class="drill-row${
+        f.queued ? ' is-queued' : ''}">
+      <div class="drill-row-body">
+        <div class="drill-name"><span data-fileinfo="${attr(f.path)}"
+          >${attr(f.name)}</span></div>
+        <div class="drill-meta">${attr(f.library_name || '')} &middot;
+          ${attr(f.describe || '')}</div>
+        ${f.queued ? `<div class="drill-queued">Relabel queued \u2014 this row
+          clears once the file has been rewritten and re-checked.</div>`
+          : f.verdict === 'relabel' ? `<div class="drill-queued">Not queued yet
+          \u2014 Check existing files queues it.</div>` : ''}
+      </div>
+    </div>`).join('')}</div>`;
+}
+
 async function loadNoAudio() {
   const box = document.getElementById('no-audio-detail');
   if (!box) return;
@@ -5865,6 +6064,44 @@ function backToReview() {
   drawStep();
 }
 
+// The codec level a file is labelled with, and the most the library's
+// players can take. Lives on the Video step because it's about the
+// picture, but it changes nothing about how the picture looks.
+function videoLevelFields() {
+  const lv = (CAT && CAT.video_levels) || {};
+  const choices = lv.choices || {hevc: ['5.1'], h264: ['4.1']};
+  const levelSelect = (codec, key, label) => `
+    <label style="display:flex;align-items:center;gap:8px;font-size:12.5px">
+      <span style="min-width:44px">${label}</span>
+      <select onchange="draft.${key}=this.value">
+        ${(choices[codec] || []).map(v => `<option value="${v}" ${
+          String(draft[key]) === v ? 'selected' : ''}>${v}</option>`).join('')}
+      </select></label>`;
+  return `
+      <div class="toggle ${draft.fix_video_levels ? 'on' : ''}"
+           onclick="draft.fix_video_levels=!draft.fix_video_levels;drawStep()">
+        <div class="sw"></div>
+        <div><div class="tt">Fix wrong video level tags</div>
+          <div class="td">Some files say they need a more powerful player
+            than they actually do. This corrects the label without touching
+            picture quality, so devices like Fire TV can play them directly
+            instead of the server transcoding.</div></div>
+      </div>
+      <div style="font-size:13px;font-weight:600;margin:22px 0 3px">Max video
+        level for playback devices</div>
+      <em style="display:block;font-style:normal;font-size:12px;color:var(--muted);
+        margin-bottom:9px;line-height:1.5">${lv.hint
+          || 'Fire TV Stick 4K (1st gen) and many TVs top out at 5.1'}.
+        A file labelled above this gets its label corrected when its picture
+        really fits. One that genuinely needs more is listed under Library
+        Health &rarr; Video Level instead, since only converting it again can
+        make it play directly.</em>
+      <div style="display:flex;gap:18px;flex-wrap:wrap">
+        ${levelSelect('hevc', 'max_level_hevc', 'H.265')}
+        ${levelSelect('h264', 'max_level_h264', 'H.264')}
+      </div>`;
+}
+
 async function drawStep() {
   const w = document.getElementById('wiz');
   let body = '', lead = '';
@@ -5953,7 +6190,8 @@ async function drawStep() {
             wrapper — repackaging is lossless, but it still reads and
             writes every byte, which is a lot of work to change nothing you
             can see or hear. New files still get the type chosen above.</div></div>
-      </div></div>`;
+      </div>
+      ${videoLevelFields()}</div>`;
     body = opt(CAT.video, 'video_codec') + q;
   }
 
@@ -6740,6 +6978,9 @@ async function saveLibrary() {
       stereo_track_codec: draft.stereo_track_codec,
       stereo_track_bitrate: draft.stereo_track_bitrate,
       keep_existing_container: draft.keep_existing_container,
+      fix_video_levels: draft.fix_video_levels,
+      max_level_hevc: draft.max_level_hevc,
+      max_level_h264: draft.max_level_h264,
       auto_measure_loudness: draft.auto_measure_loudness,
       auto_level_loudness: draft.auto_level_loudness,
       loudness_range_threshold: draft.loudness_range_threshold,

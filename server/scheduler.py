@@ -72,6 +72,12 @@ def resolve_path(node, path):
 
 
 def node_can_encode(node, spec):
+    # Relabelling a copied video stream needs a worker that knows how.
+    # One from before this existed would copy the stream unchanged, and
+    # the label the job was queued to fix would come out the same.
+    if (spec.get("codec") == "copy" and spec.get("relabel_level")
+            and "video_level" not in (node.get("features") or [])):
+        return False
     # Copying the video stream, or a measurement-only pass with nothing to
     # encode at all, needs no encoder — any node will do.
     if spec.get("codec") == "copy" or spec.get("measure"):
@@ -156,11 +162,13 @@ def lease_job(node_id):
     # picking up measurements. Moving one to the top by hand worked
     # because that dragged it into the window; nothing else did.
     tiers = {kind: db.next_queued(kind, limit=TIER_LIMIT)
-             for kind in ("convert", "repackage", "level", "measure")}
-    # Conversions first, then repackages — both were asked for, and a
-    # repackage is minutes of disk rather than an encode, so putting it
-    # ahead of the loudness tiers costs a conversion almost nothing.
-    real_work = tiers["convert"] + tiers["repackage"]
+             for kind in ("convert", "repackage", "relabel", "level",
+                          "measure")}
+    # Conversions first, then repackages and relabels — all were asked
+    # for, and both of the latter are minutes of disk rather than an
+    # encode, so putting them ahead of the loudness tiers costs a
+    # conversion almost nothing.
+    real_work = tiers["convert"] + tiers["repackage"] + tiers["relabel"]
     housekeeping = tiers["level"] + tiers["measure"]
 
     def is_housekeeping(job):

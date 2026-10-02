@@ -115,6 +115,7 @@ try { eval(src + '\nglobal.__x = {render, renderLibs, renderTabs, renderJobs, sl
   'backToReview, nextStep, validateFirstStep, STEPS, GROUPS, groupIndexOf, ' +
   'SETTINGS_TABS, HEALTH_TABS, duplicateLib, watchInterval, everyPhrase, saveLibrary, ' +
   'QUEUE_COLUMNS, TABLE_VIEWS, renderQueueTable, workLabel, codecLabel, ' +
+  'levelText, levelCheckCardLine, renderLevelCheck, videoLevelFields, ' +
   'renderTabs, set __setKinds(k){ lastKinds = k; }, ' +
   'resLabel, sortBy, toggleRow, renderSelectionBar, rowActions, selectionAction, ' +
   'get queueSel(){return queueSel;}, ' +
@@ -772,6 +773,85 @@ check('slot control at limits', () => {
     await __x.duplicateLib(7);
     if (__x.draft.originals_path !== '/originals')
       throw new Error('got ' + JSON.stringify(__x.draft.originals_path));
+  });
+
+  console.log('\nVideo level labels:');
+  check('a relabel says what it changes, in the queue', () => {
+    const only = __x.workLabel({spec: {relabel_only: true, codec: 'copy',
+      relabel_level: '4.1', relabel_from: '5.2'}});
+    if (only !== 'level relabel 5.2 \u2192 4.1') throw new Error(only);
+  });
+  check('and sits beside the audio work it shares a pass with', () => {
+    const both = __x.workLabel({spec: {codec: 'copy', audio: 'aac',
+      action: 'audio_only', relabel_level: '4.1', relabel_from: '5.2'}});
+    if (both !== 'audio only \u00b7 level relabel 5.2 \u2192 4.1') throw new Error(both);
+  });
+  check('a re-encode is never described as a relabel', () => {
+    const enc = __x.workLabel({spec: {codec: 'hevc', relabel_level: '4.1',
+      encode_level: {level: '4.1'}}});
+    if (enc !== 'full convert') throw new Error(enc);
+  });
+  check('file details say what the level means for this library', () => {
+    const fix = __x.levelText({have: '5.2', need: '4.1', max: '5.1', verdict: 'relabel'});
+    const high = __x.levelText({have: '5.2', need: '5.2', max: '5.1', verdict: 'too_high'});
+    if (!fix.includes('Level relabel 5.2 \u2192 4.1')) throw new Error(fix);
+    if (!/too high for target devices.*needs re-encode/.test(high)) throw new Error(high);
+    if (__x.levelText(null) !== '') throw new Error('printed a level for no level');
+  });
+  check('the Video step offers the switch and the ceiling, defaulted', () => {
+    global.window.__state = {libraries: []};
+    const h = __x.videoLevelFields();
+    if (!h.includes('Fix wrong video level tags')) throw new Error('no switch');
+    if (!__x.draft || __x.draft.fix_video_levels === undefined)
+      throw new Error('no default in the draft');
+    if (!h.includes('top out at 5.1')) throw new Error('no hint');
+  });
+  const levelLib = {id: 8, name: 'Fire TV', watch_path: '/w', output_path: '',
+    original_action: 'archive', filters: {}, naming: {},
+    profile: {video_codec: 'hevc', fix_video_levels: false,
+              max_level_hevc: '5.2', max_level_h264: '4.2'}};
+  global.window.__state = {libraries: [levelLib]};
+  await __x.openWizard(8);
+  check('reopening a library shows its level settings, including off', () => {
+    const d = __x.draft;
+    if (d.fix_video_levels !== false || d.max_level_hevc !== '5.2'
+        || d.max_level_h264 !== '4.2')
+      throw new Error(JSON.stringify([d.fix_video_levels, d.max_level_hevc,
+                                      d.max_level_h264]));
+  });
+  await check('and saving sends them back unchanged', async () => {
+    let sent = null;
+    const realFetch = global.fetch;
+    global.fetch = async (url, opts) => {
+      if (opts && opts.method === 'PATCH') sent = JSON.parse(opts.body);
+      return {ok: true, json: async () => ({})};
+    };
+    try { await __x.saveLibrary(); } finally { global.fetch = realFetch; }
+    const p = (sent || {}).profile || {};
+    if (p.fix_video_levels !== false || p.max_level_hevc !== '5.2'
+        || p.max_level_h264 !== '4.2')
+      throw new Error('sent ' + JSON.stringify(p));
+  });
+  check('a worker too old to relabel says so on its card', () => {
+    const old = {...state.nodes[0], features: []};
+    __x.render({...state, nodes: [old]});
+    if (!els['nodes'].innerHTML.includes('predates video level fixes'))
+      throw new Error('no note on an old worker');
+    __x.render({...state, nodes: [{...old, features: ['video_level']}]});
+    if (els['nodes'].innerHTML.includes('predates video level fixes'))
+      throw new Error('a current worker was told to update');
+  });
+  check('a library card shows the level check while it runs, then its result', () => {
+    const lib = {id: 1, name: 'Movies'};
+    global.window.__state = {level_check: {active: true, library: 'Movies',
+      current: 'a.mkv', done: 3, total: 10, results: {}}};
+    if (!__x.levelCheckCardLine(lib).includes('3 / 10'))
+      throw new Error('no progress');
+    global.window.__state = {level_check: {active: false, results: {
+      '1': {checked: 10, queued: 2, already_queued: 0, too_high: 1, waiting_on_you: 0}}}};
+    const done = __x.levelCheckCardLine(lib);
+    if (!done.includes('queued 2 relabels') || !done.includes('1 too high'))
+      throw new Error(done);
   });
 
   console.log('\nHints quote the setting rather than a fixed number:');
