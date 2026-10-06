@@ -1498,6 +1498,21 @@ function render(state) {
         notes.push(`This worker predates video level fixes, so it isn't
           given relabel jobs — they wait for one that is up to date.
           Update and restart it to have it take them on.`);
+      // A worker's identity lives in its work folder, so the same PC
+      // started with a different one registers as a new node and leaves
+      // this card behind for good. Said plainly, with the way out.
+      if (!n.online) {
+        const twin = state.nodes.some(o => o.id !== n.id && o.online
+                                         && o.name === n.name);
+        notes.push(`${twin ? `This looks like the same machine as the
+          connected ${attr(n.name)} card, from before its work folder or
+          Windows account changed \u2014 it won't come back under this
+          entry.` : `This worker hasn't checked in for a while.`}
+          Removing it is safe: anything it was holding goes back in the
+          queue, and if it does reconnect it simply reappears.
+          <button style="margin-top:8px" onclick="removeNode('${attr(n.id)}', '${
+            attr(n.name).replace(/'/g, "\\'")}')">Remove this worker</button>`);
+      }
       const note = notes.map(t => `<div class="note">${t}</div>`).join('');
       const mine = (state.jobs || []).filter(
         j => j.node_id === n.id && j.state === 'running');
@@ -1806,6 +1821,24 @@ const NODE_ROLE_TIP = {
   housekeeping: 'Only loudness work, and it starts straight away rather than '
               + 'waiting on conversions running elsewhere.',
 };
+
+async function removeNode(id, name) {
+  if (!await ask(`Remove "${name}" from the list? Only this offline entry `
+      + 'goes \u2014 a worker that is running carries on under its own card.',
+      {yes: 'Remove it'})) return;
+  try {
+    const r = await fetch(`/api/nodes/${encodeURIComponent(id)}`, {method: 'DELETE'});
+    if (!r.ok) {
+      const detail = (await r.json().catch(() => ({}))).detail;
+      return notifyBad(detail || 'Could not remove it.');
+    }
+    const body = await r.json();
+    notifyGood(body.requeued ? `Removed. ${body.requeued} job(s) it held are back in the queue.`
+                             : 'Removed.');
+  } catch (e) {
+    notifyBad('Could not reach the server.');
+  }
+}
 
 async function setNodeRole(id, role) {
   try {

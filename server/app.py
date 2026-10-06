@@ -363,7 +363,7 @@ async def build_state():
     now = time.time()
     nodes = db.list_nodes()
     for node in nodes:
-        node["online"] = (now - node["last_seen"]) < 45
+        node["online"] = (now - node["last_seen"]) < NODE_ONLINE_SECONDS
         node["active"] = scheduler.active_job_count(node["id"])
     return {
         "nodes": nodes,
@@ -593,6 +593,31 @@ async def set_housekeeping_slots(node_id: str, req: Request):
     value = db.set_housekeeping_slots(node_id, body.get("slots", 0))
     await broadcast()
     return {"housekeeping_slots": value}
+
+
+# How long a node can go quiet before it shows as offline. Shared with
+# build_state, so "offline" on the card and "can be removed" agree.
+NODE_ONLINE_SECONDS = 45
+
+
+@app.delete("/api/nodes/{node_id}")
+async def remove_node(node_id: str):
+    """Forget a node that is no longer connected.
+
+    Refused while it's still checking in: a live worker would just
+    register again on its next heartbeat, so removing it would look like
+    it did nothing. Removing one that later does come back is harmless —
+    it reappears as it was, minus its slot settings.
+    """
+    node = db.get_node(node_id)
+    if not node:
+        raise HTTPException(404, "No such node.")
+    if time.time() - node["last_seen"] < NODE_ONLINE_SECONDS:
+        raise HTTPException(409, "That worker is still connected. Stop it "
+                                 "first, then remove it once it shows offline.")
+    requeued = db.delete_node(node_id)
+    await broadcast()
+    return {"removed": True, "requeued": requeued or 0}
 
 
 @app.post("/api/nodes/{node_id}/role")

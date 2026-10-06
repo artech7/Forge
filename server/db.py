@@ -314,6 +314,30 @@ def get_node(node_id):
         )
 
 
+def delete_node(node_id):
+    """Forget a node, handing back anything it was still holding.
+
+    A worker's identity lives in a file inside its work folder, so the
+    same machine started with a different work folder — or as a
+    different Windows account, whose temp folder differs — registers as
+    a new node and leaves its old card behind, offline for good. Any job
+    still marked as that node's goes straight back in the queue rather
+    than waiting out a lease nobody will renew.
+
+    Returns how many jobs were requeued, or None if there was no such node.
+    """
+    with connect() as conn:
+        if not conn.execute("SELECT 1 FROM nodes WHERE id=?", (node_id,)).fetchone():
+            return None
+        requeued = conn.execute(
+            """UPDATE jobs SET state='queued', node_id=NULL, lease_expires=NULL,
+                   lease_token=NULL, progress=0, fps=0, speed=0, phase=NULL
+               WHERE node_id=? AND state IN ('leased','running')""",
+            (node_id,)).rowcount
+        conn.execute("DELETE FROM nodes WHERE id=?", (node_id,))
+    return requeued
+
+
 def list_nodes():
     with connect() as conn:
         return [row_to_dict(r) for r in

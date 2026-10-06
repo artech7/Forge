@@ -2535,6 +2535,32 @@ finally:
     _agent_lv.post = _real_post
     _agent_lv.requests.post = _real_requests_post
 
+
+print("\nA worker that is gone for good can be removed:")
+# The same PC started with a different work folder registers as a new
+# node, and the old card stayed offline forever with no way to clear it.
+db.upsert_node("ghost", "DESKTOP-7950X", ["hevc_nvenc"], [], 4)
+with db.connect() as _c:
+    _c.execute("UPDATE nodes SET last_seen=? WHERE id='ghost'", (time.time() - 3600,))
+_gh_job = db.enqueue("/m/held-by-ghost.mkv", {"codec": "hevc"}, 10, lib_id)
+db.update_job(_gh_job, state="running", node_id="ghost", lease_token="g")
+check("removing an offline worker succeeds",
+      lambda: _run(app.remove_node("ghost")),
+      lambda r: r == {"removed": True, "requeued": 1})
+check("and it is gone from the list",
+      lambda: [n["id"] for n in db.list_nodes() if n["id"] == "ghost"],
+      lambda r: r == [])
+check("whatever it was holding is back in the queue for anyone",
+      lambda: (db.get_job(_gh_job)["state"], db.get_job(_gh_job)["node_id"]),
+      lambda r: r == ("queued", None))
+db.upsert_node("alive", "Alive", ["libx265"], [], 1)
+check("a worker still checking in is not removed",
+      lambda: _status(app.remove_node("alive")), lambda r: r == 409)
+check("nor is one that doesn't exist",
+      lambda: _status(app.remove_node("nobody")), lambda r: r == 404)
+check("a worker's own token can't remove nodes",
+      lambda: bool(app.WORKER_PATHS.match("/api/nodes/alive")), lambda r: r is False)
+
 print()
 if failures:
     print(f"{len(failures)} problem(s):")

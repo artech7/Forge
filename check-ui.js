@@ -854,6 +854,18 @@ check('slot control at limits', () => {
       throw new Error(done);
   });
 
+  check('an offline worker can be removed from its card, a live one cannot', () => {
+    const live = {...state.nodes[0], id: 'new', name: 'DESKTOP-7950X', online: true,
+                  features: ['video_level'], last_seen: Date.now() / 1000};
+    const gone = {...live, id: 'old', online: false, last_seen: 0};
+    __x.render({...state, nodes: [gone, live]});
+    const h = els['nodes'].innerHTML;
+    if ((h.match(/removeNode\(/g) || []).length !== 1)
+      throw new Error('expected exactly one Remove button');
+    if (!h.includes("removeNode('old'")) throw new Error('button is on the wrong card');
+    if (!h.includes('same machine as the')) throw new Error('the twin is not pointed out');
+  });
+
   console.log('\nHints quote the setting rather than a fixed number:');
   check('reads the real scan interval out of live state', () => {
     global.window.__state = {settings:{scan_seconds:300}};
